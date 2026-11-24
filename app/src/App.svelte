@@ -1,5 +1,6 @@
 <script lang="ts">
   import { pendingRetryMs } from "./lib/format";
+  import { sequence } from "./lib/latest";
   import { onMount } from "svelte";
   import AiConnect from "./lib/AiConnect.svelte";
   import Editor from "./lib/Editor.svelte";
@@ -33,9 +34,13 @@
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingTries = 0;
 
+  /** Only the newest listing is shown: two file events in a row can answer out of order (audit 2026-11-24 ERR-1904). */
+  const listings = sequence();
   async function refresh() {
+    const k = listings.next();
     try {
       const lib = await api.listProjects();
+      if (!listings.current(k)) return;
       projects = lib.projects;
       broken = lib.broken;
       foreign = lib.foreign ?? [];
@@ -47,8 +52,16 @@
       pendingTries = pending ? pendingTries + 1 : 0;
       if (wait !== null) pendingTimer = setTimeout(refresh, wait);
     } catch (e) {
-      notifyError(e, "list");
+      if (listings.current(k)) notifyError(e, "list");
     }
+  }
+
+  /** Reads the settings again; an answer older than a newer read or a settings event is dropped. */
+  const settingsReads = sequence();
+  async function rereadSettings() {
+    const k = settingsReads.next();
+    const v = await api.getSettings();
+    if (settingsReads.current(k)) applySettings(v);
   }
 
   /**
@@ -162,6 +175,7 @@
     // out that can still ask go through `mayLeave` (HUNT-1201).
     const unSettings = onSettingsChanged((v) => {
       const moved = v.effective.projects_dir !== dir;
+      settingsReads.bump();
       applySettings(v);
       if (moved) libraryChanged();
     });
@@ -239,7 +253,7 @@
     request={appSettings.view.settings.folder_request}
     jobOpen={!!openId}
     onanswered={async (moved) => {
-      applySettings(await api.getSettings());
+      await rereadSettings();
       if (moved) libraryChanged();
     }}
   />
@@ -247,7 +261,7 @@
 {#if appSettings.view?.settings.file_request && !appSettings.view.settings.folder_request}
   <FileRequest
     request={appSettings.view.settings.file_request}
-    onanswered={async () => applySettings(await api.getSettings())}
+    onanswered={rereadSettings}
   />
 {/if}
 <!-- The card waits while a folder or file request holds the screen: one AI decision at a time (UI-210). -->

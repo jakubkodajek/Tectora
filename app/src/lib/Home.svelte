@@ -24,6 +24,7 @@
   import { tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { firstPress } from "./dblclick";
+  import { sequence } from "./latest";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary, TrashEntry } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
@@ -208,13 +209,19 @@
 
   /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */
   let trash = $state<TrashEntry[]>([]);
+  /** Only the newest trash listing is shown (audit 2026-11-24 ERR-1904). */
+  const trashReads = sequence();
   async function loadTrash() {
+    const k = trashReads.next();
     try {
-      trash = (await api.listDeleted()).filter((e) => !e.file);
+      const entries = await api.listDeleted();
+      if (!trashReads.current(k)) return;
+      trash = entries.filter((e) => !e.file);
       // A delete notice whose entry left the trash offers nothing to restore (HUNT-1805).
       const left = new Set(trash.map((e) => e.entry));
       for (const entry of [...deleteToasts.keys()]) if (!left.has(entry)) dropDeleteToast(entry);
     } catch (e) {
+      if (!trashReads.current(k)) return;
       trash = [];
       notifyError(e, "list");
     }
