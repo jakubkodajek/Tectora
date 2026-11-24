@@ -279,8 +279,8 @@ test.describe("round 9: the recalculation entry and its way back (Design A)", ()
     await entries(page).first().getByRole("button", { name: cs("ai.revert") }).click();
     await waitForProject(id, (p) => p.parts[0].edges[0].overhang === overhang);
     await app.saved();
-    // UI-803: this one was an AI's change.
-    await expect(entries(page).first()).toContainText(cs("ai.revertedEntry"));
+    // UI-803: this one was an AI's change, named (UX-1603; was "AI changes reverted").
+    await expect(entries(page).first()).toContainText(cs("ai.revertedOne", { s: "„Přesah okapu“" }));
     await expect(putBack(page)).toHaveCount(1);
     await putBack(page).click();
     const back = await waitForProject(id, (p) => p.result_snapshot?.engine_version === "0.8.0");

@@ -148,8 +148,8 @@ export interface ActivityInfo {
   ts_ms: number;
   actor: string;
   summary: string;
-  /** Absent for a change (store.rs `ActivityEntry::kind`). */
-  kind?: EntryKind;
+  /** `null` for a change (store.rs `ActivityEntry::kind`, always sent since ARCH-1601); absent only from an older bridge. */
+  kind?: EntryKind | null;
 }
 
 export interface ProjectSummary {
@@ -439,6 +439,8 @@ export interface ActivityItem extends ActivityInfo {
   reason?: string;
   /** A later revert undid it (store.rs `undone_by`): muted in the history, and no Revert is drawn on it (UX-1505, UI-1501). */
   undone?: boolean;
+  /** The entry created the job (no version before it): no Revert is drawn on it and Revert all stops after it (HUNT-1601). */
+  created?: boolean;
 }
 
 /**

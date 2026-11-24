@@ -311,6 +311,10 @@ pub struct RevertedChanges {
     /// says the other program's file was replaced (audit 2026-11-23
     /// ERR-1502).
     pub repaired: bool,
+    /// The revert entry just logged, `None` when nothing was written: the
+    /// app's Undo of the revert takes exactly this one back
+    /// ([`Store::take_back_revert`], audit 2026-11-24 UX-1601).
+    pub entry_ts_ms: Option<u64>,
 }
 
 /// The job's stored result is the engine's recalculation of the offer's
@@ -354,14 +358,20 @@ pub struct ActivityItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// What Tectora itself wrote the entry as ([`ActivityEntry::kind`]);
-    /// absent for a change. The app translates a summary only by it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `null` for a change, always sent: the app translates a summary only
+    /// by it and never by its words (audit 2026-11-24 ARCH-1601).
     pub kind: Option<EntryKind>,
     /// A later revert undid it (`undone_by`): the history mutes it, and
     /// Revert is drawn on the newest entry that stands, the one the core
     /// undoes (audit 2026-11-23 UX-1505, UI-1501). Absent when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub undone: bool,
+    /// The entry created the job (it has no version before it): there is
+    /// nothing to revert it to, so the AI tab draws no Revert on it and
+    /// Revert all stops after it (audit 2026-11-24 HUNT-1601). Absent when
+    /// false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub created: bool,
 }
 
 /// What a change-log entry is when Tectora itself wrote it as more than a
@@ -384,13 +394,24 @@ pub enum EntryKind {
 /// Tectora's own entries (a recalculated stored result, also one received
 /// with a bundle) and "offer result restored" entries say nothing about
 /// who changed the design and are stepped over: merely opening an offer
-/// must not take it out of the AI list.
+/// must not take it out of the AI list. So are reverts and what a
+/// standing revert undid ([`undone_by`]): the newest change that stands
+/// counts, so the user's revert of one AI step leaves the job in the AI
+/// list while the other steps stand, and Revert all takes it out (audit
+/// 2026-11-24 UX-1602, design A5).
 pub fn changed_by_ai(log: &[ActivityEntry]) -> Option<&ActivityEntry> {
+    let by = undone_by(log);
     log.iter()
+        .enumerate()
         .rev()
-        .find(|e| {
-            e.actor != ENGINE_ACTOR && e.actor != RECEIVED_ENGINE_ACTOR && e.restores.is_none()
+        .find(|&(i, e)| {
+            by[i].is_none()
+                && !is_revert_entry(e)
+                && e.actor != ENGINE_ACTOR
+                && e.actor != RECEIVED_ENGINE_ACTOR
+                && e.restores.is_none()
         })
+        .map(|(_, e)| e)
         .filter(|e| e.actor != USER_ACTOR)
 }
 
@@ -424,7 +445,8 @@ pub struct ActivityInfo {
     pub actor: String,
     pub summary: String,
     /// [`ActivityEntry::kind`]: the library card translates by it alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Always sent, `null` for a change (audit 2026-11-24 ARCH-1601).
+    #[serde(default)]
     pub kind: Option<EntryKind>,
 }
 
@@ -2830,11 +2852,15 @@ impl Store {
     pub fn activity_items(&self, id: &str) -> Vec<ActivityItem> {
         let log = self.history(id);
         let by = undone_by(&log);
+        let marks: Vec<bool> = (0..log.len())
+            .map(|i| marked_undone(&log, &by, i))
+            .collect();
         let mut out: Vec<ActivityItem> = log
             .into_iter()
-            .zip(by)
-            .map(|(e, by)| ActivityItem {
-                undone: by.is_some(),
+            .zip(marks)
+            .map(|(e, undone)| ActivityItem {
+                undone,
+                created: e.before.is_none(),
                 refreshed: refresh_figures(&e),
                 kind: e.kind(),
                 ts_ms: e.ts_ms,
@@ -3579,11 +3605,12 @@ impl Store {
         let summary = with_reason(reason, format!("{REVERTED_PREFIX}{}", log[pos].summary));
         let ai = !RESERVED_ACTORS.contains(&log[pos].actor.as_str());
         self.revert_locked(id, &log, pos, actor, summary)
-            .map(|(project, wrote, repaired)| RevertedChanges {
+            .map(|(project, entry, repaired)| RevertedChanges {
                 project,
-                undone: usize::from(wrote),
-                undone_ai: usize::from(wrote && ai),
+                undone: usize::from(entry.is_some()),
+                undone_ai: usize::from(entry.is_some() && ai),
                 repaired,
+                entry_ts_ms: entry,
             })
     }
 
@@ -3639,29 +3666,79 @@ impl Store {
             .filter(|e| e.undid_from.is_none())
             .count()
             .max(1);
-        // The AI's entries by the banner's own rule (`pending_steps`): an
-        // AI step the user had already reverted by itself is not counted
-        // again (audit 2026-11-23 UX-1501, owner decision 3 of round 16).
+        // The AI's entries by the banner's own rule (`waits`): an AI step
+        // a revert already undid, and an AI's own revert of entries from
+        // `pos` on, are not counted (audit 2026-11-24 ERR-1601).
         let by = undone_by(&log);
         let undone_ai = reverted_indices(&log, pos)
-            .filter(|&i| {
-                !RESERVED_ACTORS.contains(&log[i].actor.as_str()) && !undone_by_user(&log, &by, i)
-            })
+            .filter(|&i| waits(&log, &by, pos, i))
             .count();
         let summary = if undone == 1 {
             format!("{REVERTED_PREFIX}{}", log[pos].summary)
         } else {
             format!("Reverted {undone} changes since: {}", log[pos].summary)
         };
-        let (project, wrote, repaired) =
+        let (project, entry, repaired) =
             self.revert_locked(id, &log, pos, actor, with_reason(reason, summary))?;
         // Nothing written, nothing undone (arch to-check 60).
-        let (undone, undone_ai) = if wrote { (undone, undone_ai) } else { (0, 0) };
+        let (undone, undone_ai) = if entry.is_some() {
+            (undone, undone_ai)
+        } else {
+            (0, 0)
+        };
         Ok(RevertedChanges {
             project,
             undone,
             undone_ai,
             repaired,
+            entry_ts_ms: entry,
+        })
+    }
+
+    /// Takes back the revert logged at `revert_ts`: the app's Undo (and
+    /// Redo) of a review's Revert, so that whatever puts AI work back into
+    /// the job, or takes it out again, is a logged revert and the review
+    /// reads it (audit 2026-11-24 UX-1601, design A2). The entry must be a
+    /// revert and the newest entry of the log, else
+    /// [`StoreError::RevertStale`] and nothing is written; then it is
+    /// [`Store::revert_to_counted`] from it under the same hold of the
+    /// lock (its merge, conflict and limits rules), and the new entry
+    /// records `undid_from = revert_ts`, so the changes the first revert
+    /// undid stand again and an AI's wait for review again. MCP has the
+    /// same as `revert_to` with the revert's `ts_ms`.
+    pub fn take_back_revert(
+        &self,
+        id: &str,
+        revert_ts: u64,
+        actor: &str,
+    ) -> Result<RevertedChanges, StoreError> {
+        let stale = |detail: &str| StoreError::RevertStale {
+            id: id.to_string(),
+            detail: detail.into(),
+        };
+        if !self.has_job_or_log(id)? {
+            return Err(stale("the job has no such revert"));
+        }
+        let _lock = self.lock_briefly(id)?;
+        let log = self.activity(id);
+        let pos = log
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| stale("the job has no change log"))?;
+        let last = &log[pos];
+        if last.ts_ms != revert_ts || !is_revert_entry(last) {
+            return Err(stale("another change is the latest one by now"));
+        }
+        let summary = format!("{REVERTED_PREFIX}{}", last.summary);
+        let (project, entry, repaired) =
+            self.revert_locked(id, &log, pos, actor, with_reason(None, summary))?;
+        let undone = usize::from(entry.is_some());
+        Ok(RevertedChanges {
+            project,
+            undone,
+            undone_ai: 0,
+            repaired,
+            entry_ts_ms: entry,
         })
     }
 
@@ -3691,8 +3768,8 @@ impl Store {
         pos: usize,
         actor: &str,
         (summary, reason): (String, Option<String>),
-    ) -> Result<(Project, bool, bool), StoreError> {
-        let mut wrote = false;
+    ) -> Result<(Project, Option<u64>, bool), StoreError> {
+        let mut wrote = None;
         let value = |p: &Project| {
             serde_json::to_value(p).map_err(|e| StoreError::Unreadable {
                 id: id.to_string(),
@@ -3756,7 +3833,7 @@ impl Store {
             }
         })?;
         if before.as_ref() != Some(&target) {
-            self.log_and_write(
+            wrote = Some(self.log_and_write(
                 id,
                 before,
                 &target,
@@ -3766,11 +3843,10 @@ impl Store {
                 Some(log[pos].ts_ms),
                 None,
                 None,
-            )?;
-            wrote = true;
+            )?);
         }
         self.pin_restored(id, &log[pos..], &target);
-        Ok((target, wrote, wrote && damaged))
+        Ok((target, wrote, wrote.is_some() && damaged))
     }
 
     /// After a revert of `undone` gave `target`: when that put an offer's
@@ -3864,16 +3940,15 @@ impl Store {
 
     /// Indices of the AI steps of `log` waiting for review, oldest first:
     /// the entries an AI client wrote (an actor outside
-    /// [`RESERVED_ACTORS`]) from [`Store::pending_start`] on that no
-    /// revert by the user undid ([`undone_by_user`]). An AI's own revert
-    /// and what it undid stay steps (round 15).
+    /// [`RESERVED_ACTORS`]) from [`Store::pending_start`] on that stand
+    /// ([`waits`]). An AI's own revert inside the review is bookkeeping:
+    /// its whole effect is which steps stand (audit 2026-11-24 ERR-1601,
+    /// owner decision 1 of round 17).
     fn pending_steps(&self, id: &str, log: &[ActivityEntry]) -> Vec<usize> {
         let start = self.pending_start(id, log);
         let by = undone_by(log);
         (start..log.len())
-            .filter(|&i| {
-                !RESERVED_ACTORS.contains(&log[i].actor.as_str()) && !undone_by_user(log, &by, i)
-            })
+            .filter(|&i| waits(log, &by, start, i))
             .collect()
     }
 
@@ -3882,8 +3957,17 @@ impl Store {
     /// all and a revert of the last waiting step end the review.
     pub fn pending_review(&self, id: &str) -> Option<PendingReview> {
         let log = self.activity(id);
+        let start = self.pending_start(id, &log);
         let steps = self.pending_steps(id, &log);
-        let first = &log[*steps.first()?];
+        // Revert all starts at the oldest step; for an AI's revert that
+        // undid accepted work (a step, its range reaches below `start`) at
+        // the first entry it covers from `start` on, so that Revert all
+        // never brings a covered AI step back.
+        let from = steps
+            .iter()
+            .map(|&i| revert_range(&log, i).map_or(i, |(u, _)| u.max(start).min(i)))
+            .min()?;
+        let first = &log[from];
         let mut actors: Vec<String> = Vec::new();
         for &i in &steps {
             if !actors.contains(&log[i].actor) {
@@ -4556,8 +4640,7 @@ fn revert_range(log: &[ActivityEntry], r: usize) -> Option<(usize, bool)> {
 /// ([`revert_range`]) and the walk goes on before it, so a revert that a
 /// later revert undid covers nothing that stands. Inside a covered range
 /// the reverts there are walked the same way, and an entry gets the
-/// innermost revert that undid it; [`undone_by_user`] follows the chain
-/// outwards.
+/// innermost revert that undid it.
 fn undone_by(log: &[ActivityEntry]) -> Vec<Option<usize>> {
     let mut by: Vec<Option<usize>> = vec![None; log.len()];
     // Segments `lo..hi` still to walk, the revert covering them, and the
@@ -4586,20 +4669,33 @@ fn undone_by(log: &[ActivityEntry]) -> Vec<Option<usize>> {
     by
 }
 
-/// Whether a revert by the user undid `log[i]`, by [`undone_by`]'s chain
-/// from the innermost revert out: an AI step the user already reverted is
-/// no step to review or to count again (audit 2026-11-23 UX-1501, owner
-/// decision 3 of round 16). The chain only goes to later entries, so it
-/// ends.
-fn undone_by_user(log: &[ActivityEntry], by: &[Option<usize>], i: usize) -> bool {
-    let mut at = by[i];
-    while let Some(r) = at {
-        if log[r].actor == USER_ACTOR {
-            return true;
-        }
-        at = by[r];
+/// Whether `log[i]` is an AI step that waits for review in a review that
+/// starts at `log[start]`: an AI client wrote it, it stands (no revert
+/// that stands undid it, [`undone_by`]), and it is no AI's own revert of
+/// entries from `start` on, which is bookkeeping. An AI's revert that
+/// reaches below `start` undid accepted work and is a step. One predicate
+/// for the banner, the AI tab, MCP `get_review` and the count Revert all
+/// reports (audit 2026-11-24 ERR-1601, design A1).
+fn waits(log: &[ActivityEntry], by: &[Option<usize>], start: usize, i: usize) -> bool {
+    !RESERVED_ACTORS.contains(&log[i].actor.as_str())
+        && by[i].is_none()
+        && revert_range(log, i).is_none_or(|(u, _)| u < start)
+}
+
+/// Whether the history marks `log[i]` as undone (`by` from
+/// [`undone_by`]): a change a standing revert undid; a revert only when
+/// the revert that undid it starts later than its own range, i.e. took it
+/// back so that its changes stand again. A revert that a later revert from
+/// further back swallowed is not marked: its changes are still out (audit
+/// 2026-11-24 UI-1601, design A4).
+fn marked_undone(log: &[ActivityEntry], by: &[Option<usize>], i: usize) -> bool {
+    let Some(r) = by[i] else {
+        return false;
+    };
+    match revert_range(log, i) {
+        None => true,
+        Some((own, _)) => revert_range(log, r).is_some_and(|(u, _)| u > own),
     }
-    false
 }
 
 /// Whether `e` is a revert as [`undone_by`] reads it.
@@ -9517,7 +9613,9 @@ mod tests {
             let item = store.activity_items(&id).remove(0);
             assert_eq!(item.kind, None, "{spoof}");
             let json = serde_json::to_value(&item).unwrap();
-            assert!(json.get("kind").is_none(), "{spoof}: {json}");
+            // Sent as `null`, never left out (audit 2026-11-24 ARCH-1601).
+            assert!(json["kind"].is_null(), "{spoof}: {json}");
+            assert!(json.get("kind").is_some(), "{spoof}: {json}");
             let back = store
                 .revert_last_expecting(&id, USER_ACTOR, None, Some(last.ts_ms))
                 .unwrap();
@@ -9686,11 +9784,14 @@ mod tests {
                 Some("Reverted 3 changes since: A1"),
             ),
             ("A Ar", &[A, Ar], 0, 0, None),
+            // An AI's own revert inside the review is bookkeeping: only A1
+            // stands as an AI step (audit 2026-11-24 ERR-1601, owner
+            // decision 1 of round 17; was 3).
             (
                 "A A Ar",
                 &[A, A, Ar],
                 2,
-                3,
+                1,
                 Some("Reverted 2 changes since: A1"),
             ),
             ("A E", &[A, E], 2, 1, Some("Reverted 2 changes since: A1")),
@@ -10108,5 +10209,296 @@ mod tests {
         let p = store.revert_last(&id, USER_ACTOR, None).unwrap();
         assert_eq!(p.notes, "A1", "A2 undone, A1 kept");
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    // ---- Round 17 (audit 2026-11-24): one rule for the review ----
+
+    /// Design A1 (ERR-1601, owner decision 1 of round 17): the AI's own
+    /// revert of its only step leaves nothing to review and no AI mark on
+    /// the card: the job is as before the AI came.
+    #[test]
+    fn an_ais_own_revert_of_its_only_step_ends_the_review() {
+        let store = temp_store("r17-ar");
+        let id = users_job(&store);
+        ai_change(&store, &id, 1);
+        store.revert_last(&id, "claude", Some("back")).unwrap();
+        assert!(
+            store.pending_review(&id).is_none(),
+            "{:?}",
+            store.pending_review(&id)
+        );
+        assert!(store.review_status(&id).unwrap().is_none());
+        assert!(store.summarize(&id).unwrap().changed_by_ai.is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1601 under design A1: A1, A2 and the AI's own revert of A2
+    /// leave A1 as the one step; Revert all from it counts that one AI
+    /// step and ends the review.
+    #[test]
+    fn t1701_revert_all_over_an_ais_own_revert_ends_the_review() {
+        let store = temp_store("t1701");
+        let id = users_job(&store);
+        let created = store.load(&id).unwrap();
+        let a1 = ai_change(&store, &id, 1);
+        ai_change(&store, &id, 2);
+        store.revert_last(&id, "claude", Some("back")).unwrap();
+        let review = store.pending_review(&id).expect("A1 waits");
+        assert_eq!(
+            review.steps,
+            vec![a1],
+            "A2 and the AI's revert are no steps"
+        );
+        assert_eq!(review.since_ts_ms, a1);
+        let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
+        assert_eq!(r.project, created);
+        assert_eq!(r.undone_ai, 1, "the one AI step that stood");
+        assert!(r.entry_ts_ms.is_some());
+        assert!(
+            store.pending_review(&id).is_none(),
+            "nothing waits after Revert all: {:?}",
+            store.pending_review(&id)
+        );
+        assert!(store.review_status(&id).unwrap().is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A1: an AI's revert of an accepted change undid work the user
+    /// accepted, so it is a step; Revert all puts the change back, and
+    /// over a covered AI step after the accept it does not bring that one
+    /// back.
+    #[test]
+    fn an_ais_revert_of_an_accepted_change_is_a_step() {
+        let store = temp_store("r17-accepted");
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        store.mark_reviewed(&id, a1).unwrap();
+        let accepted = store.load(&id).unwrap();
+        store.revert_last(&id, "claude", None).unwrap();
+        let ar = store.activity(&id).last().unwrap().ts_ms;
+        let review = store.pending_review(&id).expect("the AI's revert waits");
+        assert_eq!(review.steps, vec![ar]);
+        assert_eq!(review.since_ts_ms, ar);
+        let r = store
+            .revert_to_counted(&id, review.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.project, accepted, "the accepted change is back");
+        assert!(store.pending_review(&id).is_none());
+
+        // A2 after the accept, then the AI's revert to A1 (A1 and A2).
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        store.mark_reviewed(&id, a1).unwrap();
+        let accepted = store.load(&id).unwrap();
+        let a2 = ai_change(&store, &id, 2);
+        store.revert_to(&id, a1, "claude", None).unwrap();
+        let ar = store.activity(&id).last().unwrap().ts_ms;
+        let review = store.pending_review(&id).expect("the AI's revert waits");
+        assert_eq!(review.steps, vec![ar]);
+        assert_eq!(
+            review.since_ts_ms, a2,
+            "from the first covered entry after the accept"
+        );
+        let r = store
+            .revert_to_counted(&id, review.since_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert_eq!(r.project, accepted, "A1 back, A2 not");
+        assert!(store.pending_review(&id).is_none());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A2 (UX-1601, owner decision 2 of round 17): the app's Undo
+    /// of Revert all is a logged take-back. A1 stands and waits again, the
+    /// revert is marked undone; Redo (a take-back of the take-back) takes
+    /// A1 out again. With another entry logged after the revert nothing is
+    /// written and the answer is `revert_stale`.
+    #[test]
+    fn taking_back_a_review_revert_brings_the_steps_back() {
+        let store = temp_store("r17-takeback");
+        let id = users_job(&store);
+        let created = store.load(&id).unwrap();
+        let a1 = ai_change(&store, &id, 1);
+        let with_a1 = store.load(&id).unwrap();
+        let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
+        let revert = r.entry_ts_ms.expect("the revert was logged");
+        assert_eq!(store.activity(&id).last().unwrap().ts_ms, revert);
+        assert!(store.pending_review(&id).is_none());
+
+        let back = store.take_back_revert(&id, revert, USER_ACTOR).unwrap();
+        assert_eq!(back.project, with_a1);
+        assert_eq!(store.load(&id).unwrap(), with_a1);
+        let taken = back.entry_ts_ms.expect("the take-back was logged");
+        let last = store.activity(&id).last().unwrap().clone();
+        assert_eq!((last.ts_ms, last.undid_from), (taken, Some(revert)));
+        assert_eq!(last.kind(), Some(EntryKind::Revert));
+        assert_eq!(
+            store.pending_review(&id).expect("A1 waits again").steps,
+            vec![a1]
+        );
+        let items = store.activity_items(&id);
+        let mark = |ts: u64| items.iter().find(|a| a.ts_ms == ts).unwrap().undone;
+        assert!(!mark(a1), "A1 stands");
+        assert!(mark(revert), "the revert was taken back");
+        assert!(!mark(taken));
+        assert!(store.summarize(&id).unwrap().changed_by_ai.is_some());
+
+        // Redo: the take-back taken back, A1 out again.
+        let again = store.take_back_revert(&id, taken, USER_ACTOR).unwrap();
+        assert_eq!(again.project, created);
+        assert!(store.pending_review(&id).is_none());
+        assert!(store.summarize(&id).unwrap().changed_by_ai.is_none());
+
+        // Not the newest entry, or no revert: stale, nothing written.
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        let r = store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
+        let revert = r.entry_ts_ms.unwrap();
+        let a2 = ai_change(&store, &id, 2);
+        let file = fs::read(store.path(&id).unwrap()).unwrap();
+        let entries = store.activity(&id).len();
+        for ts in [revert, a2, 0] {
+            let e = store.take_back_revert(&id, ts, USER_ACTOR).unwrap_err();
+            assert_eq!(e.code(), "revert_stale", "{ts}: {e}");
+        }
+        assert_eq!(fs::read(store.path(&id).unwrap()).unwrap(), file);
+        assert_eq!(store.activity(&id).len(), entries);
+        let e = store
+            .take_back_revert("missing", 1, USER_ACTOR)
+            .unwrap_err();
+        assert_eq!(e.code(), "revert_stale");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Design A4 (UI-1601): A, B, the user's revert of B, then Revert all.
+    /// The revert of B is swallowed by Revert all, not taken back: B is
+    /// still out, so its row is not marked undone; A and B are.
+    #[test]
+    fn a_revert_that_a_later_revert_swallowed_is_not_marked_undone() {
+        let store = temp_store("r17-swallowed");
+        let id = users_job(&store);
+        let a = ai_change(&store, &id, 1);
+        let b = ai_change(&store, &id, 2);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(b))
+            .unwrap();
+        let rb = store.activity(&id).last().unwrap().ts_ms;
+        store.revert_to_counted(&id, a, USER_ACTOR, None).unwrap();
+        let items = store.activity_items(&id);
+        let mark = |ts: u64| items.iter().find(|x| x.ts_ms == ts).unwrap().undone;
+        assert!(mark(a) && mark(b));
+        assert!(!mark(rb), "the revert of B still stands for B being out");
+        assert!(!items[0].undone, "Revert all");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1602: the user's put-back stays when a revert from an earlier
+    /// entry runs over it (not marked undone), and is marked undone when
+    /// the revert names it (t1401's case).
+    #[test]
+    fn t1702_a_put_back_is_marked_undone_only_when_a_revert_names_it() {
+        let store = temp_store("t1702");
+        let (id, _p) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let put_back = store.activity(&id).last().unwrap().ts_ms;
+        let mark = |store: &Store| {
+            store
+                .activity_items(&id)
+                .iter()
+                .find(|a| a.ts_ms == put_back)
+                .map(|a| a.undone)
+                .unwrap()
+        };
+        assert!(!mark(&store));
+        let mut q = store.load(&id).unwrap();
+        q.notes = "later".into();
+        store
+            .save_as(Some(id.clone()), &q, USER_ACTOR, "Notes")
+            .unwrap();
+        // A revert from the recalculation runs over the put-back: it stays.
+        store
+            .revert_to_counted(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        assert!(!mark(&store), "a put-back that stays is not undone");
+        let _ = fs::remove_dir_all(&store.dir);
+
+        let store = temp_store("t1702b");
+        let (id, _p) = old_offer(&store);
+        let done = store.refresh_entry(&id).unwrap().expect("recalculated");
+        store
+            .restore_offer_result(&id, done.entry_ts_ms, USER_ACTOR, None)
+            .unwrap();
+        let put_back = store.activity(&id).last().unwrap().ts_ms;
+        store
+            .revert_to_counted(&id, put_back, USER_ACTOR, None)
+            .unwrap();
+        let undone = store
+            .activity_items(&id)
+            .iter()
+            .find(|a| a.ts_ms == put_back)
+            .map(|a| a.undone)
+            .unwrap();
+        assert!(undone, "the revert named the put-back");
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Designs A5 and A6 (UX-1602, HUNT-1601): the entry that created the
+    /// job is `created` in the history; the card keeps its AI mark while
+    /// AI steps stand after the user's revert of one, and loses it after
+    /// Revert all.
+    #[test]
+    fn the_creation_is_marked_and_the_ai_mark_follows_what_stands() {
+        let store = temp_store("r17-created");
+        let p = examples::find("gable").unwrap().project();
+        let id = store.save_as(None, &p, "claude", "Ex").unwrap();
+        ai_change(&store, &id, 1);
+        store.revert_last(&id, "claude", None).unwrap();
+        let items = store.activity_items(&id);
+        assert!(items.last().unwrap().created);
+        assert!(items[..items.len() - 1].iter().all(|a| !a.created));
+        let json = serde_json::to_value(&items[0]).unwrap();
+        assert!(json.get("created").is_none(), "{json}");
+
+        let id = users_job(&store);
+        let a1 = ai_change(&store, &id, 1);
+        ai_change(&store, &id, 2);
+        let a3 = ai_change(&store, &id, 3);
+        store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a3))
+            .unwrap();
+        let card = store.summarize(&id).unwrap();
+        assert_eq!(card.changed_by_ai.map(|a| a.summary).as_deref(), Some("A2"));
+        let listed = || {
+            let (all, _) = store.scan().unwrap();
+            let q = crate::library::Query {
+                by_ai: true,
+                ..Default::default()
+            };
+            crate::library::search(all, &q)
+                .unwrap()
+                .iter()
+                .any(|c| c.id == id)
+        };
+        assert!(listed());
+        store.revert_to_counted(&id, a1, USER_ACTOR, None).unwrap();
+        assert!(store.summarize(&id).unwrap().changed_by_ai.is_none());
+        assert!(!listed());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// TEST-1603: a fraction just above the current format is newer.
+    #[test]
+    fn t1703_a_fraction_above_the_current_format_is_newer() {
+        let v = crate::model::SCHEMA_VERSION;
+        assert_eq!(
+            newer_format(&format!("{{\"schema_version\":{v}.5,\"name\":\"x\"}}")),
+            Some(u64::from(v) + 1)
+        );
+        assert_eq!(
+            scan_version(format!("{{\"schema_version\":{v}.5,\"x\":[[[").as_bytes()),
+            Some(u64::from(v) + 1)
+        );
     }
 }

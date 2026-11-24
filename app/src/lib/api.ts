@@ -62,6 +62,8 @@ export interface RevertedChanges {
   undone_ai: number;
   /** The job file could not be read (another program damaged it) and the revert wrote over it (audit 2026-11-23 ERR-1502). */
   repaired?: boolean;
+  /** The revert entry just logged, null when nothing was written: the editor's Undo takes exactly this one back (`takeBackRevert`, UX-1601). */
+  entry_ts_ms?: number | null;
 }
 
 export interface StandardParams {
@@ -124,6 +126,8 @@ export const api = {
   revertAll: (id: string, tsMs: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs }),
   revertChanges: (id: string, tsMs: number) =>
     invoke<RevertedChanges>("revert_changes", { id, tsMs }).then((r) => r.project),
+  /** Takes back the review revert logged at `revertTs` (Undo / Redo of a Revert), itself logged; `revert_stale` when another entry is the latest by now (UX-1601). */
+  takeBackRevert: (id: string, revertTs: number) => invoke<RevertedChanges>("take_back_revert", { id, revertTs }),
   reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
   acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),

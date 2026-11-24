@@ -130,11 +130,15 @@ test.describe("round 16, part A: a Revert undoes the entry it is drawn on", () =
     });
     await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
     await expect.poll(() => page.evaluate(() => typeof (window as any).__answer)).toBe("function");
-    // The AI reverts its own latest step meanwhile: A1 A2 Ar, the banner showed 2,
-    // the AI's entries undone are 3 (undone counts 2 changes).
+    // The AI reverts its own latest step meanwhile: A1 A2 Ar, the banner showed 2.
+    // An AI's own revert inside the review is bookkeeping and A2 no longer
+    // stands, so only A1 is an AI step undone: nothing "reverted too"
+    // (audit 2026-11-24 ERR-1601, owner decision 1 of round 17; was a
+    // "reverted too: 1" notice).
     await mcp.call("revert_last_change", { id, summary: "Zpět zákazník" });
     await page.evaluate(() => (window as any).__answer(true));
     await waitForProject(id, (p) => !p.notes && p.job.customer === "");
-    await expect(app.toasts().filter({ hasText: cs("review.revertedMore", { n: 1 }) })).toHaveCount(1);
+    await noToast(app.toasts().filter({ hasText: cs("review.revertedMore", { n: 1 }) }), 1500, "a reverted-too notice");
+    await expect(review(page)).toHaveCount(0);
   });
 });

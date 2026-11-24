@@ -173,6 +173,19 @@ fn revert_changes(
     })
 }
 
+/// Takes back the review revert logged at `revert_ts` (the editor's Undo
+/// and Redo of a review's Revert), itself a logged revert, so the review
+/// reads it (audit 2026-11-24 UX-1601). `revert_stale` when another entry
+/// is the latest by now.
+#[tauri::command(async)]
+fn take_back_revert(
+    state: State<AppState>,
+    id: String,
+    revert_ts: u64,
+) -> CmdResult<store::RevertedChanges> {
+    guard(|| Ok(state.store().take_back_revert(&id, revert_ts, USER_ACTOR)?))
+}
+
 /// The AI changes of `id` waiting for review, with the version before them
 /// and what they did to the figures. Async like every command below that
 /// calculates a roof or copies files: a command without it runs on the
@@ -1200,6 +1213,7 @@ pub fn run() {
             restore_offer_result,
             revert_last_change,
             revert_changes,
+            take_back_revert,
             review_status,
             accept_changes,
             live_status,
@@ -1275,6 +1289,7 @@ mod tests {
             "review_status",
             "revert_last_change",
             "revert_changes",
+            "take_back_revert",
             "accept_changes",
             "save_project",
             "duplicate_project",

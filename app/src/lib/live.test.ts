@@ -389,8 +389,11 @@ describe("historyText (UI-803)", () => {
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       const ai = DICTS[locale]["ai.revertedEntry"];
-      // The user's revert of the AI's entry.
-      expect(historyText({ actor: "user", summary: "Reverted: Notes", undid_from: 20 }, log), locale).toBe(ai);
+      // The user's revert of the AI's one entry: named (UX-1603; was "AI changes reverted").
+      const one = DICTS[locale]["ai.revertedOne"].replace("{s}", DICTS[locale]["ai.quoted"].replace("{s}", "Notes"));
+      expect(historyText({ actor: "user", summary: "Reverted: Notes", undid_from: 20 }, log), locale).toBe(one);
+      // Several: the short sentence.
+      expect(historyText({ actor: "user", summary: "Reverted 2 changes since: Notes", undid_from: 20 }, log), locale).toBe(ai);
       // Of Tectora's recalculation: the sentence itself, no AI in it.
       const engine = historyText({ actor: "user", summary: `Reverted: ${RECALC}`, undid_from: 10 }, log);
       expect(engine, locale).not.toBe(ai);
@@ -490,5 +493,34 @@ describe("entryText of a revert's quoted part (ARCH-1501)", () => {
       expect(engine, locale).not.toContain(DICTS[locale]["ai.quoted"].replace("{s}", RECALC));
     }
     i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-24 UX-1603, design A4: the user's revert of one AI step is
+// named in the history as in its toast; the editor's Undo of a Revert (a
+// take-back) has its own sentence.
+describe("historyText of reverts of AI steps (UX-1603, UX-1601)", () => {
+  const log = [
+    { ts_ms: 40, actor: "user", summary: "Reverted: Reverted: Overhang 0.8.", undid_from: 30, kind: "revert" as const },
+    { ts_ms: 30, actor: "user", summary: "Reverted: Overhang 0.8.", undid_from: 20, kind: "revert" as const },
+    { ts_ms: 20, actor: "claude", summary: "Overhang 0.8.", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+  it("names the one step in every language and says a take-back", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const quoted = d["ai.quoted"].replace("{s}", "Overhang 0.8.");
+      expect(historyText(log[1], log), locale).toBe(d["ai.revertedOne"].replace("{s}", quoted));
+      expect(historyText(log[0], log), locale).toBe(d["ai.revertTakenBack"]);
+      expect(d["ai.revertTakenBack"], locale).not.toBe(d["ai.revertedEntry"]);
+    }
+    i18n.locale = "cs";
+  });
+  it("takes the core's kind when it is sent, null included (ARCH-1601)", () => {
+    expect(entryKind({ actor: "user", kind: null, summary: "Reverted 0 changes since: x" })).toBeNull();
+    expect(entryKind({ actor: "user", kind: null, summary: "Reverted: x" })).toBeNull();
+    // An item without the field (an older bridge): the rule from its fields.
+    expect(entryKind({ actor: "user", summary: "Reverted: x" })).toBe("revert");
   });
 });

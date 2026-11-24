@@ -260,6 +260,16 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
                     .map_err(Fail::from),
             )
         }
+        // The editor's Undo / Redo of a review revert, logged (UX-1601).
+        "take_back_revert" => {
+            let ts = arg::<u64>(a, "revertTs").ok()?;
+            Some(
+                store
+                    .take_back_revert(&id, ts, USER_ACTOR)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
         _ => None,
     }
 }

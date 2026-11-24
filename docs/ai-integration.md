@@ -56,7 +56,7 @@ programs; Codex in the ChatGPT desktop app can.
 | `place_item` | Put one dormer, chimney, window or opening at distances on its roof face: from the eave (along the slope) and from the left or right side edge, as the editor's position fields and plan dimensions show them |
 | `roof_helper` | Calculation helpers (triangle, two parallels, point in space, merge, hip/valley, build-up, round roof), preview or apply |
 | `update_job`, `store_result` | Job data and status; the stored result for the offer |
-| `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History, review state (accepted or still pending in the app, effect on the figures), undo (`revert_last_change` with `ts_ms` undoes only that very change, else `revert_stale`), focus in the app |
+| `get_history`, `get_review`, `revert_to`, `revert_last_change`, `show_project` | History (with `kind`, `undid_from`, `undone`, `created`, `pending_review` per entry: an entry with `undone` is not in the design), review state (accepted or still pending in the app, effect on the figures), undo (`revert_last_change` with `ts_ms` undoes only that very change, else `revert_stale`; `revert_to` with a revert's `ts_ms` takes that revert back), focus in the app |
 | `restore_offer_result` | Puts an offer's own stored figures back in place of Tectora's recalculation of them, and nothing else (the editor's "Put the offer's figures back") |
 | `duplicate_project`, `delete_project`, `list_examples` | Library; `duplicate_project` with `job` starts a new job from a past roof; `delete_project` moves the job to the library's trash (`.trash`, 30 days) |
 | `list_deleted`, `restore_project` | Deleted jobs and removed files in the trash, and bringing them back |
@@ -138,6 +138,42 @@ stay a `folder_request` the user allows or keeps.
   kept in the library (`.activity/<id>.review.json`), so it survives a restart
   and the agent can read it with `get_review`; only the user accepts.
   The AI tab keeps the full history.
+- **One rule for the review** (audit 2026-11-24, round 17 design A). The
+  change log is the only record of what is in the job: an AI change waits
+  for review exactly while it **stands** (after the last Accept, and no
+  revert that stands undid it, `undone_by`). The banner, the AI tab's
+  marks, the library's AI mark (`changed_by_ai`, the newest change that
+  stands), MCP `get_review` / `get_history` / `list_projects by_ai` and
+  Revert all's `undone_ai` all use that one predicate (`store::waits`). An
+  AI's own revert inside the review is bookkeeping, no step: when the AI
+  took everything back the banner closes by itself (owner decision 1 of
+  round 17). An AI's revert that reaches below the last Accept undid
+  accepted work and is a step; Revert all then starts at the first entry
+  it covers after the Accept (`since_ts_ms`), so it never brings a covered
+  AI step back. A Revert that writes nothing says "nothing to revert".
+- **Undo and Redo of a Revert are logged** (owner decision 2 of round 17,
+  UX-1601). Revert all and a one-step Revert answer the revert entry they
+  logged (`RevertedChanges.entry_ts_ms`); the editor's Ctrl+Z over that
+  step calls `take_back_revert` (`Store::take_back_revert`: the entry must
+  be a revert and the newest one, else `revert_stale` with nothing
+  written), a revert of the revert, so the AI's steps stand and wait for
+  review again; Redo takes the take-back back. Ctrl+Z over an AI's outside
+  save is the banner's Revert from its oldest new entry. No Undo moves AI
+  work in or out of the job without a log entry. MCP has the same as
+  `revert_to` with the revert's `ts_ms`. The put-back of the offer's
+  figures stays an ordinary undo step (UI-802).
+- **History marks.** `ActivityItem.undone`: a change a standing revert
+  undid; a revert only when it was taken back (the revert that undid it
+  starts later than its own range), not when a later revert from further
+  back swallowed it (its changes are still out). `created`: the entry that
+  created the job, with no version before it; the AI tab draws no Revert on
+  it, and Revert all goes back to the job as it was right after the
+  creation. When only an AI's creation of the job waits, the banner offers
+  Accept or Delete job (to the trash, restorable for 30 days; owner
+  decision 3 of round 17). The user's revert of one AI step reads "AI
+  change reverted: “…”", a take-back "Revert of AI changes taken back".
+  `kind` is always sent (`null` for a change, ARCH-1601); the app reads a
+  summary's words only for an item without the field.
 - A revert keeps the edits made after the reverted step (the app's own
   saves are not logged): the store merges the inverse of the step onto the
   current file, using the version the step saved (`after`) as the base. When
