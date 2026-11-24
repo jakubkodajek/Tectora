@@ -13,8 +13,10 @@
 //           out when the check answers) cannot be reached from the UI: the
 //           banner's Revert waits for the check (busy_edits), and the editor
 //           is inert while a Revert is out.
+// TEST-2007 an older answer of the trash listing or of a job's files never
+//           replaces a newer one (held-answer tests of the round-20 guards)
 import type { Page } from "@playwright/test";
-import { bridge, createExample, expect, loadProject, test } from "./fixtures";
+import { bridge, createExample, expect, loadProject, scratchFile, test } from "./fixtures";
 import { clickPlan, openEditor, tool } from "./editor";
 import { cs, LOCALES, tr } from "./i18n";
 import { hold, timeline } from "./review";
@@ -171,5 +173,61 @@ test.describe("round 21, TEST-2010: a face whose check answers late", () => {
     await expect(points).toHaveText(cs("place.points", { n: 4 }));
     await app.saved();
     expect((await loadProject(id)).manual_faces ?? []).toHaveLength(0);
+  });
+});
+
+test.describe("round 21, TEST-2007: older answers of the trash and the files", () => {
+  /** Holds only the first answer to `cmd` after the call. */
+  const holdFirst = (page: Page, cmd: string) => {
+    let armed = true;
+    return hold(page, cmd, () => {
+      if (!armed) return false;
+      armed = false;
+      return true;
+    });
+  };
+
+  test("the trash keeps the newest listing when an older one answers last (TEST-2007, U03)", async ({ app, page, mcp }) => {
+    const a = await createExample("gable", "R21 koš A");
+    const b = await createExample("hip", "R21 koš B");
+    await app.open({ prefs: { followAi: false } });
+    await page.getByTestId("lib-trash").click();
+    const list = () => page.getByTestId("trash-list");
+    const held = await holdFirst(page, "list_deleted");
+    const reads = timeline(page, "list_deleted");
+    await mcp.call("delete_project", { id: a, summary: "Smazat A" });
+    await expect.poll(() => held.held(), { timeout: 10_000 }).toBe(1);
+    // A newer listing (both deleted) is shown while the older one is held.
+    await mcp.call("delete_project", { id: b, summary: "Smazat B" });
+    await expect(list()).toContainText("R21 koš B", { timeout: 10_000 });
+    await expect(list()).toContainText("R21 koš A");
+    held.release();
+    await expect.poll(() => reads.answered.length >= reads.sent.length, { timeout: 10_000 }).toBe(true);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50))));
+    await expect(list()).toContainText("R21 koš B");
+    await expect(page.getByTestId("lib-trash")).toContainText("2");
+  });
+
+  test("a job's files keep the newest listing when an older one answers last (TEST-2007, U04)", async ({ app, page }) => {
+    const id = await createExample("gable", "R21 soubory");
+    await bridge("attach_files", { id, paths: [scratchFile("a.pdf", "%PDF"), scratchFile("b.pdf", "%PDF")] });
+    await openEditor(app, "R21 soubory");
+    await page.locator("aside .tabs").getByRole("tab", { name: cs("dock.job") }).click();
+    const files = page.locator("aside .job ul.files li");
+    await expect(files).toHaveCount(2);
+    await app.answerConfirm(true);
+    // The listing after removing a.pdf is held (it lists b.pdf) ...
+    const held = await holdFirst(page, "list_attachments");
+    const reads = timeline(page, "list_attachments");
+    await files.filter({ hasText: "a.pdf" }).getByRole("button", { name: cs("files.remove") }).click();
+    await expect.poll(() => held.held(), { timeout: 10_000 }).toBe(1);
+    // ... and the one after removing b.pdf too answers first: no files.
+    await files.filter({ hasText: "b.pdf" }).getByRole("button", { name: cs("files.remove") }).click();
+    await expect(files).toHaveCount(0, { timeout: 10_000 });
+    held.release();
+    await expect.poll(() => reads.answered.length >= reads.sent.length, { timeout: 10_000 }).toBe(true);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50))));
+    await expect(files).toHaveCount(0);
+    expect(await bridge<unknown[]>("list_attachments", { id })).toEqual([]);
   });
 });
