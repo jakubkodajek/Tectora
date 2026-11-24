@@ -110,7 +110,7 @@ test.describe("round 18: a revert is read by what it did", () => {
     await expect(errorToasts(page)).toHaveCount(0);
   });
 
-  test("a Revert of a change the user already typed back ends the review (ERR-1701)", async ({ app, page, mcp }) => {
+  test("typing the AI's change back by hand ends the review (ERR-1701, ADR 0007)", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "R18 nic");
     await openEditor(app, "R18 nic");
     await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
@@ -119,8 +119,9 @@ test.describe("round 18: a revert is read by what it did", () => {
     const job = await bridge<any>("load_project", { id });
     await bridge("save_project_checked", { id, project: { ...job, notes: "" }, base: job });
     await waitForProject(id, (p) => !p.notes);
-    await app.answerConfirm(true);
-    await review(page).getByRole("button", { name: cs("ai.revert"), exact: true }).click();
+    // The job is as the user settled it again: the review ends by itself,
+    // with no Revert to press (ADR 0007, owner decision 1 of round 20; was:
+    // the banner's Revert logged a revert that ended it).
     await expect(review(page)).toHaveCount(0);
     expect((await mcp.call("get_review", { id })).pending).toBeNull();
     await expect(errorToasts(page)).toHaveCount(0);

@@ -1644,9 +1644,11 @@
       async () => {
         const oldest = steps[steps.length - 1];
         if (all && oldest) {
-          // From where the core says Revert all starts (`since_ts_ms`: below
-          // an AI's revert of accepted work, ERR-1601), or after the creation.
-          const r = await api.revertAll(id, createdFirst || review?.since_ts_ms == null ? oldest.ts_ms : review.since_ts_ms);
+          // The review the banner showed (`since_ts_ms`): the core writes the
+          // job as the user last settled it, or answers `revert_stale` when
+          // that review is over by now (ADR 0007, ERR-1905). An AI's new job
+          // keeps its creation.
+          const r = review ? await api.revertReview(id, review.since_ts_ms) : await api.revertAll(id, oldest.ts_ms);
           undone = r.undone_ai;
           repaired = !!r.repaired;
           logged = r.entry_ts_ms ?? null;

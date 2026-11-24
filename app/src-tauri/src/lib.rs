@@ -162,17 +162,25 @@ fn revert_last_change(
 /// the number of entries undone (Revert all, audit 2026-11-23 ERR-1002).
 /// `seen_ts`: the newest entry the editor has applied (its Undo over an
 /// AI's save); `revert_stale` when a newer one is there (ERR-1704).
+/// `review`: the banner's Revert all of the review starting at `ts_ms`
+/// (its `since_ts_ms`), which writes the review's baseline and answers
+/// `revert_stale` when that review is not open any more (ADR 0007,
+/// audit 2026-11-24 ERR-1905).
 #[tauri::command(async)]
 fn revert_changes(
     state: State<AppState>,
     id: String,
     ts_ms: u64,
     seen_ts: Option<u64>,
+    review: Option<bool>,
 ) -> CmdResult<store::RevertedChanges> {
     guard(|| {
-        Ok(state
-            .store()
-            .revert_to_counted_seen(&id, ts_ms, seen_ts, USER_ACTOR, None)?)
+        let store = state.store();
+        Ok(if review == Some(true) {
+            store.revert_review(&id, ts_ms, USER_ACTOR, None)?
+        } else {
+            store.revert_to_counted_seen(&id, ts_ms, seen_ts, USER_ACTOR, None)?
+        })
     })
 }
 

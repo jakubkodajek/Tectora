@@ -84,6 +84,7 @@ const KNOWN = new Set([
   "revert_stale",
   "revert_out_of_limits",
   "revert_out_of_limits_damaged",
+  "revert_outside",
   "busy",
   "busy_edits",
   "busy_open",

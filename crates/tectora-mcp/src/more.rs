@@ -3576,6 +3576,67 @@ mod tool_coverage {
         assert_eq!(h[2]["pending_review"], true, "{history}");
     }
 
+    /// Audit 2026-11-24 ARCH-1901 over MCP: the AI takes accepted work out,
+    /// makes 60 more changes (past the 50 entries a log keeps) and reverts
+    /// to one of them: `get_review` still waits, and `get_history` marks
+    /// exactly the listed steps.
+    #[test]
+    fn a_review_past_the_log_trim_still_waits_over_mcp() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "A1", "summary": "A1" }),
+        );
+        let a1 = s.store.activity(&id).last().unwrap().ts_ms;
+        s.store.mark_reviewed(&id, a1).unwrap();
+        call(
+            &mut s,
+            "revert_last_change",
+            json!({ "id": id, "summary": "Out." }),
+        );
+        for i in 1..=60 {
+            call(
+                &mut s,
+                "update_job",
+                json!({ "id": id, "customer": format!("C{i}"), "summary": format!("C{i}") }),
+            );
+        }
+        let old = s.store.activity(&id)[1].ts_ms;
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": old, "summary": "Back." }),
+        );
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        let steps = review["pending"]["steps"]
+            .as_array()
+            .cloned()
+            .expect("waits");
+        assert!(!steps.is_empty(), "{review}");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let marked: Vec<Value> = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["pending_review"] == true)
+            .map(|e| e["ts_ms"].clone())
+            .collect();
+        let mut want = steps.clone();
+        want.reverse();
+        assert_eq!(marked, want, "{history}");
+        // The user's Revert all ends at the accepted job.
+        let since = review["pending"]["since_ts_ms"].as_u64().unwrap();
+        let r = s.store.revert_review(&id, since, USER_ACTOR, None).unwrap();
+        assert_eq!(
+            (r.project.notes.as_str(), r.project.job.customer.as_str()),
+            ("A1", "")
+        );
+    }
+
     /// ARCH-1701 / TEST-1708: the AI's `revert_to` of the user's revert of
     /// a change the user accepted puts that change back, so it waits for
     /// review: `get_review.pending` names the AI's entry, and

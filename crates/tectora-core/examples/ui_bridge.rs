@@ -256,11 +256,17 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
         "revert_changes" => {
             let ts = arg::<u64>(a, "tsMs").ok()?;
             let seen = arg::<Option<u64>>(a, "seenTs").ok()?;
+            // `review`: the banner's Revert all of the review starting at
+            // `tsMs` (ADR 0007, ERR-1905), as the app.
+            let review = arg::<Option<bool>>(a, "review").ok().flatten() == Some(true);
             Some(
-                store
-                    .revert_to_counted_seen(&id, ts, seen, USER_ACTOR, None)
-                    .map(|r| to_json(r).unwrap_or(Value::Null))
-                    .map_err(Fail::from),
+                if review {
+                    store.revert_review(&id, ts, USER_ACTOR, None)
+                } else {
+                    store.revert_to_counted_seen(&id, ts, seen, USER_ACTOR, None)
+                }
+                .map(|r| to_json(r).unwrap_or(Value::Null))
+                .map_err(Fail::from),
             )
         }
         // The editor's Undo / Redo of a review revert, logged (UX-1601).

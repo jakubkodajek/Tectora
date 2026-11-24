@@ -1,6 +1,6 @@
 # ADR-0006: The AI review follows the job's version, not a per-entry rule
 
-- **Status:** Proposed
+- **Status:** Proposed; its mechanism is superseded by ADR-0007 (Proposed)
 - **Date:** 2026-11-24
 - **Deciders:** Jakub Kodajek (to accept)
 
