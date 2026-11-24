@@ -1097,6 +1097,14 @@ const cs: Dict = {
   "review.confirmRevertAllCreated": "Vrátit kroky AI ({n})? Zakázka se vrátí do stavu, v jakém ji AI založila.",
   // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
   "ai.receivedUser": "Odesílatel",
+  "res.warn.manual_face_crosses": "Ruční plocha {n} má obrys, který kříží sám sebe (rohy nejsou zadané postupně po obvodu), proto se její výměra počítá jako rozdíl dvou částí a nesedí. Nakreslete ji znovu s rohy postupně po obvodu.",
+  "manual.refused.face_crosses": "Plocha se neuzavřela: její obrys kříží sám sebe. Klikejte na rohy postupně po obvodu plochy.",
+  "manual.refused.face_corners": "Plocha se neuzavřela: potřebuje aspoň 3 různé rohy.",
+  "manual.refused.pitch_range": "Plocha se neuzavřela: sklon musí být 0 až 89,9°.",
+  "editor.undoing": "Vracím krok zpět…",
+  "editor.redoing": "Provádím krok znovu…",
+  "review.deleteUnchecked": "Zakázka se nesmazala: nepodařilo se ověřit, zda do ní AI mezitím nepřidala další krok. Zkuste to znovu.",
+  "home.restoreGone": "Zakázka „{name}“ už v koši není: mezitím ji někdo obnovil nebo odstranil.",
 };
 
 const sk: Dict = {
@@ -2185,6 +2193,14 @@ const sk: Dict = {
   "review.confirmRevertAllCreated": "Vrátiť kroky AI ({n})? Zákazka sa vráti do stavu, v akom ju AI založila.",
   // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
   "ai.receivedUser": "Odosielateľ",
+  "res.warn.manual_face_crosses": "Ručná plocha {n} má obrys, ktorý kríži sám seba (rohy nie sú zadané postupne po obvode), preto sa jej výmera počíta ako rozdiel dvoch častí a nesedí. Nakreslite ju znova s rohmi postupne po obvode.",
+  "manual.refused.face_crosses": "Plocha sa neuzavrela: jej obrys kríži sám seba. Klikajte na rohy postupne po obvode plochy.",
+  "manual.refused.face_corners": "Plocha sa neuzavrela: potrebuje aspoň 3 rôzne rohy.",
+  "manual.refused.pitch_range": "Plocha sa neuzavrela: sklon musí byť 0 až 89,9°.",
+  "editor.undoing": "Vraciam krok späť…",
+  "editor.redoing": "Vykonávam krok znova…",
+  "review.deleteUnchecked": "Zákazka sa nezmazala: nepodarilo sa overiť, či do nej AI medzitým nepridala ďalší krok. Skúste to znova.",
+  "home.restoreGone": "Zákazka „{name}“ už v koši nie je: medzitým ju niekto obnovil alebo odstránil.",
 };
 
 const en: Dict = {
@@ -3273,6 +3289,14 @@ const en: Dict = {
   "review.confirmRevertAllCreated": "Revert {n} AI steps? The job goes back to how the AI created it.",
   // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
   "ai.receivedUser": "Sender",
+  "res.warn.manual_face_crosses": "Manual face {n} has an outline that crosses itself (its corners are not in order around it), so its area is counted as the difference of two parts and is wrong. Draw it again with the corners in order around the face.",
+  "manual.refused.face_crosses": "The face was not closed: its outline crosses itself. Click the corners in order around the face.",
+  "manual.refused.face_corners": "The face was not closed: it needs at least 3 different corners.",
+  "manual.refused.pitch_range": "The face was not closed: the pitch must be 0 to 89.9°.",
+  "editor.undoing": "Undoing…",
+  "editor.redoing": "Redoing…",
+  "review.deleteUnchecked": "The job was not deleted: it could not be checked whether the AI added another step meanwhile. Try again.",
+  "home.restoreGone": "Job “{name}” is no longer in the trash: it was restored or removed meanwhile.",
 };
 
 const de: Dict = {
@@ -4361,6 +4385,14 @@ const de: Dict = {
   "review.confirmRevertAllCreated": "{n} KI-Schritte verwerfen? Der Auftrag wird auf den Stand zurückgesetzt, in dem die KI ihn angelegt hat.",
   // The sender of a received job, in its history (audit 2026-11-24 UX-1801).
   "ai.receivedUser": "Absender",
+  "res.warn.manual_face_crosses": "Die manuelle Fläche {n} hat einen Umriss, der sich selbst kreuzt (die Ecken liegen nicht der Reihe nach am Rand), daher wird ihre Fläche als Differenz zweier Teile gezählt und stimmt nicht. Zeichnen Sie sie mit den Ecken der Reihe nach am Rand neu.",
+  "manual.refused.face_crosses": "Die Fläche wurde nicht geschlossen: Ihr Umriss kreuzt sich selbst. Klicken Sie die Ecken der Reihe nach am Rand der Fläche an.",
+  "manual.refused.face_corners": "Die Fläche wurde nicht geschlossen: Sie braucht mindestens 3 verschiedene Ecken.",
+  "manual.refused.pitch_range": "Die Fläche wurde nicht geschlossen: Die Neigung muss 0 bis 89,9° betragen.",
+  "editor.undoing": "Wird rückgängig gemacht…",
+  "editor.redoing": "Wird wiederholt…",
+  "review.deleteUnchecked": "Der Auftrag wurde nicht gelöscht: Es ließ sich nicht prüfen, ob die KI inzwischen einen weiteren Schritt hinzugefügt hat. Versuchen Sie es erneut.",
+  "home.restoreGone": "Auftrag „{name}“ ist nicht mehr im Papierkorb: Er wurde inzwischen wiederhergestellt oder entfernt.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

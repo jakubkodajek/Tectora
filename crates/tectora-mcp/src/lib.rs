@@ -25,6 +25,8 @@ use tectora_core::{
     Chimney, EdgeDef, HalfHip, JobStatus, PitchBreak, Project, RoofPart, RoofWindow,
 };
 
+#[cfg(test)]
+mod bound_tests;
 mod drawings;
 #[cfg(test)]
 mod input_tests;
@@ -52,6 +54,10 @@ pub struct Server {
 const COMMIT_CALC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type ToolResult = Result<Value, String>;
+
+/// The answer of a tool that needs the roof of a job too complex to
+/// calculate within the bound of a write (HUNT-1802).
+const ROOF_TOO_LONG: &str = "the roof of this job takes too long to calculate here, so this tool cannot use it; nothing was saved. Call calc on the job (it has its own limit), tell the user and simplify the job (remove copies of buildings that lie on top of each other)";
 
 fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a Value, String> {
     args.get(key)
@@ -227,6 +233,10 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             w.value
         ),
         WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof, outside the other roof's planes, still adds area and lines; check whether it is a copy left on its original or a building added twice. A building that marks part of a roof face (for example another material) is meant: keep it and give it the pitch and eave height of the roof around it".to_string(),
+        WarningKind::ManualFaceCrosses => format!(
+            "hand-drawn face {} (0-based) has an outline that crosses itself (its corners are not in order around the face), so its area counts the difference of its two lobes, not the face; the area is kept as counted. Tell the user and set the face again with set_manual, corners in order",
+            w.face.unwrap_or(0)
+        ),
         WarningKind::MergedWalls => {
             let (kept, ignored) = (w.edges.first(), w.edges.get(1));
             format!(
@@ -247,6 +257,9 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     }
     if let Some(i) = w.item {
         v["item"] = json!(i);
+    }
+    if let Some(f) = w.face {
+        v["face"] = json!(f);
     }
     v
 }
@@ -432,8 +445,20 @@ pub(crate) fn replaced_note(out: &mut Value, repaired: bool) {
     }
 }
 
-fn quantities(project: &Project) -> Value {
-    quantities_of(&tectora_core::openings::generate_project(project), project)
+impl Server {
+    /// The job's quantities for an answer, or null with a note when the
+    /// roof takes too long to calculate here ([`Server::roof_of`]).
+    fn quantities_into(&self, out: &mut Value, project: &Project) {
+        match self.roof_of(project) {
+            Some(geos) => out["quantities"] = quantities_of(&geos, project),
+            None => {
+                out["quantities"] = Value::Null;
+                out["calculation_note"] = json!(
+                    "the roof of this job takes too long to calculate here, so no figures are given. Call calc on it (it has its own limit) and tell the user."
+                );
+            }
+        }
+    }
 }
 
 /// [`quantities`] of roofs already calculated: one request calculates the
@@ -1202,7 +1227,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer` or `item` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `manual_face_crosses` (the hand-drawn face `face` index has an outline that crosses itself, corners out of order, so its area counts the difference of its two lobes; redraw it with the corners in order), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1252,6 +1277,32 @@ impl Server {
         } else {
             self.within(f)
         }
+    }
+
+    /// The roofs of `project` for a tool that calculates beside its own
+    /// work (the commit's figures, a snap to the roof, a dormer's host):
+    /// within the work bound of `tectora_core::work`, and for a heavy job
+    /// within the commit timeout too. `None` when the job is too complex to
+    /// calculate here, so no MCP call waits minutes for a roof (audit
+    /// 2026-11-24 HUNT-1802). Every roof calculation of a tool outside a
+    /// whole-call bound goes through here or [`Server::host_roof_of`]
+    /// (`every_roof_calculation_of_a_tool_is_bounded`).
+    pub(crate) fn roof_of(&self, project: &Project) -> Option<Vec<RoofGeometry>> {
+        let p = project.clone();
+        self.bounded(project, move || {
+            tectora_core::work::calculate(|| tectora_core::openings::generate_project(&p)).ok()
+        })
+        .flatten()
+    }
+
+    /// [`Server::roof_of`] without the dormers (`dormers::host_roof`): the
+    /// roof a dormer sits on.
+    pub(crate) fn host_roof_of(&self, project: &Project) -> Option<Vec<RoofGeometry>> {
+        let p = project.clone();
+        self.bounded(project, move || {
+            tectora_core::work::calculate(|| tectora_core::edit::dormers::host_roof(&p)).ok()
+        })
+        .flatten()
     }
 
     /// Runs `f` on its own thread and waits for it at most the commit
@@ -1419,10 +1470,7 @@ impl Server {
             }
         };
         let project = &project;
-        let p = project.clone();
-        let geos = self.bounded(project, move || {
-            tectora_core::openings::generate_project(&p)
-        });
+        let geos = self.roof_of(project);
         self.live_follow("changed", None, summary.to_string(), &id);
         let changes = before
             .as_ref()
@@ -2189,7 +2237,8 @@ impl Server {
                     format!("Reverted the latest change: {summary}"),
                     &id,
                 );
-                let mut out = json!({ "id": id, "reverted": true, "quantities": quantities(p) });
+                let mut out = json!({ "id": id, "reverted": true });
+                self.quantities_into(&mut out, p);
                 replaced_note(&mut out, r.repaired);
                 Ok(out)
             }

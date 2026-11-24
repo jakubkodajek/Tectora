@@ -57,4 +57,34 @@ describe("inertBut", () => {
     action.destroy();
     expect(observed).toHaveLength(0);
   });
+
+  // UI-1801: a review call keeps `.review` live and closes `.views`; when
+  // the call ends `on` and `keep` flip in one update. Off means every child
+  // is live again, whatever `keep` names.
+  it("opens every child when it turns off, also when keep changes in the same update", () => {
+    const views = new El("views");
+    const review = new El("review");
+    const node = { children: [views, review] };
+    const action = inertBut(node as unknown as HTMLElement, { on: false, keep: "views" });
+    action.update({ on: true, keep: "review" });
+    expect([views.inert, review.inert]).toEqual([true, false]);
+    action.update({ on: false, keep: "views" });
+    expect([views.inert, review.inert]).toEqual([false, false]);
+    // A child the observer reports after the end stays live too.
+    const later = new El("bar");
+    added(node, later);
+    expect([views.inert, review.inert, later.inert]).toEqual([false, false, false]);
+    action.destroy();
+  });
+
+  it("moves the live child when keep changes while it is on", () => {
+    const views = new El("views");
+    const review = new El("review");
+    const node = { children: [views, review] };
+    const action = inertBut(node as unknown as HTMLElement, { on: true, keep: "views" });
+    expect([views.inert, review.inert]).toEqual([false, true]);
+    action.update({ on: true, keep: "review" });
+    expect([views.inert, review.inert]).toEqual([true, false]);
+    action.destroy();
+  });
 });

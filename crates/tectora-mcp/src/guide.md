@@ -97,7 +97,9 @@ The tools cover every operation of the Tectora editor:
   face only adds its area: it is no building and calculates no roof. When a
   footprint was traced as a face, `face_to_part` turns it into a building
   in one change. A face pitch is 0 to 89.9 degrees and a typed line length
-  0 or more; anything else is refused.
+  0 or more; anything else is refused. Give a face's corners in order
+  around it: an outline that crosses itself (a bow tie) is refused, and a
+  stored one gets the `manual_face_crosses` warning (its `face` index).
 - Single objects (dormers, chimneys, windows, openings, hand-drawn lines and
   faces): `transform_items` moves, rotates (about the object's centre) or
   copies them, as the user drags them in the plan or uses their right-click
@@ -191,7 +193,13 @@ The tools cover every operation of the Tectora editor:
   the user, do not create a new job beside one. A tool on such a job says
   why it cannot be opened. A job whose roof takes too long to calculate for
   the list comes with `figures_pending: true` and `roof_area_m2: null`; use
-  `calc` on it for its figures. `parts_without_roof` counts the buildings
+  `calc` on it for its figures. On such a job a write answers within its
+  bound: `quantities: null` with a `calculation_note`; `set_manual` saves
+  its lines without snapping to the roof (`snap_note`), a
+  `transform_items` move does not follow the roof (`follow_roof_note`),
+  and `add_dormer`, `update_dormer`, `roof_helper` points and a
+  `view_drawing` overlay answer "takes too long to calculate here" and
+  save nothing. Tell the user; the job needs simplifying. `parts_without_roof` counts the buildings
   without a roof, those the core gave none for and those left out for
   their input (`calc.problems` of the part, a doubled corner, a refused
   pitch): as many as `parts` and no hand-drawn face, the roof is not
@@ -403,7 +411,10 @@ they need no fix. `not_calculated_by_core` is a warning: the app marks
 the results for it, so have the user check that roof. `covered`: the part has no roof
 of its own because another part covers it; move or delete one of them.
 `cut_exceeds_face`: a face lost more than it has (a window larger than its
-face, or joined buildings), so the area is too small. `dormer_off_roof`: the
+face, or joined buildings), so the area is too small.
+`manual_face_crosses`: the hand-drawn face `face` (0-based) has an outline
+that crosses itself, so its area is the difference of its two lobes; ask
+the user and set it again with its corners in order. `dormer_off_roof`: the
 dormer (`dormer`, index from 0) sits on no roof face and is left out of the
 result; move it onto the roof or delete it. `window_off_roof`,
 `chimney_off_roof`, `opening_off_roof`: that window, chimney or opening

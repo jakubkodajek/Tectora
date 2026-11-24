@@ -9,6 +9,7 @@
   import PlaceBar from "./PlaceBar.svelte";
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
+  import { reviewStatusKey, type ReviewPress } from "./reviewstatus";
   import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
@@ -154,6 +155,8 @@
   });
   /** Narrow windows only: whether the side panel is expanded over the views. */
   let dockOpen = $state(false);
+  /** The side panel is a drawer over the views (the window's CSS breakpoint, `max-width: 900px`). */
+  const narrowDock = () => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches;
 
   function showDock(d: typeof dock) {
     dockOpen = dock !== d || !dockOpen;
@@ -566,10 +569,18 @@
    */
   /** The last read of the history went through: `activity` is the log as it is (for `seenTs`, design B). */
   let activityOk = false;
+  /** The last read of the review status succeeded (a failed one reads as "nothing waits"). */
+  let reviewRead = true;
   async function refreshActivity(hold?: () => boolean): Promise<boolean> {
     try {
-      const [a, r, rec] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null), api.resultRecalculation(id).catch(() => null)]);
+      let reviewFailed = false;
+      const [a, r, rec] = await Promise.all([
+        api.projectActivity(id),
+        api.reviewStatus(id).catch(() => ((reviewFailed = true), null)),
+        api.resultRecalculation(id).catch(() => null),
+      ]);
       if (hold?.()) return false;
+      reviewRead = !reviewFailed;
       activity = a;
       review = r;
       recalculation = rec;
@@ -620,8 +631,17 @@
     // (UI-1702, design E).
     await refreshActivity();
     if (destroyed) return;
-    if (pendingList.some((a) => !a.created)) {
-      info(t("review.deleteChanged"));
+    // A failed read is "could not check", not "nothing waits": nothing is
+    // deleted (audit 2026-11-24 errors To-check 2).
+    const unchecked = !activityOk || !reviewRead;
+    if (unchecked || pendingList.some((a) => !a.created)) {
+      info(t(unchecked ? "review.deleteUnchecked" : "review.deleteChanged"));
+      // The pressed Delete job may be gone (the new step brings Revert):
+      // the focus goes to the banner, not to the page (UI-1804).
+      await tick();
+      if (destroyed) return;
+      if (bannerEl?.isConnected) bannerEl.focus();
+      else document.getElementById(dockIds.tab(dock))?.focus();
       return;
     }
     deleted = true;
@@ -1132,7 +1152,17 @@
         if (pushHistory() && fresh.length) undoVia[at] = { from: fresh[fresh.length - 1].ts_ms };
         // Not while the user types in the dock: switching the tab would
         // remove the field and the typed text with it (UI-002).
-        if (pending && !typingInDock()) dock = "ai";
+        if (pending && !typingInDock()) {
+          dock = "ai";
+          // A drawer over the banner (narrow window): closed, so the
+          // banner's Accept and Revert show; the AI tab is the one it
+          // opens with (UI-1805).
+          if (dockOpen && narrowDock()) {
+            const inDock = !!document.activeElement?.closest("aside");
+            dockOpen = false;
+            if (inDock) void tick().then(() => bannerEl?.isConnected && bannerEl.focus());
+          }
+        }
         retryFailedSave();
       }
       recalc();
@@ -1430,7 +1460,6 @@
     pendingEdits.size === 0 && saveState === "saved" && !drag.active && !isTyping(document.activeElement) && questions === 0 && !menu && openModals() === 0;
 
   /** What a press is, for its notices: Revert of several steps has its own (plural) title (UI-1301). */
-  type ReviewPress = "revert" | "revertAll" | "restoreOffer" | "undo" | "redo";
 
   function reviewTransaction(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void): Promise<void> {
     if (reviewing.active || reviewPress) return Promise.resolve();
@@ -1502,7 +1531,7 @@
    * the undo history, a new step when not given.
    */
   function runReview(what: ReviewPress, name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void) {
-    reviewWhat = what === "restoreOffer" ? "restoreOffer" : "revert";
+    reviewWhat = what;
     return reviewing.run(async () => {
       try {
         clearTimeout(saveTimer);
@@ -2173,12 +2202,36 @@
     manualDraft = [...manualDraft, p];
   }
 
-  /** Closes the face being drawn (a click on its first corner, Enter or the bar's Close, UX-010). */
-  function closeFace() {
+  /**
+   * Closes the face being drawn (a click on its first corner, Enter or the
+   * bar's Close, UX-010). The core checks it first: corners clicked out of
+   * order (an outline that crosses itself) are refused with a note and the
+   * draft stays open to be finished again (HUNT-1801).
+   */
+  const closeFace = () => pendingEdits.track(closeFaceNow());
+  async function closeFaceNow() {
     if (!project || placing !== "face" || manualDraft.length < 3) return;
-    project.manual_faces ??= [];
+    const drawn = JSON.stringify($state.snapshot(manualDraft));
     // DACAD asks for the pitch with 30° filled in.
-    project.manual_faces.push({ points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 });
+    const face: ManualFace = { points: manualDraft.map((q) => ({ x: q[0], y: q[1] })), pitch_deg: 30 };
+    let refused: Awaited<ReturnType<typeof api.checkFace>>;
+    try {
+      refused = await api.checkFace(face);
+    } catch (e) {
+      notifyError(e, "calc");
+      return;
+    }
+    await drag.settled();
+    // Drawing went on or was left while the core answered: this close is stale.
+    if (!project || placing !== "face" || JSON.stringify($state.snapshot(manualDraft)) !== drawn) return;
+    // Revert or the put-back went out meanwhile: the face stays open (as finishDraw, ERR-1101).
+    if (reviewing.active) return;
+    if (refused) {
+      info(t(`manual.refused.${refused}`));
+      return;
+    }
+    project.manual_faces ??= [];
+    project.manual_faces.push(face);
     manualDraft = [];
     placing = false;
     selectManual({ kind: "face", index: project.manual_faces.length - 1 });
@@ -2506,7 +2559,7 @@
   );
   let reviewOut = $state(false);
   /** Which review action is out, for the status bar's word (UX-1102). */
-  let reviewWhat = $state<"revert" | "restoreOffer">("revert");
+  let reviewWhat = $state<ReviewPress>("revert");
   /** The user's input is refused now: a drag is open or a review action is out (one predicate for every refusal). */
   const inputClosed = () => closedForInput(drag, reviewing);
   /**
@@ -3102,6 +3155,9 @@
   const isMac = isMacPlatform();
   const keys = (k: string) => shortcut(k, isMac);
 
+  /** Undo / Redo pressed in the dock or the banner during a review call reach `onkeydown`, which queues them behind an Undo through the core (UX-1802). */
+  const passUndoKeys = (e: Event) => e.type === "keydown" && !!undoKey(e as KeyboardEvent);
+
   function onkeydown(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
     const del = e.key === "Delete" || (e.key === "Backspace" && !mod);
@@ -3263,11 +3319,11 @@
       <div class="main" use:inertBut={{ on: closed, keep: reviewOut ? "review" : "views" }}>
         {#if pending}
           <!-- Not inert while Revert is out: its pressed button keeps the keyboard's focus; the banner swallows input itself (UI-1103). -->
-          <div class="review" class:open={reviewDetails} role="status" tabindex="-1" bind:this={bannerEl} use:refuseInput={{ on: reviewOut }}>
+          <div class="review" class:open={reviewDetails} role="status" tabindex="-1" bind:this={bannerEl} use:refuseInput={{ on: reviewOut, pass: passUndoKeys }}>
             <Icon name="sparkle" size={18} />
             <div class="review-text">
               <strong>
-                {t("review.title", { who: actorName(pending.actor) })}{#if pendingList.length > 1}<span class="steps">{t("review.steps", { n: pendingList.length })}</span>{/if}
+                {t("review.title", { who: actorName(pending.actor) })}<!-- The steps Revert all takes back: a creation is listed, not counted (UI-1802). -->{#if revertSteps > 1}<span class="steps">{t("review.steps", { n: revertSteps })}</span>{/if}
               </strong>
               <span class="review-summary" title={pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}>{pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}</span>
               {#if pendingChanges.length}
@@ -3429,7 +3485,7 @@
         {/if}
       </div>
 
-      <aside class:open={dockOpen} inert={dragState !== "idle"} use:refuseInput={{ on: reviewOut }}>
+      <aside class:open={dockOpen} inert={dragState !== "idle"} use:refuseInput={{ on: reviewOut, pass: passUndoKeys }}>
         <div class="tabs" role="tablist" use:tablist use:fitlabels>
           <button role="tab" id={dockIds.tab("results")} aria-controls={dockIds.panel} aria-selected={dock === "results"} class:on={dock === "results"} onclick={() => showDock("results")} title={t("dock.results")} aria-label={roofWarned ? t("dock.resultsWarned") : undefined}><Icon name="chart" size={15} /><span class="tab-label">{t("dock.results")}</span>{#if roofWarned}<i class="badge warned" data-testid="results-warned"></i>{/if}</button>
           <button role="tab" id={dockIds.tab("breakdown")} aria-controls={dockIds.panel} aria-selected={dock === "breakdown"} class:on={dock === "breakdown"} onclick={() => showDock("breakdown")} title={t("bd.title")}><Icon name="sigma" size={15} /><span class="tab-label">{t("dock.breakdown")}</span></button>
@@ -3460,7 +3516,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save" class:failed={!reviewOut && saveState === "failed"}>
-        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}<span class="state-text" title={t("editor.outsideState")}>{t("editor.outsideState")}</span>{:else if saveState === "saved" && !editsWaiting && outsideNewer}<span class="state-text" title={t("editor.outsideNewerState")} data-testid="status-newer">{t("editor.outsideNewerState")}</span>{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if reviewOut}{t(reviewStatusKey(reviewWhat))}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}<span class="state-text" title={t("editor.outsideState")}>{t("editor.outsideState")}</span>{:else if saveState === "saved" && !editsWaiting && outsideNewer}<span class="state-text" title={t("editor.outsideNewerState")} data-testid="status-newer">{t("editor.outsideNewerState")}</span>{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if !loadError}

@@ -448,3 +448,105 @@ fn error_walls_are_named_only_where_parallel_planes_can_be_the_cause() {
     let e = geos[0].error.as_ref().expect("no roof");
     assert!(e.edges.is_empty(), "{e:?}");
 }
+
+// Audit 2026-11-24 HUNT-1801 (owner decision 2): a hand-drawn face whose
+// corners were given out of order (a bow tie) is refused when it is new and
+// warned about when a file holds one; its area stays as counted.
+mod manual_face_crossing {
+    use tectora_core::check::WarningKind;
+    use tectora_core::edit::check_manual_face;
+    use tectora_core::geom::Point2;
+    use tectora_core::model::ManualFace;
+    use tectora_core::openings::generate_project;
+
+    fn face(pts: &[(f64, f64)]) -> ManualFace {
+        ManualFace {
+            points: pts.iter().map(|&(x, y)| Point2::new(x, y)).collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        }
+    }
+
+    const BOW: [(f64, f64); 4] = [(1.0, 1.0), (6.0, 6.0), (6.0, 1.0), (1.0, 6.0)];
+    const IN_ORDER: [(f64, f64); 4] = [(1.0, 1.0), (6.0, 1.0), (6.0, 6.0), (1.0, 6.0)];
+
+    #[test]
+    fn a_bow_tie_is_refused_and_the_same_corners_in_order_are_accepted() {
+        assert!(face(&BOW).crosses());
+        assert_eq!(
+            check_manual_face(&face(&BOW)).unwrap_err().0,
+            "face_crosses"
+        );
+        assert!(!face(&IN_ORDER).crosses());
+        assert_eq!(check_manual_face(&face(&IN_ORDER)), Ok(()));
+        // An uneven bow tie too.
+        let uneven = face(&[(1.0, 1.0), (7.0, 6.0), (7.0, 1.0), (1.0, 2.0)]);
+        assert_eq!(check_manual_face(&uneven).unwrap_err().0, "face_crosses");
+    }
+
+    #[test]
+    fn a_face_touching_itself_at_a_corner_or_a_triangle_is_accepted() {
+        // Two squares that share the corner (2, 2): no proper crossing.
+        let eight = face(&[
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 2.0),
+            (4.0, 2.0),
+            (4.0, 4.0),
+            (2.0, 4.0),
+            (2.0, 2.0),
+            (0.0, 2.0),
+        ]);
+        assert!(!eight.crosses());
+        assert_eq!(check_manual_face(&eight), Ok(()));
+        assert_eq!(
+            check_manual_face(&face(&[(0.0, 0.0), (3.0, 0.0), (0.0, 3.0)])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_face_of_fewer_than_three_different_corners_or_a_bad_pitch_is_refused() {
+        let flat = face(&[(1.0, 1.0), (1.0, 1.0), (5.0, 1.0), (5.0, 1.002)]);
+        assert_eq!(check_manual_face(&flat).unwrap_err().0, "face_corners");
+        let mut steep = face(&IN_ORDER);
+        steep.pitch_deg = 95.0;
+        assert_eq!(check_manual_face(&steep).unwrap_err().0, "pitch_range");
+        let nan = face(&[(f64::NAN, 0.0), (1.0, 0.0), (0.0, 1.0)]);
+        assert_eq!(check_manual_face(&nan).unwrap_err().0, "face_corners");
+    }
+
+    #[test]
+    fn a_stored_bow_tie_keeps_its_area_and_is_warned_about_on_the_nearest_building() {
+        let mut p = tectora_core::examples::find("gable").unwrap().project();
+        p.manual_faces.push(face(&IN_ORDER));
+        p.manual_faces
+            .push(face(&[(1.0, 1.0), (7.0, 6.0), (7.0, 1.0), (1.0, 2.0)]));
+        let geos = generate_project(&p);
+        let w: Vec<_> = geos
+            .iter()
+            .enumerate()
+            .flat_map(|(i, g)| g.warnings.iter().map(move |w| (i, w)))
+            .filter(|(_, w)| w.kind == WarningKind::ManualFaceCrosses)
+            .collect();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!((w[0].0, w[0].1.face, w[0].1.item), (0, Some(1), None));
+        let json = serde_json::to_value(w[0].1).unwrap();
+        assert_eq!(json["kind"], "manual_face_crosses");
+        assert_eq!(json["face"], 1);
+        // The area is counted as before (the shoelace of its lobes).
+        let report = tectora_core::report::calc(&p);
+        let area = report["manual_faces"][1]["area"].as_f64().unwrap();
+        assert!(
+            (area - 12.0 / 30f64.to_radians().cos()).abs() < 1e-9,
+            "{area}"
+        );
+        // Corners in order: no warning.
+        p.manual_faces.remove(1);
+        let none = generate_project(&p)
+            .iter()
+            .flat_map(|g| g.warnings.iter())
+            .any(|w| w.kind == WarningKind::ManualFaceCrosses);
+        assert!(!none);
+    }
+}

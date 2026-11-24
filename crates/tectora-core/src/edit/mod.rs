@@ -192,6 +192,45 @@ pub fn check_manual_face_pitch(pitch_deg: f64) -> Result<(), String> {
     }
 }
 
+/// Why a hand-drawn face is refused: `face_corners` (fewer than 3 distinct
+/// corners), `pitch_range` (see [`check_manual_face_pitch`]) or
+/// `face_crosses` (its outline crosses itself: a bow tie, corners clicked
+/// out of order, whose area would be the difference of its two lobes; audit
+/// 2026-11-24 HUNT-1801, owner decision 2). The code is what the editor
+/// localizes; the text is for MCP.
+pub fn check_manual_face(face: &crate::model::ManualFace) -> Result<(), (&'static str, String)> {
+    let pts = &face.points;
+    if !pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+        return Err(("face_corners", "a corner is not a number".into()));
+    }
+    let mut distinct: Vec<Point2> = Vec::new();
+    for &p in pts {
+        if !distinct
+            .iter()
+            .any(|&q| q.distance(p) < crate::model::MIN_WALL_LENGTH)
+        {
+            distinct.push(p);
+            if distinct.len() >= 3 {
+                break;
+            }
+        }
+    }
+    if distinct.len() < 3 {
+        return Err((
+            "face_corners",
+            "a face needs at least 3 different corners".into(),
+        ));
+    }
+    check_manual_face_pitch(face.pitch_deg).map_err(|m| ("pitch_range", m))?;
+    if face.crosses() {
+        return Err((
+            "face_crosses",
+            "its outline crosses itself; give the corners in order around the face".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// See [`check_manual_face_pitch`]: a typed length must be a number of 0 or more.
 pub fn check_manual_line_length(length: f64) -> Result<(), String> {
     if length.is_finite() && length >= 0.0 {

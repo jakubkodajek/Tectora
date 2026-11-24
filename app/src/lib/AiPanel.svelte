@@ -205,6 +205,8 @@
   }
   .live span {
     color: var(--text-2);
+    /* The live status quotes the AI's summary: one long word wraps too (HUNT-1804). */
+    overflow-wrap: anywhere;
   }
   .live em {
     font-style: normal;
@@ -285,6 +287,8 @@
   .summary {
     margin: 0;
     font-size: 13px;
+    /* A summary of one long word (a file name, a path) wraps instead of widening the panel (HUNT-1804). */
+    overflow-wrap: anywhere;
   }
   /* Undone by a later revert: muted, with a small mark (UX-1505). */
   li.undone .summary {

@@ -23,6 +23,7 @@ import { bar, openEditor, selectWall, setField } from "./editor";
 import { E2E_DIR, LIBRARY_DIR } from "./env";
 import { bridge, createExample, expect, listProjects, noToast, test, waitForProject } from "./fixtures";
 import { cs, tr } from "./i18n";
+import { Mcp } from "./mcp";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
 test.afterEach(async ({ page }, info) => {
@@ -47,6 +48,14 @@ async function customerShown(page: Page, value: string) {
   await expect(async () => {
     await dockTab(page, "dock.job").click();
     await expect(page.getByRole("tabpanel").getByLabel(cs("job.customer"), { exact: true })).toHaveValue(value, { timeout: 500 });
+  }).toPass({ timeout: 8000 });
+}
+
+/** The Job tab's notes: show the job the editor has applied (see `customerShown`). */
+async function notesShown(page: Page, value: string) {
+  await expect(async () => {
+    await dockTab(page, "dock.job").click();
+    await expect(page.getByRole("tabpanel").getByLabel(cs("job.notes"), { exact: true })).toHaveValue(value, { timeout: 500 });
   }).toPass({ timeout: 8000 });
 }
 
@@ -244,29 +253,73 @@ test.describe("round 18, design B: Undo and Redo name what the editor has seen",
     await expect(review(page)).not.toContainText(cs("review.steps", { n: 2 }));
   });
 
+  // TEST-1807: the first answer is held on a gate, not for a fixed time, and
+  // the second press is seen queued (one call) before the gate opens.
   test("a second Ctrl+Z while the first one's call is out is not dropped: both go through (UI-1704)", async ({ app, page, mcp }) => {
     const id = await createExample("gable", "R18 rychle zpět");
     await openEditor(app, "R18 rychle zpět");
     await twoAiSaves(page, mcp, id);
-    // The first press's call is out (its answer a little slow) when the second comes.
     let calls = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
     await page.route("**/revert_changes", async (route) => {
       calls++;
       const res = await route.fetch();
-      if (calls === 1) await new Promise((r) => setTimeout(r, 400));
+      if (calls === 1) await gate;
       await route.fulfill({ response: res }).catch(() => {});
     });
     await undo(page);
     await expect.poll(() => calls).toBe(1);
-    await page.waitForTimeout(40);
     await undo(page);
+    // The second press waits in the queue while the first answer is held.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    expect(calls).toBe(1);
+    open();
     await waitForProject(id, (p) => !p.notes && p.job.customer === "");
+    await expect.poll(() => calls).toBe(2);
     await expect(review(page)).toHaveCount(0);
     const h = await mcp.call("get_history", { id });
     expect(h.slice(0, 2).map((e: any) => [e.kind, e.actor])).toEqual([
       ["revert", "user"],
       ["revert", "user"],
     ]);
+    expect(await errorToasts(page).count()).toBe(0);
+  });
+
+  // TEST-1807 (t19c): three presses, the first through the core and two
+  // queued local steps behind it: both local steps run.
+  test("three Ctrl+Z while the first goes through the core: the two queued local steps both run (UI-1704)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R18 tři zpět");
+    await openEditor(app, "R18 tři zpět");
+    await app.saved();
+    const pitch0 = (await waitForProject(id, () => true)).parts[0].edges[0].pitch_deg;
+    await selectWall(page, 0);
+    await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 31);
+    await app.saved();
+    await setField(bar(page, "def.title").getByLabel(cs("edge.pitch")), 32);
+    await app.saved();
+    await waitForProject(id, (p) => p.parts[0].edges[0].pitch_deg === 32);
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    await expect(review(page)).toContainText("Poznámka od AI");
+    // The banner may come before the editor has applied the AI's save: a
+    // Ctrl+Z then would be the local pitch step. Wait until the job shows it.
+    await notesShown(page, "Od AI");
+    let calls = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    await page.route("**/revert_changes", async (route) => {
+      calls++;
+      const res = await route.fetch();
+      if (calls === 1) await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
+    await undo(page);
+    await expect.poll(() => calls).toBe(1);
+    await undo(page);
+    await undo(page);
+    open();
+    const p = await waitForProject(id, (p) => !p.notes && p.parts[0].edges[0].pitch_deg === pitch0, 10_000);
+    expect(p.notes).toBe("");
     expect(await errorToasts(page).count()).toBe(0);
   });
 });
@@ -309,26 +362,39 @@ test.describe("round 18, design E (editor): Delete job", () => {
     await expect(toastsOf(app, cs("review.deleteChanged"))).toHaveCount(1);
     await expect(page.locator(".editor")).toBeVisible();
     expect((await listProjects()).some((p) => p.id === id)).toBe(true);
-    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    // The creation and the new step are listed; one step to revert (UI-1802), so no count.
+    await expect(review(page)).toContainText("Poznámka od AI");
+    await expect(review(page)).toContainText("Založeno podle výkresu");
+    await expect(review(page).getByRole("button", { name: cs("ai.revert"), exact: true })).toHaveCount(1);
   });
 
+  // TEST-1807 (t19b): the delete fails only after the AI's file event has
+  // reached the editor (its `__events` answer naming the job), never after a
+  // fixed time.
   test("a Delete job that fails reads the job again: an AI save made meanwhile shows (HUNT-1706)", async ({ app, page, mcp }) => {
     const created = await mcp.call("create_from_example", { example_id: "gable", name: "R18 nesmazáno", summary: "Založeno podle výkresu" });
     const id = created.id as string;
     await app.open({ prefs: { followAi: false } });
     await app.openJob("R18 nesmazáno");
+    let dropped = false;
     await page.route("**/delete_project", async (route) => {
+      const event = page.waitForResponse(async (r) => r.url().endsWith("/__events") && (await r.text()).includes(id), { timeout: 20_000 });
       await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Zákazník od AI" });
-      // Let the file event of the AI's save reach the editor while the delete is out.
-      await new Promise((r) => setTimeout(r, 800));
+      // The editor got the AI's file event while the delete is out (and dropped it).
+      await event;
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 0)));
+      dropped = true;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ err: { code: "io", id, detail: "the trash is not writable" } }) }).catch(() => {});
     });
     await app.answerConfirm(true);
     await review(page).getByTestId("review-delete").click();
     await expect(toastsOf(app, cs("err.action.delete"))).toHaveCount(1);
+    expect(dropped).toBe(true);
     app.errors.length = 0;
-    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    // The creation and the AI's save are listed; one step to revert (UI-1802), so no count.
+    await expect(review(page)).toContainText("Založeno podle výkresu");
     await expect(review(page)).toContainText("Zákazník od AI");
+    await expect(review(page).getByRole("button", { name: cs("ai.revert"), exact: true })).toHaveCount(1);
     await expect(review(page).getByTestId("review-delete")).toHaveCount(0);
   });
 });
@@ -341,7 +407,9 @@ test.describe("round 18, design F", () => {
     await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Zákazník od AI" });
     await app.open({ prefs: { followAi: false } });
     await app.openJob("R18 od AI");
-    await expect(review(page)).toContainText(cs("review.steps", { n: 3 }));
+    // The creation is listed, not counted (UI-1802): the banner says 2, as the question.
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    await expect(review(page)).toContainText("Založeno podle výkresu");
     await app.answerConfirm(true);
     await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
     await waitForProject(id, (p) => !p.notes && p.job.customer === "");
@@ -432,7 +500,10 @@ test.describe("round 18, design F", () => {
     expect(await retry.evaluate((b) => b.scrollWidth <= b.clientWidth)).toBe(true);
   });
 
-  test("the folder request names the AI client as the app does and wraps an unbroken reason (HUNT-1707)", async ({ app, page, mcp }) => {
+  // TEST-1805: the client connects as "claude-code", so the raw id and the
+  // name the app shows ("Claude") differ and the guard can fail.
+  test("the folder request names the AI client as the app does and wraps an unbroken reason (HUNT-1707)", async ({ app, page }) => {
+    const mcp = await Mcp.start("claude-code");
     await app.open();
     const other = path.join(E2E_DIR, "r18-folder");
     fs.rmSync(other, { recursive: true, force: true });
@@ -444,8 +515,10 @@ test.describe("round 18, design F", () => {
     await expect(reason).toBeVisible();
     expect((await reason.innerText()).trim().startsWith(cs("folderReq.reason", { by: "Claude" }))).toBe(true);
     await expect(dlg).toContainText(cs("folderReq.lead", { by: "Claude" }));
+    await expect(dlg).not.toContainText("claude-code");
     expect(await reason.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
     await dlg.getByRole("button", { name: cs("folderReq.keep") }).click();
     await expect(dlg).toHaveCount(0);
+    mcp.stop();
   });
 });

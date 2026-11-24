@@ -13,7 +13,7 @@
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
   import { actorLabel, actorName, entryText, isFresh, live, liveText } from "./live.svelte";
-  import { describeBroken, type Action } from "./errors";
+  import { describeBroken, toAppError, type Action } from "./errors";
   import { fold, searchWords } from "./fold";
   import { foreignSentences, type Foreign } from "./foreign";
   import { dismiss, notify, notifyError } from "./notify.svelte";
@@ -211,6 +211,9 @@
   async function loadTrash() {
     try {
       trash = (await api.listDeleted()).filter((e) => !e.file);
+      // A delete notice whose entry left the trash offers nothing to restore (HUNT-1805).
+      const left = new Set(trash.map((e) => e.entry));
+      for (const entry of [...deleteToasts.keys()]) if (!left.has(entry)) dropDeleteToast(entry);
     } catch (e) {
       trash = [];
       notifyError(e, "list");
@@ -225,6 +228,11 @@
   /** The delete toast offering each trash entry back, so a restore from the
    *  trash list takes the offer away (UI-001). */
   const deleteToasts = new Map<string, number>();
+  function dropDeleteToast(entry: string) {
+    const toast = deleteToasts.get(entry);
+    if (toast !== undefined) dismiss(toast);
+    deleteToasts.delete(entry);
+  }
   function deletedToast(gone: TrashEntry, name: string) {
     deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || name }), key: gone.entry, action: { label: t("home.restore"), run: () => restore(gone) } }));
   }
@@ -237,11 +245,21 @@
    *  double click must not restore and then report the entry missing (UI-001). */
   const restore = (e: TrashEntry) =>
     once(`trash:${e.entry}`, async () => {
-      const id = await run("restore", () => api.restoreDeleted(e.entry));
+      let id: string | undefined;
+      try {
+        id = await api.restoreDeleted(e.entry);
+      } catch (err) {
+        // The entry left the trash meanwhile (an AI or another window
+        // restored or removed it): say that, not "the job is no longer in
+        // the folder" (HUNT-1805).
+        if (toAppError(err).code === "not_found") {
+          dropDeleteToast(e.entry);
+          notify({ kind: "info", title: t("home.restoreGone", { name: e.name }) });
+          onchanged();
+        } else notifyError(err, "restore");
+      }
       if (!id) return loadTrash();
-      const toast = deleteToasts.get(e.entry);
-      if (toast !== undefined) dismiss(toast);
-      deleteToasts.delete(e.entry);
+      dropDeleteToast(e.entry);
       trash = trash.filter((x) => x.entry !== e.entry);
       notify({ kind: "info", title: t("home.restored", { name: e.name }) });
       selectedId = id;

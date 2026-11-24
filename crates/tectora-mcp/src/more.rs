@@ -525,7 +525,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_manual",
-            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area.",
+            "description": "Replace the lines and/or faces drawn by hand on the calculated roof (omit a list to keep it). A line end given as [x, y] snaps to the nearest roof point within 0.25 m, else lies at height 0 (as DACAD); [x, y, z] is taken as it is. A line of a counted code adds to that code's totals; M (dimension) and X do not. A face is a plan polygon with its pitch (default 30°) and adds its sloped area; give its corners in order around the face: an outline that crosses itself (a bow tie) is refused.",
             "inputSchema": schema(json!({
                 "id": id,
                 "lines": { "type": "array", "items": { "type": "object", "properties": {
@@ -867,7 +867,8 @@ impl Server {
                     .map_err(super::coded)?;
                 let p = &r.project;
                 self.live_follow("reverted_changes", Some(&p.name), format!("Reverted changes: {summary}"), &id);
-                let mut out = json!({ "id": id, "reverted": true, "quantities": super::quantities(p) });
+                let mut out = json!({ "id": id, "reverted": true });
+                self.quantities_into(&mut out, p);
                 super::replaced_note(&mut out, r.repaired);
                 Ok(out)
             })(),
@@ -1236,7 +1237,10 @@ impl Server {
                     items.iter().filter_map(|&it| item_centre(&p, it)).collect();
                 let out = transform_items(&mut p, &items, PlanMap::Move { dx, dy }, copies)?;
                 if opt::<bool>(args, "follow_roof")?.unwrap_or(true) {
-                    let geos = tectora_core::openings::generate_project(&before);
+                    // Too complex to calculate here: moved as given, said (HUNT-1802).
+                    let Some(geos) = self.roof_of(&before) else {
+                        return self.items_reply(&id, &before, &p, args, out, true);
+                    };
                     let n = items.len();
                     let pairs: Vec<_> = out
                         .iter()
@@ -1317,9 +1321,30 @@ impl Server {
             }
             other => return Err(format!("unknown op `{other}`")),
         };
-        let mut reply = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        self.items_reply(&id, &before, &p, args, moved, false)
+    }
+
+    /// The commit of [`Server::transform_items`] with the items it made;
+    /// `unfollowed`: a move that could not follow the roof (too complex to
+    /// calculate here, HUNT-1802) says so.
+    fn items_reply(
+        &self,
+        id: &str,
+        before: &Project,
+        p: &Project,
+        args: &Value,
+        moved: Vec<ItemRef>,
+        unfollowed: bool,
+    ) -> ToolResult {
+        let mut reply = self.commit(Some(id), Some(before), p, arg_str(args, "summary")?)?;
         if let Some(o) = reply.as_object_mut() {
             o.insert("items".into(), json!(moved));
+            if unfollowed {
+                o.insert(
+                    "follow_roof_note".into(),
+                    json!("the roof of this job takes too long to calculate here, so the items were moved as given, without following the roof (chimney tops and dormer eaves keep their heights); tell the user"),
+                );
+            }
         }
         Ok(reply)
     }
@@ -1516,13 +1541,11 @@ impl Server {
             let start = point(args, "start")?.ok_or("missing `start`")?;
             let kind: DormerKind = req(args, "kind")?;
             let angle = dormers::nearest_wall_angle(&p.parts, start);
-            // The roof height just inside the front, as the editor places it.
-            let geos = tectora_core::openings::generate_project(&p);
-            let inside = Point2::new(start.x - angle.sin() * 0.01, start.y + angle.cos() * 0.01);
-            let host = roof_height_at(&geos, inside).unwrap_or(3.0);
+            // The eave height is filled in from the roof once the
+            // arguments are checked (HUNT-1802).
             (
                 p.dormers.len(),
-                dormers::default_params(kind, start, angle, round(host + 1.0, 2)),
+                dormers::default_params(kind, start, angle, f64::NAN),
             )
         } else {
             let i: usize = req(args, "index")?;
@@ -1578,15 +1601,26 @@ impl Server {
                 );
             }
         }
+        // The arguments are checked: now the roof, within the bound of a
+        // write (HUNT-1802).
+        if params.eave_height.is_nan() {
+            // The roof height just inside the front, as the editor places it.
+            let geos = self.roof_of(&p).ok_or(crate::ROOF_TOO_LONG)?;
+            let (start, angle) = (params.start, params.angle);
+            let inside = Point2::new(start.x - angle.sin() * 0.01, start.y + angle.cos() * 0.01);
+            let host = roof_height_at(&geos, inside).unwrap_or(3.0);
+            params.eave_height = round(host + 1.0, 2);
+        }
+        let host_roof = self.host_roof_of(&p).ok_or(crate::ROOF_TOO_LONG)?;
         if target.is_some() || back_width.is_some() {
-            let host = dormers::host_slope_in(&dormers::host_roof(&p), &params)
+            let host = dormers::host_slope_in(&host_roof, &params)
                 .ok_or("the dormer's front is not on the roof, so wall_height, depth, ridge_length and back_width cannot be used; give eave_height and pitch_deg")?;
             params = dormers::solve(&params, host, target, back_width)?;
         }
         // The pitch and eave rules of the editor's dormer bar (MATH-001,
         // MATH-003): a dormer flatter than 2° or below the roof is left out
         // or takes the building's roof with it.
-        let host = dormers::host_slope_in(&dormers::host_roof(&p), &params);
+        let host = dormers::host_slope_in(&host_roof, &params);
         dormers::check_params(&params, host).map_err(|(code, why)| format!("{code}: {why}"))?;
         let mut d = dormers::build_dormer(&params);
         if let Some(old) = p.dormers.get(index) {
@@ -1596,22 +1630,14 @@ impl Server {
             p.dormers.push(d);
         }
         let mut out = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
-        out["dormer"] = describe_dormer(index, &p.dormers[index], &dormers::host_roof(&p));
+        // The host is the roof without the dormers: the same as before the save.
+        out["dormer"] = describe_dormer(index, &p.dormers[index], &host_roof);
         Ok(out)
     }
 
     fn set_manual(&self, args: &Value) -> ToolResult {
         let (id, before) = self.load(args)?;
         let mut p = before.clone();
-        if let Some(lines) = opt::<Vec<Value>>(args, "lines")? {
-            // Snap to the roof as it is without the hand-drawn lines.
-            let geos = tectora_core::openings::generate_project(&p);
-            p.manual_lines = lines
-                .iter()
-                .enumerate()
-                .map(|(i, v)| manual_line(v, &geos).map_err(|m| format!("line {i}: {m}")))
-                .collect::<Result<_, _>>()?;
-        }
         if let Some(faces) = opt::<Vec<Value>>(args, "faces")? {
             p.manual_faces = faces
                 .iter()
@@ -1622,7 +1648,7 @@ impl Server {
                     let pitch_deg = arg_f64(v, "pitch_deg")?.unwrap_or(30.0);
                     tectora_core::edit::check_manual_face_pitch(pitch_deg)
                         .map_err(|m| format!("face {i}: {m}"))?;
-                    Ok(ManualFace {
+                    let face = ManualFace {
                         points,
                         pitch_deg,
                         label: v
@@ -1630,11 +1656,46 @@ impl Server {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string(),
-                    })
+                    };
+                    // Corners out of order (a bow tie) are refused (HUNT-1801).
+                    tectora_core::edit::check_manual_face(&face)
+                        .map_err(|(_, m)| format!("face {i}: {m}"))?;
+                    Ok(face)
                 })
                 .collect::<Result<_, String>>()?;
         }
-        self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+        // The faces are checked before the lines snap to the roof, so a
+        // refused face answers at once (HUNT-1802).
+        let mut unsnapped = false;
+        if let Some(lines) = opt::<Vec<Value>>(args, "lines")? {
+            let parse = |geos: &[tectora_core::roof::RoofGeometry]| {
+                lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| manual_line(v, geos).map_err(|m| format!("line {i}: {m}")))
+                    .collect::<Result<Vec<_>, _>>()
+            };
+            // Every line checked without the roof first (HUNT-1802).
+            parse(&[])?;
+            // Snap to the roof as it is without the hand-drawn lines; too
+            // complex to calculate here: saved as given, said (HUNT-1802).
+            let geos = if lines.is_empty() {
+                Vec::new()
+            } else {
+                self.roof_of(&p).unwrap_or_else(|| {
+                    unsnapped = true;
+                    Vec::new()
+                })
+            };
+            p.manual_lines = parse(&geos)?;
+        }
+        let mut out = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        if unsnapped {
+            out["snap_note"] = json!(
+                "the roof of this job takes too long to calculate here, so the lines were saved as given, without snapping to the roof (an end given as [x, y] lies at height 0); tell the user"
+            );
+        }
+        Ok(out)
     }
 
     fn set_roof_options(&self, args: &Value) -> ToolResult {
@@ -1686,18 +1747,23 @@ impl Server {
             }
             "point" => {
                 let target = need_target()?;
-                let geos = tectora_core::openings::generate_project(&before);
-                let corners = roof_corner_points(&geos);
+                // The arguments first; the roof only for its corner points,
+                // within the bound of a write (HUNT-1802).
+                let corners = || {
+                    self.roof_of(&before)
+                        .map(|geos| roof_corner_points(&geos))
+                        .ok_or(crate::ROOF_TOO_LONG)
+                };
                 let q = match (
                     opt::<Vec<f64>>(args, "point")?,
                     opt::<usize>(args, "point_index")?,
                 ) {
                     (Some(v), _) if v.len() == 3 => [v[0], v[1], v[2]],
                     (Some(_), _) => return Err("`point` must be [x, y, z]".into()),
-                    (None, Some(i)) => *corners
+                    (None, Some(i)) => *corners()?
                         .get(i)
                         .ok_or_else(|| format!("point_index {i} out of range"))?,
-                    (None, None) => return Ok(json!({ "roof_points": corners })),
+                    (None, None) => return Ok(json!({ "roof_points": corners()? })),
                 };
                 HelperRequest::Point { target, point: q }
             }
@@ -2444,6 +2510,50 @@ mod tests {
             json!({ "id": id, "summary": "x", "lines": [{ "a": [0, 0, 0], "b": [1, 0, 0], "code": "T", "length": 0 }],
                 "faces": [{ "points": [[20, 0], [24, 0], [24, 3], [20, 3]], "pitch_deg": 89.9 }] }),
         );
+    }
+
+    /// Audit 2026-11-24 HUNT-1801: a bow tie is refused, nothing is saved;
+    /// a stored one is warned about by `calc` with its face index.
+    #[test]
+    fn set_manual_refuses_a_face_whose_outline_crosses_itself_and_calc_warns_about_a_stored_one() {
+        let (mut s, id) = setup();
+        let before = s.store.load(&id).unwrap();
+        let log = s.store.activity(&id).len();
+        let err = s
+            .call_tool(
+                "set_manual",
+                &json!({ "id": id, "summary": "x",
+                    "faces": [{ "points": [[20, 0], [30, 10], [30, 0], [20, 10]], "pitch_deg": 30 }] }),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("face 0") && err.contains("crosses itself"),
+            "{err}"
+        );
+        assert_eq!(s.store.load(&id).unwrap(), before);
+        assert_eq!(s.store.activity(&id).len(), log);
+        // A file that already holds one (an older Tectora wrote it).
+        let mut p = before.clone();
+        p.manual_faces.push(tectora_core::model::ManualFace {
+            points: [(20.0, 0.0), (30.0, 10.0), (30.0, 0.0), (20.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| tectora_core::geom::Point2::new(x, y))
+                .collect(),
+            pitch_deg: 30.0,
+            label: String::new(),
+        });
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let r = call(&mut s, "calc", json!({ "id": id }));
+        let w: Vec<&Value> = r["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|part| part["warnings"].as_array().into_iter().flatten())
+            .filter(|w| w["kind"] == "manual_face_crosses")
+            .collect();
+        assert_eq!(w.len(), 1, "{r}");
+        assert_eq!(w[0]["face"], 0);
+        assert!(w[0]["message"].as_str().unwrap().contains("crosses itself"));
     }
 
     #[test]

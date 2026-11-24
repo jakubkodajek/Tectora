@@ -438,16 +438,20 @@ export const REFUSED_EVENTS = ["pointerdown", "mousedown", "mouseup", "click", "
  * action, whose pressed button keeps the keyboard's focus while it waits
  * (UI-604, design A1).
  */
-export function refuseInput(node: HTMLElement, opts: { on: boolean }) {
+export function refuseInput(node: HTMLElement, opts: { on: boolean; pass?: (e: Event) => boolean }) {
   let now = opts;
   const swallow = (e: Event) => {
     if (!now.on) return;
     e.preventDefault();
+    // `pass`: the event goes on to the editor's own handler, which decides
+    // (Undo / Redo pressed in the dock are queued behind an Undo through
+    // the core, UX-1802); the browser's own action is still prevented.
+    if (now.pass?.(e)) return;
     e.stopImmediatePropagation();
   };
   for (const type of REFUSED_EVENTS) node.addEventListener(type, swallow, true);
   return {
-    update(next: { on: boolean }) {
+    update(next: { on: boolean; pass?: (e: Event) => boolean }) {
       now = next;
     },
     destroy() {
@@ -466,7 +470,10 @@ export function refuseInput(node: HTMLElement, opts: { on: boolean }) {
 export function inertBut(node: HTMLElement, opts: { on: boolean; keep: string }) {
   let now = opts;
   const apply = () => {
-    for (const el of node.children) if (el instanceof HTMLElement && !el.classList.contains(now.keep)) el.inert = now.on;
+    // Every child is set each time: off opens all of them whatever `keep`
+    // names (a review call flips `on` and `keep` in one update, UI-1801),
+    // and a change of `keep` while on moves the live child.
+    for (const el of node.children) if (el instanceof HTMLElement) el.inert = now.on && !el.classList.contains(now.keep);
   };
   const seen = new MutationObserver(apply);
   seen.observe(node, { childList: true });

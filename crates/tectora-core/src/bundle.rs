@@ -720,6 +720,14 @@ fn order_times(entries: &mut [crate::store::ActivityEntry], now: u64) -> u64 {
 /// a `.tectora` file in the library opens as it is, one from elsewhere and a
 /// `.tectorajob` bundle are added to the library as a new job.
 pub fn open_path(store: &Store, path: &Path) -> Result<String, FileError> {
+    // A path that is not there says so, whatever its extension (audit
+    // 2026-11-24 TEST-1809: it read "not a Tectora file").
+    if std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Err(FileError::new(
+            "file_not_found",
+            format!("{}: not found", path.display()),
+        ));
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

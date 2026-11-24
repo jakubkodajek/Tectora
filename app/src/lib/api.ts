@@ -195,6 +195,9 @@ export const api = {
     invoke<Chimney>("item_geometry", { request: { op: "chimney_from_rect", x: r.x, y: r.y, width: r.width, depth: r.depth, rotation_deg: r.rotation, height: r.height } }),
   /** The sloped area of a hand-drawn face, m². */
   faceArea: (face: ManualFace) => invoke<{ area: number }>("item_geometry", { request: { op: "face_area", face } }).then((r) => r.area),
+  /** Why the core refuses a new hand-drawn face (`face_corners`, `pitch_range`, `face_crosses`: corners out of order), or null (HUNT-1801). */
+  checkFace: (face: ManualFace) =>
+    invoke<{ refused: "face_corners" | "pitch_range" | "face_crosses" | null }>("item_geometry", { request: { op: "check_face", face } }).then((r) => r.refused),
   /** Part `part` moved, rotated, mirrored or copied with what lies on it (the MCP tool transform_part); the project afterwards and the moved or new parts. */
   transformPart: (project: Project, part: number, map: PlanMapSpec, copies: number) =>
     invoke<{ project: Project; parts: number[] }>("transform_part", { project, part, map, copies }),
