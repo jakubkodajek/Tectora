@@ -5,9 +5,13 @@
 //           the user reverted (Accept marks the newest entry shown)
 // ARCH-1802 the AI's put-back and its own take-out leave the job as the
 //           user left it: no banner
+// UX-1801   a received job's history names the sender, not "you"
+import fs from "node:fs";
+import path from "node:path";
 import type { Page } from "@playwright/test";
 import { openEditor } from "./editor";
 import { bridge, createExample, expect, test, waitForProject } from "./fixtures";
+import { FILES_DIR } from "./env";
 import { cs } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
@@ -20,6 +24,8 @@ test.afterEach(async ({ page }, info) => {
 
 const review = (page: Page) => page.locator(".review");
 const errorToasts = (page: Page) => page.locator(".stack .toast.error");
+const dockTab = (page: Page, key: string) => page.locator("aside .tabs").getByRole("tab", { name: cs(key) });
+const entries = (page: Page) => page.getByTestId("history-entry");
 
 type Logged = { ts_ms: number; actor: string; summary: string };
 const newest = async (id: string) => (await bridge<Logged[]>("project_activity", { id }))[0];
@@ -73,6 +79,34 @@ test.describe("round 19: the review by the job's version", () => {
     await waitForProject(id, (q) => !q.notes);
     await expect(review(page)).toHaveCount(0);
     expect((await mcp.call("get_review", { id })).pending).toBeNull();
+    await expect(errorToasts(page)).toHaveCount(0);
+  });
+
+  test("a received job's history names the sender for the sender's own revert (UX-1801)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 odeslaná");
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    const a1 = await newest(id);
+    await bridge("revert_last_change", { id, expectTs: a1.ts_ms });
+    await waitForProject(id, (p) => !p.notes);
+    fs.mkdirSync(FILES_DIR, { recursive: true });
+    const file = path.join(FILES_DIR, "r19-odeslana.tectorajob");
+    await bridge("export_job", { id, path: file });
+    const got = await bridge<string>("import_job", { path: file });
+    const received = await bridge<any>("load_project", { id: got });
+    received.name = "R19 přijatá";
+    await bridge("save_project", { id: got, project: received });
+    // The app follows the AI's live job on start: back to the library first.
+    await app.open();
+    const back = page.getByRole("button", { name: cs("editor.back") }).first();
+    if (await back.isVisible()) await back.click();
+    await app.openJob("R19 přijatá");
+    await expect(review(page)).toHaveCount(0);
+    await dockTab(page, "dock.ai").click();
+    const revertRow = entries(page).filter({ hasText: "Poznámka od AI" }).first();
+    await expect(revertRow).toBeVisible();
+    const who = entries(page).locator(".who");
+    await expect(who.filter({ hasText: cs("ai.receivedUser") }).first()).toBeVisible();
+    await expect(who.filter({ hasText: cs("ai.you") })).toHaveCount(0);
     await expect(errorToasts(page)).toHaveCount(0);
   });
 });
