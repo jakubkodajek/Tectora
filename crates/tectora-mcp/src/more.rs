@@ -4110,7 +4110,8 @@ mod tool_coverage {
         );
         let history = call(&mut s, "get_history", json!({ "id": id }));
         assert_eq!(history[0]["summary"], "Reverted: Notes", "{history}");
-        assert!(history[0].get("kind").is_none(), "{history}");
+        // No kind: sent as `null`, never left out (audit 2026-11-24 ARCH-1601).
+        assert!(history[0]["kind"].is_null(), "{history}");
         let spoof = history[0]["ts_ms"].as_u64().unwrap();
         let r = call(
             &mut s,
@@ -4123,7 +4124,7 @@ mod tool_coverage {
         assert_eq!(p.notes, "Call the customer");
         let history = call(&mut s, "get_history", json!({ "id": id }));
         assert_eq!(history[0]["kind"], "revert", "{history}");
-        assert!(history[1].get("kind").is_none(), "{history}");
+        assert!(history[1]["kind"].is_null(), "{history}");
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
