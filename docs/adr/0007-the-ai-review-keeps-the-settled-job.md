@@ -105,6 +105,10 @@ Revert all followed by Undo and logs past the trim).
     `an_out_of_limits_revert_over_a_damaged_file_does_not_call_it_fine`: the
     out-of-limits version is also put into the baseline file, which is what
     Revert all writes now; the codes and "nothing written" are unchanged.
+  - E2E `audit-r18-a.e2e.ts` "a Revert of a change the user already typed
+    back ends the review (ERR-1701)", renamed "typing the AI's change back
+    by hand ends the review (ERR-1701, ADR 0007)": the banner goes by itself,
+    there is no Revert to press (was: the Revert logged a revert).
 - Negative / risks: while a baseline exists every save reads and writes a
   job-sized file (per card one small read). Two files are not written
   together: the baseline is written first and put back when the job write
