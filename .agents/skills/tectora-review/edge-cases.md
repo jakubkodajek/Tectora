@@ -268,6 +268,10 @@ Guards: core `only_regular_files_of_a_sane_size_are_attached`,
 - Every Tauri command has a bridge counterpart reading the same arguments.
 - Oversize windows, dormers off the roof and faces cut below zero carry a
   warning (`check_cases`, `result_report`); export works with dormers.
+- An AI's reason shown in a dialog or card that grants or reports something
+  (the folder request, the AI settings card) is quoted after "Reason given
+  by <AI>:", never plain text between Tectora's own lines (UI-1604; E2E
+  audit-r17-b).
 
 ## 9. Concurrent saves and building-level edits (@errors, @math)
 
@@ -288,8 +292,10 @@ every wall…", `app/e2e/results.e2e.ts`.
   restores it.
 - Windows, chimneys and openings off every roof face carry a warning; the
   result is unchanged. Also while another building of the job has no roof:
-  only objects nearest a failing building go unjudged (core
-  `an_object_off_the_roof_is_warned_while_another_building_fails`, E2E
+  only objects nearest a failing building or inside its walls (a cross
+  drawn as two rectangles) go unjudged (core
+  `an_object_off_the_roof_is_warned_while_another_building_fails`,
+  `an_object_inside_a_failing_building_is_not_judged`, E2E
   audit-r16-b HUNT-1502). Results counts them apart ("off the roof: n"),
   and every placement made before one calculation answers is checked; Undo
   takes its toast back (audit-r16-b UI-1502).
@@ -298,7 +304,12 @@ every wall…", `app/e2e/results.e2e.ts`.
   from a flag the reload set; the notice before it stays until then and the
   status bar does not say saved (store
   `a_write_over_an_unreadable_file_says_it_replaced_it`, E2E audit-r16-b
-  ERR-1502, UX-1504, TEST-1504).
+  ERR-1502, UX-1504, TEST-1504). The "replaced" notice names the job and
+  outlives the editor (Back right after an edit, ERR-1602); the notice
+  before it goes with the editor (TEST-1606). A newer Tectora's write over
+  the open job gets its own lasting notice and status text, never "could
+  not open" or "saved", and is never written over (UI-1603, HUNT-1604);
+  the status bar fits at 960x540 in German (UI-1602). E2E audit-r17-b.
 - The Results area rows add up to the total, hand-drawn faces included.
 
 ## 10. One building stops every roof (@math, @errors, @ux)

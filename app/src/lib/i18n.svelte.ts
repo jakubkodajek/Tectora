@@ -1079,6 +1079,8 @@ const cs: Dict = {
   "err.revert_out_of_limits_damaged": "Starší verzi zakázky z historie nelze obnovit, protože přesahuje dnešní limity Tectory. Soubor zakázky navíc nejde přečíst: je-li zakázka otevřená v editoru, změňte v ní cokoli a uloží se znovu; jinak obnovte soubor ze zálohy.",
   "res.offRoof": "mimo střechu: {n}",
   "folderReq.reason": "Důvod od {by}:",
+  "editor.outsideNewer": "Tuto zakázku mezitím uložila novější verze Tectory. Změny provedené zde přes ni nelze uložit.",
+  "editor.outsideNewerState": "Uložila novější verze",
 };
 
 const sk: Dict = {
@@ -2149,6 +2151,8 @@ const sk: Dict = {
   "err.revert_out_of_limits_damaged": "Staršiu verziu zákazky z histórie nemožno obnoviť, pretože presahuje dnešné limity Tectory. Súbor zákazky navyše nejde prečítať: ak je zákazka otvorená v editore, zmeňte v nej čokoľvek a uloží sa znova; inak obnovte súbor zo zálohy.",
   "res.offRoof": "mimo strechy: {n}",
   "folderReq.reason": "Dôvod od {by}:",
+  "editor.outsideNewer": "Túto zákazku medzitým uložila novšia verzia Tectory. Zmeny urobené tu cez ňu nemožno uložiť.",
+  "editor.outsideNewerState": "Uložila novšia verzia",
 };
 
 const en: Dict = {
@@ -3219,6 +3223,8 @@ const en: Dict = {
   "err.revert_out_of_limits_damaged": "The earlier version in the history cannot be restored because it is outside Tectora's current limits. The job file itself cannot be read either: if the job is open in the editor, change anything there and it is saved again; otherwise restore the file from a backup.",
   "res.offRoof": "off the roof: {n}",
   "folderReq.reason": "Reason given by {by}:",
+  "editor.outsideNewer": "A newer Tectora saved this job. Changes made here cannot be saved over it.",
+  "editor.outsideNewerState": "Saved by a newer Tectora",
 };
 
 const de: Dict = {
@@ -4285,10 +4291,12 @@ const de: Dict = {
   "ai.undone": "verworfen",
   "ai.revertedOne": "KI-Änderung verworfen: {s}",
   "editor.outsideTitle": "Ein anderes Programm hat den Auftrag geändert",
-  "editor.outsideState": "Datei von anderem Programm geändert",
+  "editor.outsideState": "Datei extern geändert",
   "err.revert_out_of_limits_damaged": "Die frühere Fassung aus dem Verlauf lässt sich nicht wiederherstellen, weil sie außerhalb der heutigen Grenzen von Tectora liegt. Die Auftragsdatei selbst ist außerdem nicht lesbar: Ist der Auftrag im Editor geöffnet, ändern Sie dort irgendetwas, dann wird er neu gespeichert; sonst stellen Sie die Datei aus einer Sicherung wieder her.",
   "res.offRoof": "nicht auf dem Dach: {n}",
   "folderReq.reason": "Begründung von {by}:",
+  "editor.outsideNewer": "Eine neuere Tectora-Version hat diesen Auftrag gespeichert. Hier vorgenommene Änderungen können nicht darüber gespeichert werden.",
+  "editor.outsideNewerState": "Neuere Version gespeichert",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };
