@@ -583,6 +583,10 @@
   let newestActivity: { k: number; run: Promise<boolean> } | null = null;
   /** The one retry after a failed read (ERR-1903). */
   let activityRetry: ReturnType<typeof setTimeout> | undefined;
+  /** The open's `reviewLater`, when its review read failed: run once a later read gets the review (OPENFAIL). */
+  let reviewLaterWaiting: (() => void) | null = null;
+  /** The notice that the review could not be read was shown, since the last read that got it. */
+  let reviewUnreadSaid = false;
   /**
    * `reviewLater`: the job opens without waiting for the review status (two
    * roof calculations, up to the work bound on a heavy job, HUNT-1903): the
@@ -640,17 +644,32 @@
         if (destroyed || !activityReads.current(k)) return;
         if (reviewFailed) {
           reviewRead = false;
+          // The banner and the dock's switch to the AI tab come with the
+          // retry's review (audit 2026-11-24 OPENFAIL).
+          reviewLaterWaiting = later;
           retry();
           return;
         }
         reviewRead = true;
+        reviewUnreadSaid = false;
         review = late;
         later();
       });
-    } else if (reviewFailed) reviewRead = false;
-    else {
+    } else if (reviewFailed) {
+      reviewRead = false;
+      // The retry failed too: whether AI changes wait is not known, so say
+      // so once instead of showing no banner as if none waited (OPENFAIL).
+      if (opts.retry && !reviewUnreadSaid && !destroyed) {
+        reviewUnreadSaid = true;
+        notify({ kind: "warning", title: t("review.unread") });
+      }
+    } else {
       reviewRead = true;
+      reviewUnreadSaid = false;
       review = r;
+      const later = reviewLaterWaiting;
+      reviewLaterWaiting = null;
+      later?.();
     }
     if (activityFailed || (!opts.reviewLater && reviewFailed) || !rec) retry();
     return true;

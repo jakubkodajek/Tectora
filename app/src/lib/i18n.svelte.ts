@@ -1110,6 +1110,7 @@ const cs: Dict = {
   "err.review_stale": "Změny AI, které banner ukazoval, byly mezitím přijaty nebo vráceny, proto se nic nevrátilo. Banner teď ukazuje, co čeká.",
   "res.warn.manual_faces_overlap": "Ruční plochy {a} a {b} leží přes sebe na {v} m² půdorysu, takže se tato část počítá do výměry dvakrát. Zkontrolujte, zda plocha není nakreslená dvakrát nebo obkreslená uvnitř jiné; výměry zůstávají, jak jsou spočítané.",
   "res.warn.manual_face_over_roof": "Ruční plocha {n} leží v půdorysu nad vypočtenou střechou ({v} m²) a její výměra se k ploše střechy přičítá. U střechy nakreslené ručně nad hlavní střechou (vikýř, stříška) je to v pořádku.",
+  "review.unread": "Nepodařilo se zjistit, zda v této zakázce čekají změny AI na kontrolu. Banner se objeví při dalším načtení; zkuste zakázku zavřít a otevřít znovu.",
 };
 
 const sk: Dict = {
@@ -2211,6 +2212,7 @@ const sk: Dict = {
   "err.review_stale": "Zmeny AI, ktoré banner ukazoval, boli medzitým prijaté alebo vrátené, preto sa nič nevrátilo. Banner teraz ukazuje, čo čaká.",
   "res.warn.manual_faces_overlap": "Ručné plochy {a} a {b} ležia cez seba na {v} m² pôdorysu, takže sa táto časť počíta do výmery dvakrát. Skontrolujte, či plocha nie je nakreslená dvakrát alebo obkreslená vnútri inej; výmery zostávajú, ako sú spočítané.",
   "res.warn.manual_face_over_roof": "Ručná plocha {n} leží v pôdoryse nad vypočítanou strechou ({v} m²) a jej výmera sa k ploche strechy pripočíta. Pri streche nakreslenej ručne nad hlavnou strechou (vikier, strieška) je to v poriadku.",
+  "review.unread": "Nepodarilo sa zistiť, či v tejto zákazke čakajú zmeny AI na kontrolu. Banner sa zobrazí pri ďalšom načítaní; skúste zákazku zavrieť a otvoriť znova.",
 };
 
 const en: Dict = {
@@ -3312,6 +3314,7 @@ const en: Dict = {
   "err.review_stale": "The AI changes the banner showed were accepted or reverted meanwhile, so nothing was reverted. The banner now shows what waits.",
   "res.warn.manual_faces_overlap": "Manual faces {a} and {b} lie on each other over {v} m² of plan, so that part is counted twice in the area. Check whether a face was drawn twice or traced inside another; the areas are kept as calculated.",
   "res.warn.manual_face_over_roof": "Manual face {n} lies in plan over the calculated roof ({v} m²) and its area is added to the roof area. That is right for a roof drawn by hand over the main roof (a dormer or a porch roof).",
+  "review.unread": "Could not find out whether AI changes in this job wait for review. The banner appears with the next read; try closing and opening the job again.",
 };
 
 const de: Dict = {
@@ -4413,6 +4416,7 @@ const de: Dict = {
   "err.review_stale": "Die KI-Änderungen, die das Banner zeigte, wurden inzwischen übernommen oder verworfen, daher wurde nichts zurückgesetzt. Das Banner zeigt jetzt, was wartet.",
   "res.warn.manual_faces_overlap": "Die manuellen Flächen {a} und {b} liegen auf {v} m² Grundriss übereinander, daher wird dieser Teil doppelt in die Fläche gezählt. Prüfen, ob eine Fläche doppelt oder innerhalb einer anderen gezeichnet wurde; die Flächen bleiben wie berechnet.",
   "res.warn.manual_face_over_roof": "Die manuelle Fläche {n} liegt im Grundriss über dem berechneten Dach ({v} m²), und ihre Fläche wird zur Dachfläche addiert. Bei einem von Hand über dem Hauptdach gezeichneten Dach (Gaube, Vordach) ist das richtig.",
+  "review.unread": "Es ließ sich nicht feststellen, ob in diesem Auftrag Änderungen der KI auf Prüfung warten. Das Banner erscheint beim nächsten Lesen; den Auftrag schließen und erneut öffnen.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };
