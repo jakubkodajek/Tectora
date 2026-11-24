@@ -309,6 +309,30 @@ async function clickLandsIn(page: Page, field: import("@playwright/test").Locato
   return focused ? "ok" : `covered by ${hit}`;
 }
 
+/**
+ * The controls of a bar's scrolled strip (`.line > .row`) that something
+ * else lies over at their centre, each scrolled into view first (audit
+ * 2026-11-24 TEST-2008: every field, select and button, not two of them).
+ */
+async function coveredControls(page: Page, bar: import("@playwright/test").Locator): Promise<string[]> {
+  const controls = bar.locator(".line > .row").locator("input, select, button");
+  const n = await controls.count();
+  expect(n, "the strip's controls").toBeGreaterThan(3);
+  const bad: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const c = controls.nth(i);
+    if (!(await c.isVisible())) continue;
+    await c.scrollIntoViewIfNeeded();
+    const hit = await c.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return at && (el === at || el.contains(at) || (el as HTMLInputElement).labels?.[0]?.contains(at)) ? "" : `${el.tagName}[${el.getAttribute("aria-label") ?? el.textContent?.trim()}] under ${at?.tagName}.${at?.className}`;
+    });
+    if (hit) bad.push(hit);
+  }
+  return bad;
+}
+
 test.describe("round 20, UI-1901: More never lies over a field at 600x420", () => {
   for (const locale of LOCALES) {
     test(`the wall bar's fields and the gable dormer's pitch take a real click at 600x420 (UI-1901, ${locale})`, async ({ app, page }) => {
@@ -323,6 +347,8 @@ test.describe("round 20, UI-1901: More never lies over a field at 600x420", () =
         const field = wall.getByLabel(tr(locale as Locale, key));
         expect(await clickLandsIn(page, field), `${locale} ${key}`).toBe("ok");
       }
+      // Every control of the strip, the last one before More too (TEST-2008).
+      expect(await coveredControls(page, wall), locale).toEqual([]);
       // The scrolled strip and More side by side: More is not inside the strip.
       const inside = await wall.getByTestId("def-more").evaluate((b) => !!b.closest(".row"));
       expect(inside).toBe(false);
@@ -341,6 +367,7 @@ test.describe("round 20, UI-1901: More never lies over a field at 600x420", () =
       await expect(db.getByTestId("dormer-more")).toBeVisible();
       const field = db.getByLabel(tr(locale as Locale, "edge.pitch"));
       expect(await clickLandsIn(page, field), `${locale} dormer pitch`).toBe("ok");
+      expect(await coveredControls(page, db), locale).toEqual([]);
       const inside = await db.getByTestId("dormer-more").evaluate((b) => !!b.closest(".row"));
       expect(inside).toBe(false);
     });
