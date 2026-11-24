@@ -711,8 +711,7 @@ mod tests {
         ] {
             let (r, used) = crate::work::bounded_by(1, || placement(&p, it));
             assert_eq!((r, used), (Ok(None), 0), "{it:?}");
-            let (r, used) =
-                crate::work::bounded_by(1, || place(&mut p, it, Some(1.0), None, None));
+            let (r, used) = crate::work::bounded_by(1, || place(&mut p, it, Some(1.0), None, None));
             assert!(r.unwrap().is_err(), "{it:?}");
             assert_eq!(used, 0, "{it:?}");
             assert!(check_item(&p, it).is_err());

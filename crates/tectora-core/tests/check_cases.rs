@@ -551,7 +551,13 @@ mod manual_face_crossing {
         // (a T touch): the lobes count +2 and -4 m², the shoelace 2 m²
         // instead of 6. Only the on-edge pass of `folded_loop` sees it.
         let t_touch = [(0.0, 0.0), (2.0, 1.0), (6.0, 3.0), (4.0, 0.0), (0.0, 2.0)];
-        let near_t_touch = [(0.0, 0.0), (2.0005, 1.0), (6.0, 3.0), (4.0, 0.0), (0.0, 2.0)];
+        let near_t_touch = [
+            (0.0, 0.0),
+            (2.0005, 1.0),
+            (6.0, 3.0),
+            (4.0, 0.0),
+            (0.0, 2.0),
+        ];
         for (name, pts) in [
             ("t_touch", &t_touch[..]),
             ("near_t_touch", &near_t_touch[..]),
@@ -599,9 +605,8 @@ mod manual_face_crossing {
         assert!(warned);
         // The T touch stored beside the roof: warned about too (TEST-2006).
         let mut p = tectora_core::examples::find("gable").unwrap().project();
-        p.manual_faces.push(face(
-            &t_touch.map(|(x, y)| (x + 20.0, y)),
-        ));
+        p.manual_faces
+            .push(face(&t_touch.map(|(x, y)| (x + 20.0, y))));
         let warned = generate_project(&p)
             .iter()
             .flat_map(|g| g.warnings.iter())
@@ -760,10 +765,16 @@ mod manual_faces_overlap {
         assert!(!w[0].kind.is_notice());
         let json = serde_json::to_value(&w[0]).unwrap();
         assert_eq!(json["kind"], "manual_faces_overlap");
-        assert_eq!((json["face"].as_u64(), json["other_face"].as_u64()), (Some(0), Some(1)));
+        assert_eq!(
+            (json["face"].as_u64(), json["other_face"].as_u64()),
+            (Some(0), Some(1))
+        );
         // The report lists it at job level and keeps both areas.
         let report = tectora_core::report::calc(&p);
-        assert_eq!(report["warnings"][0]["kind"], "manual_faces_overlap", "{report}");
+        assert_eq!(
+            report["warnings"][0]["kind"], "manual_faces_overlap",
+            "{report}"
+        );
         let a = 100.0 / 30f64.to_radians().cos();
         for i in 0..2 {
             near(report["manual_faces"][i]["area"].as_f64().unwrap(), a);

@@ -293,7 +293,9 @@ fn every_roof_calculation_of_a_tool_is_bounded() {
                             || whole
                     }
                     "roof_trouble(" => f == "export_ready",
-                    "position::place(" | "position::placement(" | "position::placements("
+                    "position::place("
+                    | "position::placement("
+                    | "position::placements("
                     | "bare_roof(" => inside_calculate(&lines, i) || whole,
                     // Bounded in the core by work; a heavy job also within
                     // the commit timeout (`Server::bounded`).

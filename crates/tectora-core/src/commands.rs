@@ -188,10 +188,8 @@ pub fn place_item(
     crate::edit::position::check_place(project, it, from_eave, from_left, from_right)
         .map_err(refused)?;
     let mut moved = project.clone();
-    calculating(|| {
-        crate::edit::position::place(&mut moved, it, from_eave, from_left, from_right)
-    })?
-    .map_err(refused)?;
+    calculating(|| crate::edit::position::place(&mut moved, it, from_eave, from_left, from_right))?
+        .map_err(refused)?;
     Ok(moved)
 }
 

@@ -227,7 +227,12 @@ fn engine_matches_dacad() {
 #[test]
 fn no_case_without_hand_drawn_faces_gets_a_hand_drawn_face_warning() {
     use tectora_core::check::WarningKind as W;
-    let mine = |k: W| matches!(k, W::ManualFaceCrosses | W::ManualFacesOverlap | W::ManualFaceOverRoof);
+    let mine = |k: W| {
+        matches!(
+            k,
+            W::ManualFaceCrosses | W::ManualFacesOverlap | W::ManualFaceOverRoof
+        )
+    };
     let mut projects: Vec<(String, Project)> = fixtures()
         .into_iter()
         .chain(fixtures_in("multiroof"))

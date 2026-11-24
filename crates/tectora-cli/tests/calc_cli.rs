@@ -392,7 +392,8 @@ fn the_summary_carries_the_job_level_warnings_of_a_job_of_faces_only() {
     };
     let bow = face(&[(10.0, 0.0), (14.0, 4.0), (14.0, 0.0), (10.0, 4.0)]);
     let square = face(&[(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)]);
-    let only = json!({ "name": "Faces", "parts": [], "manual_faces": [square.clone(), bow, square] });
+    let only =
+        json!({ "name": "Faces", "parts": [], "manual_faces": [square.clone(), bow, square] });
     let (code, r) = calc_status(&job("faces-warned", &only));
     assert_eq!(code, Some(0), "{r}");
     let kinds: Vec<&str> = r["warnings"]
@@ -401,11 +402,22 @@ fn the_summary_carries_the_job_level_warnings_of_a_job_of_faces_only() {
         .iter()
         .map(|w| w["kind"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, ["manual_face_crosses", "manual_faces_overlap"], "{r}");
+    assert_eq!(
+        kinds,
+        ["manual_face_crosses", "manual_faces_overlap"],
+        "{r}"
+    );
     let w = &r["warnings"][1];
-    assert_eq!((w["face"].as_u64(), w["other_face"].as_u64()), (Some(0), Some(2)), "{w}");
+    assert_eq!(
+        (w["face"].as_u64(), w["other_face"].as_u64()),
+        (Some(0), Some(2)),
+        "{w}"
+    );
     assert!((w["value"].as_f64().unwrap() - 24.0).abs() < 1e-6, "{w}");
-    assert!(w["message"].as_str().unwrap().contains("counted twice"), "{w}");
+    assert!(
+        w["message"].as_str().unwrap().contains("counted twice"),
+        "{w}"
+    );
     // The areas are kept: both squares and the bow tie's lobes count.
     let area = r["quantities"]["roof_area"].as_f64().unwrap();
     assert!((area - 48.0 / 30f64.to_radians().cos()).abs() < 0.01, "{r}");
