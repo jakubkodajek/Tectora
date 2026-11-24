@@ -2,7 +2,7 @@
 // it does; a Redo through the core read "Reverting…" in every language.
 import { describe, expect, it } from "vitest";
 import { DICTS } from "./i18n.svelte";
-import { reviewStatusKey } from "./reviewstatus";
+import { acceptTs, reviewStatusKey } from "./reviewstatus";
 
 describe("reviewStatusKey", () => {
   it("names Undo and Redo as such, Revert and the put-back as before", () => {
@@ -18,5 +18,20 @@ describe("reviewStatusKey", () => {
       expect(d[reviewStatusKey("redo")], locale).not.toBe(d["editor.reverting"]);
       expect(d[reviewStatusKey("undo")], locale).not.toBe(d["editor.reverting"]);
     }
+  });
+});
+
+// Audit 2026-11-24 TEST-2012: Accept was sent with the history read's newest
+// entry while the banner came from a newer review read, so the AI's put-back
+// the banner showed stayed waiting and the banner came back.
+describe("acceptTs", () => {
+  it("goes up to the newest step of the review shown, past an older history read", () => {
+    expect(acceptTs(127835, 126113, [127168, 128098])).toBe(128098);
+    expect(acceptTs(null, 126113, [128098])).toBe(128098);
+  });
+  it("keeps everything shown when the history read is the newest", () => {
+    expect(acceptTs(130000, 126113, [128098])).toBe(130000);
+    expect(acceptTs(null, 126113, undefined)).toBe(126113);
+    expect(acceptTs(120000, 126113, [])).toBe(126113);
   });
 });

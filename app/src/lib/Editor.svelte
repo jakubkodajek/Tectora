@@ -9,7 +9,7 @@
   import PlaceBar from "./PlaceBar.svelte";
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
-  import { reviewStatusKey, type ReviewPress } from "./reviewstatus";
+  import { acceptTs, reviewStatusKey, type ReviewPress } from "./reviewstatus";
   import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey, draftKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
@@ -1715,11 +1715,13 @@
    * a `busy` answer keeps the AI's changes pending and says so under
    * Accept's own title (ERR-1103). It accepts everything the editor has
    * shown (`seenTs`), also the AI's own reverts that are no listed step,
-   * so one Accept ends the review (audit 2026-11-24 ERR-1801).
+   * so one Accept ends the review (audit 2026-11-24 ERR-1801), and at least
+   * up to the newest step of the review shown (TEST-2012).
    */
   async function acceptNow() {
     if (!pending) return;
-    const ts = Math.max(seenTs ?? pending.ts_ms, pending.ts_ms);
+    // Also up to the newest step the banner's review lists (TEST-2012).
+    const ts = acceptTs(seenTs, pending.ts_ms, review?.steps);
     const name = project?.name.trim() || id;
     // A read of the review on its way from before the Accept never brings
     // the banner back after it (ERR-1905).
