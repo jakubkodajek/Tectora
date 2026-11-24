@@ -154,11 +154,20 @@ test.describe("round 20, design 2: an older answer never replaces a newer one", 
     await expect(review(page).locator("button.accept")).toBeVisible();
     // The retry is out (held) when the user accepts.
     await expect.poll(() => retried, { timeout: 10_000 }).toBe(1);
+    // From now on the editor hears of no file change, so no newer read than
+    // the editor's own after Accept can hide a held read applied late
+    // (audit 2026-11-24 TEST-2007 U10, verifier note U09).
+    await page.route("**/__events", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: [] }) }));
+    await page.waitForResponse((r) => r.url().includes("__events"));
+    const reads = timeline(page, "review_status");
     await review(page).locator("button.accept").click();
     await expect(review(page)).toHaveCount(0);
     expect((await mcp.call("get_review", { id })).pending).toBeNull();
+    // The editor's own read after Accept is in; then the held one is let go.
+    await expect.poll(() => reads.answered.length, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
     open();
-    await page.waitForTimeout(800);
+    await expect.poll(() => reads.answered.length, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+    await frame(page);
     await expect(review(page)).toHaveCount(0);
     const p = await loadProject(id);
     expect([p.notes, p.job.customer]).toEqual(["A1", "A2"]);
