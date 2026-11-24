@@ -211,3 +211,34 @@ test.describe("round 19, UX-1802: Undo / Redo pressed in the dock while an Undo 
     expect(await page.locator(".stack .toast.error").count()).toBe(0);
   });
 });
+
+test.describe("round 19, UX-1803 / UI-1803: the status bar during an Undo / Redo through the core", () => {
+  test("Ctrl+Z says undoing and Ctrl+Shift+Z says redoing while the core answers, not reverting (UX-1803)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 stav zpět");
+    await openEditor(app, "R19 stav zpět");
+    await oneAiSave(page, mcp, id);
+    await app.saved();
+    for (const [key, cmd, text, check] of [
+      [undo, "revert_changes", "editor.undoing", (p: any) => p.parts[0].edges[0].overhang !== 0.9],
+      [redo, "take_back_revert", "editor.redoing", (p: any) => p.parts[0].edges[0].overhang === 0.9],
+    ] as const) {
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      let held = 0;
+      await page.route(`**/${cmd}`, async (route) => {
+        held++;
+        const res = await route.fetch();
+        await gate;
+        await route.fulfill({ response: res }).catch(() => {});
+      });
+      await key(page);
+      await expect.poll(() => held).toBe(1);
+      await expect(footerSave(page)).toHaveText(cs(text));
+      await expect(footerSave(page)).not.toHaveText(cs("editor.reverting"));
+      open();
+      await waitForProject(id, check);
+      await expect(footerSave(page)).toHaveText(cs("editor.saved"));
+      await page.unroute(`**/${cmd}`);
+    }
+  });
+});

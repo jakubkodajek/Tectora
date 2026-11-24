@@ -1099,6 +1099,8 @@ const cs: Dict = {
   "manual.refused.face_crosses": "Plocha se neuzavřela: její obrys kříží sám sebe. Klikejte na rohy postupně po obvodu plochy.",
   "manual.refused.face_corners": "Plocha se neuzavřela: potřebuje aspoň 3 různé rohy.",
   "manual.refused.pitch_range": "Plocha se neuzavřela: sklon musí být 0 až 89,9°.",
+  "editor.undoing": "Vracím krok zpět…",
+  "editor.redoing": "Provádím krok znovu…",
 };
 
 const sk: Dict = {
@@ -2189,6 +2191,8 @@ const sk: Dict = {
   "manual.refused.face_crosses": "Plocha sa neuzavrela: jej obrys kríži sám seba. Klikajte na rohy postupne po obvode plochy.",
   "manual.refused.face_corners": "Plocha sa neuzavrela: potrebuje aspoň 3 rôzne rohy.",
   "manual.refused.pitch_range": "Plocha sa neuzavrela: sklon musí byť 0 až 89,9°.",
+  "editor.undoing": "Vraciam krok späť…",
+  "editor.redoing": "Vykonávam krok znova…",
 };
 
 const en: Dict = {
@@ -3279,6 +3283,8 @@ const en: Dict = {
   "manual.refused.face_crosses": "The face was not closed: its outline crosses itself. Click the corners in order around the face.",
   "manual.refused.face_corners": "The face was not closed: it needs at least 3 different corners.",
   "manual.refused.pitch_range": "The face was not closed: the pitch must be 0 to 89.9°.",
+  "editor.undoing": "Undoing…",
+  "editor.redoing": "Redoing…",
 };
 
 const de: Dict = {
@@ -4369,6 +4375,8 @@ const de: Dict = {
   "manual.refused.face_crosses": "Die Fläche wurde nicht geschlossen: Ihr Umriss kreuzt sich selbst. Klicken Sie die Ecken der Reihe nach am Rand der Fläche an.",
   "manual.refused.face_corners": "Die Fläche wurde nicht geschlossen: Sie braucht mindestens 3 verschiedene Ecken.",
   "manual.refused.pitch_range": "Die Fläche wurde nicht geschlossen: Die Neigung muss 0 bis 89,9° betragen.",
+  "editor.undoing": "Wird rückgängig gemacht…",
+  "editor.redoing": "Wird wiederholt…",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };

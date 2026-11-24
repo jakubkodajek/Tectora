@@ -9,6 +9,7 @@
   import PlaceBar from "./PlaceBar.svelte";
   import { lastStep } from "./drawstep";
   import { stepWall, wallStepKey } from "./wallstep";
+  import { reviewStatusKey, type ReviewPress } from "./reviewstatus";
   import { deleteKeyHint, drawKeyHint, editorTakesUndo, isDrawKey, isMacPlatform, shortcut, undoKey, zoomKey } from "./keys";
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
@@ -1430,7 +1431,6 @@
     pendingEdits.size === 0 && saveState === "saved" && !drag.active && !isTyping(document.activeElement) && questions === 0 && !menu && openModals() === 0;
 
   /** What a press is, for its notices: Revert of several steps has its own (plural) title (UI-1301). */
-  type ReviewPress = "revert" | "revertAll" | "restoreOffer" | "undo" | "redo";
 
   function reviewTransaction(what: ReviewPress, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void): Promise<void> {
     if (reviewing.active || reviewPress) return Promise.resolve();
@@ -1502,7 +1502,7 @@
    * the undo history, a new step when not given.
    */
   function runReview(what: ReviewPress, name: string, call: () => Promise<Project>, after: (p: Project) => void | Promise<void>, place?: () => void) {
-    reviewWhat = what === "restoreOffer" ? "restoreOffer" : "revert";
+    reviewWhat = what;
     return reviewing.run(async () => {
       try {
         clearTimeout(saveTimer);
@@ -2528,7 +2528,7 @@
   );
   let reviewOut = $state(false);
   /** Which review action is out, for the status bar's word (UX-1102). */
-  let reviewWhat = $state<"revert" | "restoreOffer">("revert");
+  let reviewWhat = $state<ReviewPress>("revert");
   /** The user's input is refused now: a drag is open or a review action is out (one predicate for every refusal). */
   const inputClosed = () => closedForInput(drag, reviewing);
   /**
@@ -3485,7 +3485,7 @@
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save" class:failed={!reviewOut && saveState === "failed"}>
-        {#if reviewOut}{t(reviewWhat === "restoreOffer" ? "editor.restoringOffer" : "editor.reverting")}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}<span class="state-text" title={t("editor.outsideState")}>{t("editor.outsideState")}</span>{:else if saveState === "saved" && !editsWaiting && outsideNewer}<span class="state-text" title={t("editor.outsideNewerState")} data-testid="status-newer">{t("editor.outsideNewerState")}</span>{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
+        {#if reviewOut}{t(reviewStatusKey(reviewWhat))}{:else if saveState === "saved" && !editsWaiting && outsideUnreadable}<span class="state-text" title={t("editor.outsideState")}>{t("editor.outsideState")}</span>{:else if saveState === "saved" && !editsWaiting && outsideNewer}<span class="state-text" title={t("editor.outsideNewerState")} data-testid="status-newer">{t("editor.outsideNewerState")}</span>{:else if saveState === "saved" && !editsWaiting}<Icon name="check" size={13} />{t("editor.saved")}{:else if saveState === "saving" || saveState === "saved"}{t("editor.saving")}{:else if saveState === "failed"}<span class="save-failed"><i class="dot"></i>{t("editor.saveFailed")}</span><button class="retry" onclick={save}>{t("err.retry")}</button>{:else}{t("editor.dirty")}{/if}
       </span>
     </footer>
   {:else if !loadError}
