@@ -7,9 +7,10 @@
 // HUNT-2002 two hand-drawn faces on each other are warned about in Results
 // UX-2004   Postup of a job of hand-drawn faces only has no empty line heading
 // TEST-2009 U20: one hand-drawn face alone is listed under the areas
+// UI-2001   the wall bar's tip with no wall selected wraps, never cut mid-word
 import type { Page } from "@playwright/test";
 import { bridge, createExample, expect, loadProject, test } from "./fixtures";
-import { cs } from "./i18n";
+import { cs, LOCALES, tr } from "./i18n";
 
 // TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
 test.afterEach(async ({ page }, info) => {
@@ -116,4 +117,24 @@ test.describe("round 21: a job of hand-drawn faces only", () => {
     await expect(panel.getByRole("heading", { name: cs("bd.total") })).toHaveCount(1);
     await expect(panel.getByRole("heading", { name: cs("res.lines") })).toHaveCount(0);
   });
+});
+
+test.describe("round 21, UI-2001: the wall bar's tip at the reference size", () => {
+  for (const locale of LOCALES) {
+    test(`the tip with no wall selected is shown whole at 1360x860 in ${locale} (UI-2001)`, async ({ app, page }) => {
+      await createExample("gable", `R21 tip ${locale}`);
+      await app.open({ locale });
+      await app.openJob(`R21 tip ${locale}`);
+      const tip = page.getByTestId("def-tip");
+      await expect(tip).toHaveText(tr(locale, "editor.tip"));
+      const fit = await tip.evaluate((p) => {
+        const row = p.parentElement!;
+        return { tip: p.scrollWidth - p.clientWidth, row: row.scrollWidth - row.clientWidth, h: p.clientHeight, bottom: row.getBoundingClientRect().bottom - p.getBoundingClientRect().bottom };
+      });
+      // Nothing runs out of the tip or the strip: the text wraps inside it.
+      expect(fit.tip).toBeLessThanOrEqual(0);
+      expect(fit.row).toBeLessThanOrEqual(1);
+      expect(fit.bottom).toBeGreaterThanOrEqual(-1);
+    });
+  }
 });
