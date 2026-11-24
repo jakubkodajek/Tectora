@@ -567,10 +567,18 @@
    */
   /** The last read of the history went through: `activity` is the log as it is (for `seenTs`, design B). */
   let activityOk = false;
+  /** The last read of the review status succeeded (a failed one reads as "nothing waits"). */
+  let reviewRead = true;
   async function refreshActivity(hold?: () => boolean): Promise<boolean> {
     try {
-      const [a, r, rec] = await Promise.all([api.projectActivity(id), api.reviewStatus(id).catch(() => null), api.resultRecalculation(id).catch(() => null)]);
+      let reviewFailed = false;
+      const [a, r, rec] = await Promise.all([
+        api.projectActivity(id),
+        api.reviewStatus(id).catch(() => ((reviewFailed = true), null)),
+        api.resultRecalculation(id).catch(() => null),
+      ]);
       if (hold?.()) return false;
+      reviewRead = !reviewFailed;
       activity = a;
       review = r;
       recalculation = rec;
@@ -621,8 +629,17 @@
     // (UI-1702, design E).
     await refreshActivity();
     if (destroyed) return;
-    if (pendingList.some((a) => !a.created)) {
-      info(t("review.deleteChanged"));
+    // A failed read is "could not check", not "nothing waits": nothing is
+    // deleted (audit 2026-11-24 errors To-check 2).
+    const unchecked = !activityOk || !reviewRead;
+    if (unchecked || pendingList.some((a) => !a.created)) {
+      info(t(unchecked ? "review.deleteUnchecked" : "review.deleteChanged"));
+      // The pressed Delete job may be gone (the new step brings Revert):
+      // the focus goes to the banner, not to the page (UI-1804).
+      await tick();
+      if (destroyed) return;
+      if (bannerEl?.isConnected) bannerEl.focus();
+      else document.getElementById(dockIds.tab(dock))?.focus();
       return;
     }
     deleted = true;

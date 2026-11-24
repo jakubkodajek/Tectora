@@ -242,3 +242,53 @@ test.describe("round 19, UX-1803 / UI-1803: the status bar during an Undo / Redo
     }
   });
 });
+
+/** The next confirm() waits for the test: `answer(true|false)` gives the user's answer. */
+async function holdConfirm(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.confirm = (m: string) => {
+      w.__e2e.dialogs.push({ kind: "confirm", message: String(m) });
+      return new Promise((res) => (w.__answer = res));
+    };
+  });
+  await page.evaluate(() => delete (window as any).__answer);
+  return {
+    asked: () => expect.poll(() => page.evaluate(() => typeof (window as any).__answer)).toBe("function"),
+    answer: (yes: boolean) => page.evaluate((y) => (window as any).__answer(y), yes),
+  };
+}
+
+test.describe("round 19, UI-1804: a refused Delete job", () => {
+  test("an AI step during the question: nothing is deleted and the focus is on the banner, not the page (UI-1804)", async ({ app, page, mcp }) => {
+    const created = await mcp.call("create_from_example", { example_id: "gable", name: "R19 fokus smazat", summary: "Založeno podle výkresu" });
+    const id = created.id as string;
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("R19 fokus smazat");
+    const q = await holdConfirm(page);
+    await review(page).getByTestId("review-delete").click();
+    await q.asked();
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    await waitForProject(id, (p) => p.notes === "Od AI");
+    await q.answer(true);
+    await expect(app.toasts().filter({ hasText: cs("review.deleteChanged") })).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.closest(".review") !== null)).toBe(true);
+    expect(fs.existsSync(path.join(LIBRARY_DIR, `${id}.tectora`))).toBe(true);
+  });
+
+  test("a review read that fails during the question: nothing is deleted, the note says it could not be checked", async ({ app, page, mcp }) => {
+    const created = await mcp.call("create_from_example", { example_id: "gable", name: "R19 neověřeno", summary: "Založeno podle výkresu" });
+    const id = created.id as string;
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("R19 neověřeno");
+    const q = await holdConfirm(page);
+    await review(page).getByTestId("review-delete").click();
+    await q.asked();
+    await page.route("**/review_status", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ err: { code: "io", id, detail: "read failed" } }) }));
+    await q.answer(true);
+    await expect(app.toasts().filter({ hasText: cs("review.deleteUnchecked") })).toHaveCount(1);
+    await expect(page.locator(".editor")).toBeVisible();
+    expect(fs.existsSync(path.join(LIBRARY_DIR, `${id}.tectora`))).toBe(true);
+    app.errors.length = 0;
+  });
+});

@@ -1101,6 +1101,7 @@ const cs: Dict = {
   "manual.refused.pitch_range": "Plocha se neuzavřela: sklon musí být 0 až 89,9°.",
   "editor.undoing": "Vracím krok zpět…",
   "editor.redoing": "Provádím krok znovu…",
+  "review.deleteUnchecked": "Zakázka se nesmazala: nepodařilo se ověřit, zda do ní AI mezitím nepřidala další krok. Zkuste to znovu.",
 };
 
 const sk: Dict = {
@@ -2193,6 +2194,7 @@ const sk: Dict = {
   "manual.refused.pitch_range": "Plocha sa neuzavrela: sklon musí byť 0 až 89,9°.",
   "editor.undoing": "Vraciam krok späť…",
   "editor.redoing": "Vykonávam krok znova…",
+  "review.deleteUnchecked": "Zákazka sa nezmazala: nepodarilo sa overiť, či do nej AI medzitým nepridala ďalší krok. Skúste to znova.",
 };
 
 const en: Dict = {
@@ -3285,6 +3287,7 @@ const en: Dict = {
   "manual.refused.pitch_range": "The face was not closed: the pitch must be 0 to 89.9°.",
   "editor.undoing": "Undoing…",
   "editor.redoing": "Redoing…",
+  "review.deleteUnchecked": "The job was not deleted: it could not be checked whether the AI added another step meanwhile. Try again.",
 };
 
 const de: Dict = {
@@ -4377,6 +4380,7 @@ const de: Dict = {
   "manual.refused.pitch_range": "Die Fläche wurde nicht geschlossen: Die Neigung muss 0 bis 89,9° betragen.",
   "editor.undoing": "Wird rückgängig gemacht…",
   "editor.redoing": "Wird wiederholt…",
+  "review.deleteUnchecked": "Der Auftrag wurde nicht gelöscht: Es ließ sich nicht prüfen, ob die KI inzwischen einen weiteren Schritt hinzugefügt hat. Versuchen Sie es erneut.",
 };
 
 export const DICTS: Record<Locale, Dict> = { cs, sk, en, de };
