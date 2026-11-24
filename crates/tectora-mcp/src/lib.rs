@@ -1094,11 +1094,12 @@ fn base_tools() -> Value {
         },
         {
             "name": "list_projects",
-            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, `review_pending` (how many AI steps wait for the user's review, null when nothing waits), and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
                 "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
                 "by_ai": { "type": "boolean", "description": "Only jobs last changed by an AI client." },
+                "review_pending": { "type": "boolean", "description": "Only jobs whose AI changes wait for the user's review (Accept or Revert in the app)." },
                 "modified_from": { "type": "string", "description": "Last changed on or after this day, YYYY-MM-DD." },
                 "modified_to": { "type": "string", "description": "Last changed on or before this day, YYYY-MM-DD." },
                 "min_area": { "type": "number", "description": "Roof area at least, m²." },
@@ -1765,6 +1766,7 @@ impl Server {
                             "pitch_range_deg": p.pitch_range.map(|[a, b]| [round(a, 2), round(b, 2)]),
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
+                            "review_pending": p.review_pending,
                         })
                     })
                     .collect();
@@ -2980,6 +2982,46 @@ mod tests {
             (Some("browsing"), None)
         );
         let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
+    /// UX-2003 (owner decision 3 of round 21): the card says how many AI
+    /// steps wait for the user's review, and `review_pending` finds them;
+    /// a job the user saved has none.
+    #[test]
+    fn list_projects_names_and_finds_the_jobs_waiting_for_review() {
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let mine = s.store.save_as(None, &p, "user", "Created").unwrap();
+        let theirs = s.store.save_as(None, &p, "user", "Created").unwrap();
+        for n in ["A1", "A2"] {
+            s.call_tool(
+                "update_job",
+                &json!({ "id": theirs, "notes": n, "summary": n }),
+            )
+            .unwrap();
+        }
+        let r = s.call_tool("list_projects", &json!({})).unwrap();
+        let card = |id: &str| {
+            r["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(card(&theirs)["review_pending"], 2);
+        assert!(card(&mine)["review_pending"].is_null());
+        let r = s
+            .call_tool("list_projects", &json!({ "review_pending": true }))
+            .unwrap();
+        let ids: Vec<&str> = r["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![theirs.as_str()]);
     }
 
     #[test]

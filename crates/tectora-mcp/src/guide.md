@@ -174,9 +174,13 @@ The tools cover every operation of the Tectora editor:
   `get_history` shows). Revert all puts the settled copy back, however
   many changes you made, and the user's Accept accepts everything they
   have seen. `revert_to` with `since_ts_ms` reverts your whole review the
-  same way; it answers "revert_outside" and does nothing when another
-  program (an older Tectora) saved the design meanwhile without a history
-  entry: then ask the user to accept or revert your changes one by one. A job received from
+  same way. When another program (an older Tectora, a sync tool, a hand
+  edit) saved the design meanwhile without a history entry, its edit is
+  the user's: it is kept in the settled copy and Revert all keeps it (an
+  edit of a value you set is a conflict, "revert_conflict"). Only when
+  Tectora cannot tell that edit apart from yours it answers
+  "revert_outside" and does nothing: then ask the user to revert your
+  steps one by one in the AI tab, or to accept them. A job received from
   a colleague (`import_job`) names the sender's own entries
   `user (received)`, never `user`. `get_history` marks an entry
   that is not in the design with `undone: true` (a revert with `undone` was
@@ -191,7 +195,10 @@ The tools cover every operation of the Tectora editor:
   the same.
 - Library: `list_projects` searches the roofs made so far (words in name,
   number, customer, address or notes, accents ignored; filters by status,
-  AI change, date range and roof area; sort and limit). `list_examples`,
+  AI change, waiting review, date range and roof area; sort and limit).
+  Each job's `review_pending` is the number of AI steps that wait for the
+  user's Accept or Revert (null when nothing waits); `review_pending: true`
+  lists only those jobs, the app's "waits for review" filter. `list_examples`,
   `create_from_example`, `duplicate_project` (with `job` it starts a new job
   for another customer from a past roof, without the old files when
   `with_files` is false), `delete_project` (only when the user asks).

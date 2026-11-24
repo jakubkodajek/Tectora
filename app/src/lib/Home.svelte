@@ -52,7 +52,7 @@
     onsettings: () => void;
   } = $props();
 
-  type Filter = "all" | JobStatus | "ai" | "examples" | "trash";
+  type Filter = "all" | JobStatus | "ai" | "review" | "examples" | "trash";
   type SortKey = "modified" | "name" | "number" | "customer" | "area";
   let query = $state("");
   let filter = $state<Filter>("all");
@@ -67,12 +67,14 @@
   // The core's folding (library::fold), so the MCP search and this one find the same jobs.
   const norm = fold;
   const counts = $derived.by(() => {
-    const c: Record<string, number> = { all: projects.length, ai: 0 };
+    const c: Record<string, number> = { all: projects.length, ai: 0, review: 0 };
     for (const s of JOB_STATUSES) c[s] = 0;
     for (const p of projects) {
       c[p.job.status] = (c[p.job.status] ?? 0) + 1;
       // One rule for "changed by AI", the core's (UX-806).
       if (p.changed_by_ai) c.ai++;
+      // The banner's check, from the core (UX-2003).
+      if (p.review_pending) c.review++;
     }
     return c;
   });
@@ -83,7 +85,8 @@
     const list = projects.filter((p) => {
       if (year !== null && yearOf(p.modified_ms) !== year) return false;
       if (filter === "ai" && !p.changed_by_ai) return false;
-      if (filter !== "all" && filter !== "ai" && filter !== "examples" && filter !== "trash" && p.job.status !== filter) return false;
+      if (filter === "review" && !p.review_pending) return false;
+      if (filter !== "all" && filter !== "ai" && filter !== "review" && filter !== "examples" && filter !== "trash" && p.job.status !== filter) return false;
       if (!words.length) return true;
       const hay = norm([p.name, p.job.number, p.job.customer, p.job.address, p.notes].join("\n"));
       return words.every((w) => hay.includes(w));
@@ -104,7 +107,7 @@
   const selected = $derived(projects.find((p) => p.id === selectedId) ?? null);
   /** The list row that takes the Tab stop: the selected one, else the first. */
   const focusId = $derived(rows.some((p) => p.id === selectedId) ? selectedId : (rows[0]?.id ?? null));
-  const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
+  const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "review" ? t("lib.waitsReview") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
   let tbody: HTMLElement | undefined = $state();
   /** The row a double click's first press selected; the detail pane may move the rows before the second (UI-008). */
   const rowPress = firstPress<string>();
@@ -339,6 +342,9 @@
       <button class:on={filter === "ai"} onclick={() => (filter = "ai")}>
         <Icon name="sparkle" size={16} />{t("lib.byAi")}<span>{counts.ai}</span>
       </button>
+      <button class:on={filter === "review"} onclick={() => (filter = "review")} data-testid="lib-review">
+        <Icon name="eye" size={16} />{t("lib.waitsReview")}<span>{counts.review}</span>
+      </button>
       {#if years.length > 1}
         <label class="year">
           <span>{t("lib.year")}</span>
@@ -386,7 +392,7 @@
         </div>
       {:else}
         <div class="head">
-          <h2>{filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : t(`status.${filter}`)} <span class="count">{rows.length}</span></h2>
+          <h2>{filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "review" ? t("lib.waitsReview") : t(`status.${filter}`)} <span class="count">{rows.length}</span></h2>
           <div class="seg">
             <button class:on={prefs.libraryView === "list"} onclick={() => setView("list")} aria-label={t("lib.list")} title={t("lib.list")}><Icon name="list" size={16} /></button>
             <button class:on={prefs.libraryView === "grid"} onclick={() => setView("grid")} aria-label={t("lib.grid")} title={t("lib.grid")}><Icon name="grid" size={16} /></button>
@@ -488,6 +494,9 @@
                     {#if p.changed_by_ai}
                       <span class="ai-tag" data-testid="ai-tag" title={entryText(p.changed_by_ai)}><Icon name="sparkle" size={11} />{actorName(p.changed_by_ai.actor)}</span>
                     {/if}
+                    {#if p.review_pending}
+                      <span class="waits" data-testid="review-mark" title={t("lib.waitsReviewHint", { n: p.review_pending })}><i></i>{t("lib.waitsReview")}</span>
+                    {/if}
                   </td>
                 </tr>
               {/each}
@@ -523,6 +532,7 @@
           {/if}
           {#if selected.has_result}<dt>{t("lib.stored")}</dt><dd>{#if offerDiffers(selected)}<span class="differs" title={t("lib.differsHint")} data-testid="detail-differs"><i></i>{t("lib.differs")}</span>{:else}{t("lib.storedYes")}{/if}</dd>{/if}
           <dt>{t("lib.colModified")}</dt><dd>{relativeTime(selected.modified_ms)}</dd>
+          {#if selected.review_pending}<dt>{t("lib.review")}</dt><dd><span class="waits" data-testid="detail-review-mark" title={t("lib.waitsReviewHint", { n: selected.review_pending })}><i></i>{t("lib.waitsReview")}</span></dd>{/if}
         </dl>
         {#if selected.notes}<p class="notes">{selected.notes}</p>{/if}
         {#if selected.last_activity}
@@ -983,6 +993,26 @@
   .mod {
     white-space: nowrap;
     color: var(--text-2);
+  }
+  /* AI changes wait for the user's review (UX-2003): a status mark, not a panel. */
+  .waits {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ai-strong);
+    white-space: nowrap;
+  }
+  .waits i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ai);
+  }
+  dd .waits {
+    margin-left: 0;
   }
   .ai-tag {
     display: inline-flex;
