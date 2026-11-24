@@ -466,7 +466,10 @@ export function refuseInput(node: HTMLElement, opts: { on: boolean }) {
 export function inertBut(node: HTMLElement, opts: { on: boolean; keep: string }) {
   let now = opts;
   const apply = () => {
-    for (const el of node.children) if (el instanceof HTMLElement && !el.classList.contains(now.keep)) el.inert = now.on;
+    // Every child is set each time: off opens all of them whatever `keep`
+    // names (a review call flips `on` and `keep` in one update, UI-1801),
+    // and a change of `keep` while on moves the live child.
+    for (const el of node.children) if (el instanceof HTMLElement) el.inert = now.on && !el.classList.contains(now.keep);
   };
   const seen = new MutationObserver(apply);
   seen.observe(node, { childList: true });

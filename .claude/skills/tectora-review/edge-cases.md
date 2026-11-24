@@ -564,6 +564,14 @@ case, and assert that it really came while the pointer was down.
   `asking`'s `finally`, and refuses a spread inside a `notify(` literal
   (TEST-1303, TEST-1305). A test whose steps inside the 3 s budget are
   wall-clock sets the dev build's `window.__e2e.prepareMs` (TEST-1306).
+- The editor is live again after every transaction (round 19, UI-1801):
+  after the banner's Revert, Revert all, the AI tab's Revert, Ctrl+Z /
+  Ctrl+Y through the core and the offer put-back, a real mouse click on a
+  wall selects it and a 3D view button reacts. `inertBut` sets every child
+  on each update (off opens all, whatever `keep` names). E2E presses here
+  use `page.mouse.click` on a point no other element covers, never
+  `dispatchEvent` (it reaches inert elements) and never a swallowed click
+  failure. `inertbut.test.ts`, `app/e2e/audit-r19-b.e2e.ts`.
 
 ## 16. Huge but valid jobs reach every view (@arch, @ui)
 
