@@ -585,7 +585,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "get_history",
-            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back. A revert has `kind: \"revert\"` and `undid_from` (the ts_ms of the oldest entry it undid); an entry with `undone: true` is not in the design (a revert that stands undid it; a revert with `undone` was taken back, so its changes stand again); `created: true` marks the entry that created the job (nothing to revert it to); `pending_review` marks the changes that wait for the user's review.",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back. A revert has `kind: \"revert\"` and `undid_from` (the ts_ms of the oldest entry it undid); a revert also has `took_out` and `put_back`, the ts_ms of the changes it took out of the design and put back into it (oldest first, at most 20; `took_out_count` and `put_back_count` count them all): read what a revert did from these, never from its summary; an entry with `undone: true` is not in the design (a revert that stands undid it; a revert with `undone` was taken back, so its changes stand again); `created: true` marks the entry that created the job (nothing to revert it to); `pending_review` marks the changes that wait for the user's review.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
@@ -829,6 +829,14 @@ impl Server {
                         }
                         if e.created {
                             v["created"] = json!(true);
+                        }
+                        // What a revert did, by entry time (audit
+                        // 2026-11-24 UX-1701): never read from its words.
+                        if let (Some(out), Some(back)) = (&e.took_out, &e.put_back) {
+                            v["took_out"] = json!(out);
+                            v["took_out_count"] = json!(e.took_out_count);
+                            v["put_back"] = json!(back);
+                            v["put_back_count"] = json!(e.put_back_count);
                         }
                         v
                     })
@@ -3456,6 +3464,85 @@ mod tool_coverage {
         assert_eq!(h[1]["undone"], true, "{history}");
         assert!(h[2].get("undone").is_none(), "{history}");
         assert_eq!(h[2]["pending_review"], true, "{history}");
+    }
+
+    /// ARCH-1701 / TEST-1708: the AI's `revert_to` of the user's revert of
+    /// a change the user accepted puts that change back, so it waits for
+    /// review: `get_review.pending` names the AI's entry, and
+    /// `get_history` says it put the change back.
+    #[test]
+    fn an_ais_take_back_of_the_users_revert_of_accepted_work_waits() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        call(
+            &mut s,
+            "update_job",
+            json!({ "id": id, "notes": "AI note", "summary": "AI writes a note" }),
+        );
+        let a1 = s.store.activity(&id).last().unwrap().ts_ms;
+        s.store.mark_reviewed(&id, a1).unwrap();
+        s.store
+            .revert_last_expecting(&id, USER_ACTOR, None, Some(a1))
+            .unwrap();
+        let r = s.store.activity(&id).last().unwrap().ts_ms;
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert!(review["pending"].is_null(), "{review}");
+        call(
+            &mut s,
+            "revert_to",
+            json!({ "id": id, "ts_ms": r, "summary": "Putting my note back." }),
+        );
+        let tb = s.store.activity(&id).last().unwrap().ts_ms;
+        let review = call(&mut s, "get_review", json!({ "id": id }));
+        assert_eq!(review["pending"]["steps"], json!([tb]), "{review}");
+        let history = call(&mut s, "get_history", json!({ "id": id }));
+        let h = history.as_array().unwrap();
+        assert_eq!(h[0]["put_back"], json!([a1]), "{history}");
+        assert_eq!(h[0]["took_out"], json!([]), "{history}");
+        assert_eq!(h[0]["put_back_count"], json!(1), "{history}");
+        assert_eq!(
+            h[1]["took_out"],
+            json!([a1]),
+            "the user's revert: {history}"
+        );
+        assert!(h[2].get("took_out").is_none(), "a change: {history}");
+        let listed = call(&mut s, "list_projects", json!({ "by_ai": true }));
+        assert!(listed.to_string().contains(&id), "{listed}");
+    }
+
+    /// ARCH-1702 / TEST-1708: the user deletes the job while an MCP write
+    /// is between its read and its save: nothing is written, the AI is
+    /// told the job was deleted, and the job is not back in the library.
+    #[test]
+    fn a_write_raced_by_a_delete_does_not_bring_the_job_back() {
+        use tectora_core::store::USER_ACTOR;
+        let mut s = server();
+        let p = tectora_core::examples::find("gable").unwrap().project();
+        let id = s.store.save_as(None, &p, USER_ACTOR, "Created").unwrap();
+        let (_, before) = s.load(&json!({ "id": id })).unwrap();
+        let mut next = before.clone();
+        next.notes = "AI note".into();
+        s.store.delete(&id, USER_ACTOR, "Deleted").unwrap();
+        let e = s
+            .save_onto_current(&id, &before, &next, "AI writes a note")
+            .unwrap_err();
+        assert!(
+            e.contains("no design with id") && e.contains("deleted"),
+            "{e}"
+        );
+        assert!(!s.store.exists(&id));
+        assert!(s.store.activity(&id).is_empty());
+        let listed = call(&mut s, "list_projects", json!({}));
+        assert!(!listed.to_string().contains(&id), "{listed}");
+        let e = s
+            .call_tool(
+                "update_job",
+                &json!({ "id": id, "notes": "again", "summary": "Again" }),
+            )
+            .unwrap_err();
+        assert!(e.contains("no design with id"), "{e}");
     }
 
     fn example(s: &mut Server, example_id: &str) -> String {

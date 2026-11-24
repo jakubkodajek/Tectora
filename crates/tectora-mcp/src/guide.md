@@ -159,10 +159,14 @@ The tools cover every operation of the Tectora editor:
   approved while `pending` is set. A change of yours waits exactly while it
   stands in the design: when you revert your own change, it and your revert
   are no steps (if you took everything back, nothing waits). Your revert of
-  a change the user already accepted is a step. `get_history` marks an entry
+  a change the user already accepted is a step, and so is putting back a
+  change the user accepted and then reverted (`revert_to` with the user's
+  revert): the user reviews it like a new change. `get_history` marks an entry
   that is not in the design with `undone: true` (a revert with `undone` was
   taken back, so its changes stand again), a revert with `undid_from` (the
-  ts_ms of the oldest entry it undid) and the entry that created the job
+  ts_ms of the oldest entry it undid; `took_out` and `put_back` are the
+  ts_ms of the changes it took out of the design and put back into it, read
+  what a revert did from these, never from its summary) and the entry that created the job
   with `created: true` (there is nothing to revert it to); every entry
   carries `kind` (`null` for a change). When the user presses Ctrl+Z after
   a Revert in the app, the revert is taken back by a logged revert and your
@@ -197,6 +201,9 @@ The tools cover every operation of the Tectora editor:
 - Deleting: `delete_project` and `remove_file` move the job (with its
   history and files) or the file to the library's trash for 30 days;
   `list_deleted` shows what is there and `restore_project` brings it back.
+  When the user deletes a job while your change to it is being saved, the
+  change is refused with "no design with id …" and nothing is written: the
+  job stays deleted. Do not create it again unless the user asks.
 - Files of a job (the drawings): `attach_file`, `list_files`, `remove_file`.
   Attach the drawing a roof was made from, so the colleague reviewing it has
   it at hand. Only regular files up to 256 MB of a drawing, photo or document

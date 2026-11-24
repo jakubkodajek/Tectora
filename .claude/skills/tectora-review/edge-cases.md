@@ -669,3 +669,27 @@ Guards: store tests `an_ais_own_revert_of_its_only_step_ends_the_review`,
 `a_received_log_with_one_entry_far_ahead_keeps_distinct_times`; MCP
 `get_history_marks_what_a_revert_undid`; `live.test.ts` "historyText of
 reverts of AI steps"; `app/e2e/audit-r17-review.e2e.ts`.
+
+Round 18 (a revert is read by what it did, `store::revert_effect`):
+
+- A1 accepted, the user's revert of A1, then the AI's `revert_to` of that
+  revert: A1 is back, so the AI's entry is a step, the banner comes up and
+  Revert all takes A1 out again (ARCH-1701). Also the AI's revert of the
+  user's take-back, and a take-back over a later AI step (Revert all starts
+  at the step it took out, never at the user's revert).
+- The AI's revert of accepted work: the card has the AI mark and the by-AI
+  filter lists the job while it waits (HUNT-1702).
+- A Revert when the job already is as before (the user typed the old value
+  back, the AI set and reset it): logged, the banner goes (ERR-1701).
+- Undo / Redo chains: no summary reads "Reverted: Reverted: …"; the
+  history says "AI change put back" / "AI change reverted" by
+  `took_out` / `put_back` (ERR-1703, UX-1701).
+- A write after a delete: an MCP change whose job was deleted meanwhile is
+  refused (`not_found`), nothing is written, the job stays in the trash
+  (ARCH-1702).
+
+Guards: store tests `r18_*`, `t1801_*`, `t1802_*`, `t1803_*`; bundle test
+`a_received_dangling_link_dated_ahead_is_moved_back_with_the_log`; MCP
+`an_ais_take_back_of_the_users_revert_of_accepted_work_waits`,
+`a_write_raced_by_a_delete_does_not_bring_the_job_back`; `live.test.ts`
+"historyText by what a revert did"; `app/e2e/audit-r18-a.e2e.ts`.

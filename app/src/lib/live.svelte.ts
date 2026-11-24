@@ -1,6 +1,7 @@
 // What the connected AI agent is doing right now (from `.activity/live.json`).
 
 import { num } from "./format";
+import { minOf } from "./extent";
 import { DICTS, t } from "./i18n.svelte";
 import { ENGINE_ACTOR, RECEIVED_ENGINE_ACTOR, USER_ACTOR, isAi, type ActivityItem, type EntryKind, type LiveStatus } from "./types";
 
@@ -61,13 +62,28 @@ export function pillText(s: LiveStatus): string {
 /** Prefix the core writes before the summary a revert undid (store.rs `REVERTED_PREFIX`). */
 const REVERTED = "Reverted: ";
 const REVERTED_MANY = /^Reverted (\d+) changes since: /;
+/**
+ * The sentences of a revert of a revert, which say what it did (store.rs
+ * `revert_summary`, PUT_BACK_PREFIX): it put one or several changes back,
+ * or took some out and put others back. They quote a change, never the
+ * other revert (audit 2026-11-24 ERR-1703).
+ */
+const PUT_BACK = "Put back: ";
+const PUT_BACK_MANY = /^Put back (\d+) changes since: /;
+const REVERTED_MIXED = /^Reverted (\d+) and put back (\d+) changes since: /;
 /** What follows a revert's sentence when the AI gave a reason (store.rs `REVERT_REASON_OPEN`). */
 const REASON_OPEN = " (reason: ";
 /** Entries written before that fixed form: `reason (Reverted: …)`. */
 const LEGACY_REASON = /^(.*?) \((Reverted: .*|Reverted \d+ changes since: .*)\)$/s;
 
 function revertSentence(summary: string): boolean {
-  return summary.startsWith(REVERTED) || REVERTED_MANY.test(summary);
+  return (
+    summary.startsWith(REVERTED) ||
+    REVERTED_MANY.test(summary) ||
+    summary.startsWith(PUT_BACK) ||
+    PUT_BACK_MANY.test(summary) ||
+    REVERTED_MIXED.test(summary)
+  );
 }
 
 /**
@@ -146,7 +162,7 @@ export function refreshedNotice(summary: string): string {
  * bundle, says nothing about it.
  */
 export function historyText(
-  a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason" | "kind"> & { ts_ms?: number },
+  a: Pick<ActivityItem, "actor" | "summary" | "undid_from" | "restores" | "reason" | "kind" | "took_out" | "put_back"> & { ts_ms?: number },
   log: readonly LoggedEntry[],
   recalculationTs?: number | null,
 ): string {
@@ -156,6 +172,10 @@ export function historyText(
     if (text) return `${text} ${t("chg.refreshedBack")}`;
   }
   if (kind === "revert" && !isAi(a.actor)) {
+    const told = effectText(a, log);
+    if (told !== null) return told;
+    // An older bridge (no `took_out` / `put_back`), or an entry it names
+    // that is no longer in the list: by the entry it undid.
     const undone = a.undid_from == null ? undefined : log.find((e) => e.ts_ms === a.undid_from);
     // The user's take-back of a revert of AI changes (the editor's Undo of
     // a Revert, UX-1601): the AI's changes stand again.
@@ -177,12 +197,47 @@ export function historyText(
   return entryText(a, log);
 }
 
+/**
+ * The history's sentence of the user's revert by what it did to the AI's
+ * changes (the core's `took_out` / `put_back`, audit 2026-11-24 UX-1701,
+ * ERR-1703, design C), never by the actors along a chain of reverts: one
+ * AI change taken out is named ("AI change reverted: …"), several are "AI
+ * changes reverted"; one put back is named ("AI change put back: …"),
+ * several are "Revert of AI changes taken back"; both is its own sentence.
+ * A revert that moved no AI change keeps its own sentence. Null when the
+ * item has no lists (an older bridge) or names an entry the list lacks.
+ */
+function effectText(a: Pick<ActivityItem, "took_out" | "put_back"> & EntryLike, log: readonly LoggedEntry[]): string | null {
+  if (a.took_out == null || a.put_back == null) return null;
+  const find = (ts: number[]) => ts.map((x) => log.find((e) => e.ts_ms === x));
+  const out = find(a.took_out);
+  const back = find(a.put_back);
+  if (out.some((e) => e === undefined) || back.some((e) => e === undefined)) return null;
+  const aiOut = out.filter((e): e is LoggedEntry => e !== undefined && isAi(e.actor));
+  const aiBack = back.filter((e): e is LoggedEntry => e !== undefined && isAi(e.actor));
+  const named = (e: LoggedEntry, key: "ai.revertedOne" | "ai.putBackOne", many: string) =>
+    e.summary != null ? t(key, { s: entryText(e as EntryLike, log) }) : many;
+  if (aiOut.length > 0 && aiBack.length > 0) return t("ai.revertedMixed", { n: aiOut.length, m: aiBack.length });
+  if (aiOut.length > 0) {
+    const many = t("ai.revertedEntry");
+    return aiOut.length === 1 && out.length === 1 && back.length === 0 ? named(aiOut[0], "ai.revertedOne", many) : many;
+  }
+  if (aiBack.length > 0) {
+    const many = t("ai.revertTakenBack");
+    return aiBack.length === 1 && back.length === 1 && out.length === 0 ? named(aiBack[0], "ai.putBackOne", many) : many;
+  }
+  return entryText(a, log);
+}
+
 /** A change-log entry as `entryText` reads it. */
 export type EntryLike = Pick<ActivityItem, "actor" | "summary"> & {
   kind?: EntryKind | null;
   reason?: string | null;
   undid_from?: number;
   restores?: number;
+  /** For a revert: what it took out and put back (the core's lists); a revert of a revert quotes the oldest of them. */
+  took_out?: number[];
+  put_back?: number[];
 };
 /** An entry of the list a revert's undone entry is looked up in (by `undid_from`). */
 export type LoggedEntry = Pick<ActivityItem, "ts_ms" | "actor"> & Partial<EntryLike>;
@@ -232,6 +287,19 @@ export function entryText(a: EntryLike, log: readonly LoggedEntry[] = [], depth 
     // a trimmed log), keeps its words in quotation marks (audit 2026-11-23
     // ARCH-1501).
     if (!undone) return t("ai.quoted", { s: inner });
+    // A revert of a revert quotes the oldest change it took out or put
+    // back, not the revert it undid (store.rs `revert_summary`, ERR-1703);
+    // an older entry quoted the revert's own sentence, which still reads
+    // as one.
+    const listed = [...(a.took_out ?? []), ...(a.put_back ?? [])];
+    if (entryKind(undone) === "revert" && !revertSentence(inner) && listed.length > 0) {
+      const oldest = minOf(listed);
+      const quoted = log.find((e) => e.ts_ms === oldest);
+      if (!quoted) return t("ai.quoted", { s: inner });
+      const q: EntryLike = { ...quoted, summary: inner };
+      if (entryKind(q)) return entryText(q, log, depth + 1);
+      return isAi(q.actor) ? t("ai.quoted", { s: inner }) : inner;
+    }
     // The words as the revert quoted them, the fields of the entry it undid.
     const u: EntryLike = { ...undone, summary: inner };
     if (entryKind(u)) return entryText(u, log, depth + 1);
@@ -327,5 +395,10 @@ function revertText(summary: string, nested: (s: string) => string): string {
   if (summary.startsWith(REVERTED)) return t("chg.revertedEntry", { s: nested(summary.slice(REVERTED.length)) });
   const m = REVERTED_MANY.exec(summary);
   if (m) return t("chg.revertedMany", { n: m[1], s: nested(summary.slice(m[0].length)) });
+  if (summary.startsWith(PUT_BACK)) return t("chg.putBack", { s: nested(summary.slice(PUT_BACK.length)) });
+  const back = PUT_BACK_MANY.exec(summary);
+  if (back) return t("chg.putBackMany", { n: back[1], s: nested(summary.slice(back[0].length)) });
+  const mixed = REVERTED_MIXED.exec(summary);
+  if (mixed) return t("chg.revertedMixed", { n: mixed[1], m: mixed[2], s: nested(summary.slice(mixed[0].length)) });
   return summary;
 }
