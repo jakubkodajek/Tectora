@@ -95,13 +95,24 @@ test.describe("round 20, design 2: an older answer never replaces a newer one", 
       armed = false;
       return true;
     });
+    const loads = timeline(page, "load_project");
     await mcp.call("update_job", { id, customer: "AI jedna", summary: "Zákazník od AI" });
     await expect.poll(() => held.held(), { timeout: 10_000 }).toBe(1);
+    const sentBefore = loads.sent.length;
     await mcp.call("update_edges", { id, changes: [{ all: true, pitch_deg: 25 }], summary: "Sklon 25°" });
+    // Single flight (audit 2026-11-24 TEST-2004, the test reviewer's
+    // r21-load): two event polls after the second save are answered and no
+    // second load_project went out while the first is held.
+    for (let i = 0; i < 2; i++) await page.waitForResponse((r) => r.url().includes("__events"), { timeout: 10_000 });
+    expect(loads.sent.length, "no second load_project while the first is out").toBe(sentBefore);
     held.release();
-    // The newer job, and it stays: no older read lands after it.
+    // The coalesced read goes out once the first is in.
+    await expect.poll(() => loads.sent.length, { timeout: 10_000 }).toBeGreaterThan(sentBefore);
+    // The newer job, and it stays: every read sent has been answered and
+    // applied, and no older one landed after it (no fixed wait).
     await expect(statusArea(page)).toContainText("129,10", { timeout: 15_000 });
-    await page.waitForTimeout(1500);
+    await expect.poll(() => loads.answered.length >= loads.sent.length, { timeout: 15_000 }).toBe(true);
+    await frame(page);
     await expect(statusArea(page)).toContainText("129,10");
     await app.saved();
     const p = await loadProject(id);
