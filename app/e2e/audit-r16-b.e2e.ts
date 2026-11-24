@@ -215,7 +215,8 @@ test.describe("round 16, part B", () => {
     // Undo both: the window the toast is about is gone, and so is the toast.
     for (let k = 0; k < 2; k++) await page.locator("body").press("ControlOrMeta+z");
     await waitForProject(id, (p) => !p.windows?.length && !p.chimneys?.length);
-    await expect(warned).toHaveCount(0);
+    // Well inside the warning's own 9 s timer: Undo took it (TEST-1604).
+    await expect(warned).toHaveCount(0, { timeout: 2_500 });
     await expect(page.getByTestId("results-warned")).toHaveCount(0);
   });
 
