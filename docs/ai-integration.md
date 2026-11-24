@@ -147,10 +147,28 @@ stay a `folder_request` the user allows or keeps.
   Revert all's `undone_ai` all use that one predicate (`store::waits`). An
   AI's own revert inside the review is bookkeeping, no step: when the AI
   took everything back the banner closes by itself (owner decision 1 of
-  round 17). An AI's revert that reaches below the last Accept undid
-  accepted work and is a step; Revert all then starts at the first entry
-  it covers after the Accept (`since_ts_ms`), so it never brings a covered
-  AI step back. A Revert that writes nothing says "nothing to revert".
+  round 17). A revert is read by **what it did** (`store::revert_effect`,
+  round 18 design A): the changes it took out (they stood just before it)
+  and the ones it put back. An AI's revert whose effect touches anything
+  below the last Accept is a step: its revert of accepted work, and its
+  take-back of the user's revert of accepted work, which puts that change
+  back (ARCH-1701, owner decision 1 of round 18). Revert all then starts at
+  the oldest change after the Accept that the step took out, else at the
+  step itself (`since_ts_ms`), so it never brings a covered AI step back
+  and takes out what the step put back. The library's AI mark is the
+  newest waiting step while a review is open (HUNT-1702), else the newest
+  change that stands. A Revert that finds the file already as before still
+  logs its entry when a change in its range still stands (the user typed
+  the old value back, the AI set and reset it), so the review ends
+  (ERR-1701, design D); only a revert that changes neither the file nor the
+  log writes nothing and says "nothing to revert". Logs longer than 1000
+  entries (another program wrote them) keep the round-17 rule by range.
+- **A deleted job stays deleted** (ARCH-1702, design E). A write that
+  carries a base (every MCP change, `save_as_checked`) is a change of an
+  existing job: when the file is gone it answers `not_found` and writes
+  nothing, so an AI save that was under way while the user deleted the job
+  does not bring it back under its id; MCP tells the AI so. Creation with a
+  given id and the editor's own save are unchanged.
 - **Undo and Redo of a Revert are logged** (owner decision 2 of round 17,
   UX-1601). Revert all and a one-step Revert answer the revert entry they
   logged (`RevertedChanges.entry_ts_ms`); the editor's Ctrl+Z over that
@@ -170,8 +188,14 @@ stay a `folder_request` the user allows or keeps.
   it, and Revert all goes back to the job as it was right after the
   creation. When only an AI's creation of the job waits, the banner offers
   Accept or Delete job (to the trash, restorable for 30 days; owner
-  decision 3 of round 17). The user's revert of one AI step reads "AI
-  change reverted: “…”", a take-back "Revert of AI changes taken back".
+  decision 3 of round 17). `took_out` / `put_back` (with `took_out_count`
+  / `put_back_count`): for a revert, the times of the changes it took out
+  and put back, oldest first, at most 20 (also in MCP `get_history`). The
+  history decides the user's revert's sentence by them, never by the
+  actors along a chain of reverts (UX-1701, round 18 design C): one AI
+  change out reads "AI change reverted: “…”", several "AI changes
+  reverted"; one put back "AI change put back: “…”", several "Revert of AI
+  changes taken back"; both "AI changes: n reverted, m put back".
   `kind` is always sent (`null` for a change, ARCH-1601); the app reads a
   summary's words only for an item without the field.
 - A revert keeps the edits made after the reverted step (the app's own
@@ -183,6 +207,11 @@ stay a `folder_request` the user allows or keeps.
   two AI steps is kept too (or the whole revert is refused).
 - A revert's change-log entry starts with the fixed English sentence the app
   translates (`Reverted: <summary>`, `Reverted <n> changes since: <summary>`);
+  a revert of a revert says what it did and quotes the oldest change it
+  touched, never the other revert (`Put back: <summary>`, `Put back <n>
+  changes since: <summary>`, `Reverted <n> and put back <m> changes since:
+  <summary>`, store.rs `revert_summary`, ERR-1703), so Undo and Redo never
+  stack "Reverted: Reverted: …"; older entries keep their text;
   an AI's reason follows as ` (reason: <reason>)`. `<n>` counts the entries
   the revert undid: the user's own put-back of the offer's figures after the
   first undone entry stays and is not counted.

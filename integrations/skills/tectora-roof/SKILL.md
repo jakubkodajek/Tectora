@@ -88,7 +88,11 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    `undone: true` is not in the design; your change waits for the user's
    review while it stands, so reverting your own change leaves nothing to
    review, and a Ctrl+Z of the user's Revert in the app makes your changes
-   wait again. Word every
+   wait again. Putting back a change the user reverted (`revert_to` with
+   the user's revert) waits for review like a new change; `took_out` and
+   `put_back` in `get_history` say what a revert did. A write answered
+   with "no design with id …" after the user deleted the job saved
+   nothing: do not create the job again unless the user asks. Word every
    `summary` as what you did, in your own words: one that starts like
    Tectora's own sentences ("Reverted: …", "Stored result recalculated …")
    is still your change, shown in quotation marks and undone as a change.
