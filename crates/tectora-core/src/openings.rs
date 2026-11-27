@@ -560,6 +560,17 @@ pub fn measured_wall_area(project: &Project) -> Option<f64> {
 const MAX_SWEEP_WALLS: usize = 256;
 
 fn generate_valid(project: &Project) -> Vec<RoofGeometry> {
+    let mut geos = generate_roofs(project);
+    // Walls in line the core roofed as one plane keep their own materials
+    // (Jakub, 2026-11-21; `material_split.rs`): only the material per face
+    // changes, never the roof.
+    crate::material_split::split(project, &mut geos);
+    geos
+}
+
+/// The roofs of a valid project, as DACAD's core gives them or, where it
+/// stops, Tectora's departures.
+fn generate_roofs(project: &Project) -> Vec<RoofGeometry> {
     // DACAD's own core on the project's RD2 (joined in the
     // Modellverschnitt when there are two or more roofs), always first:
     // where it gives a roof, that roof is the result.

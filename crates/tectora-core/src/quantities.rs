@@ -293,7 +293,7 @@ pub fn lines_by_material_of(
 /// (valleys between two roofs, the edges of an opening) lie inside the
 /// faces they bound. A face that passes above or below the point does not
 /// count.
-fn bounds(face: &crate::roof::RoofFace, m: [f64; 3]) -> bool {
+pub(crate) fn bounds(face: &crate::roof::RoofFace, m: [f64; 3]) -> bool {
     const TOL: f64 = 0.02;
     let poly = &face.polygon;
     let n = poly.len();

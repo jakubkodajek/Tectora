@@ -369,6 +369,39 @@ sessions that use it know where things stand.
   TEST-003/009 and the UI/UX S3 list); DormerBar still lets a half-hip
   pitch go down to 0.1°, which is now reported as a problem.
 
+## 2026-11-21 - sheet metal colour, tiles area check, roof line details (branch claude/project-thread-46ju0l)
+- Done: faces of a material other than tiles have their own colour token
+  (`--mat-sheet`, `--mat-stone`, `--mat-slate`, `--mat-solar`) in 3D, as a
+  tint in the plan and as a swatch in the Results material table. Checked
+  that sheet metal is not in the tiles' area (results `area_by_material`
+  and the price-sheet list rows): test `sheet_metal_is_not_counted_as_tiles`;
+  DACAD also keeps one area group per material. New core `lineinfo`
+  (each line's length, plan length, slope, end heights, bounded faces) in
+  the UI calc result and as MCP tool `line_details`; hover or click a roof
+  line in plan or 3D shows the `LineInfo` card and draws the line amber
+  (`--line-hl`, `--line-hl-edge`).
+- State: `make check` exit 0, i18n sweep clean, contrast pass.
+- Material check (Jakub: "really important"): `tests/material_split.rs`
+  puts every wall of every example variant (dormer, chimney + window,
+  clad gables + breaks, two and joined buildings) in sheet metal in turn:
+  only its own faces change material, the roof is unchanged and the split
+  adds up; list rows equal the results. Found: two walls in line with the
+  same eave height and overhang but different materials are joined into
+  one plane (DACAD's collinear merge ignores material), so the second
+  material vanished silently. Jakub chose to split such a plane per wall:
+  `material_split.rs` cuts its faces square to the wall line where the
+  material changes (strip per wall, deductions placed per strip, lines
+  crossing a cut split); `merged_materials` is only the fallback where the
+  split cannot be exact. Closed-form tests (hip strip 6.125/cos 35°, gable
+  middle strip 4 × 4.5/cos 40°, windows + chimney across the cut). Lean-to
+  overhang at the house wall checked: not counted when the roofs join; a
+  house without overhang and a steep lean-to do not join and count it
+  (told Jakub, PR #54 thread owns overhang rules). Hand-drawn faces always
+  count as material 1.
+- Open: line details have no keyboard path in the plan (the Calculation tab
+  and MCP cover the figures); a pinned card closes with Esc, × or a second
+  click on the line, not with a click on empty plan.
+
 ## 2026-11-21 - verification of every roof calculation (branch claude/project-thread-5ugj01)
 - Done: DACAD parity rerun (dcore byte-exact on 1 967 DACAD SO2/INT
   captures from the project files; samples 29/34 as before), and an

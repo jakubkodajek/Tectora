@@ -312,7 +312,7 @@ impl Project {
     }
 
     /// The English message of a problem (CLI, MCP).
-    fn describe(&self, p: &Problem) -> String {
+    pub fn describe(&self, p: &Problem) -> String {
         // 0-based, as every MCP tool argument and `calc.problems` (ERR-007).
         let n = p.index;
         let at = match p.item {

@@ -233,6 +233,16 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             w.value
         ),
         WarningKind::InsideAnother => "this building's walls lie wholly within another building's walls and its roof, outside the other roof's planes, still adds area and lines; check whether it is a copy left on its original or a building added twice. A building that marks part of a roof face (for example another material) is meant: keep it and give it the pitch and eave height of the roof around it".to_string(),
+        WarningKind::MergedMaterials => {
+            let (kept, lost) = (w.edges.first(), w.edges.get(1));
+            format!(
+                "edges {} and {} (0-based) are in line with the same eave height and overhang but have different roof materials; the calculation joins them into one roof plane in the material of edge {}, so edge {}'s material is not in the area per material. Tell the user: their area per material is not what they set",
+                kept.map_or(0, |e| *e),
+                lost.map_or(0, |e| *e),
+                kept.map_or(0, |e| *e),
+                lost.map_or(0, |e| *e),
+            )
+        }
         WarningKind::ManualFaceCrosses => format!(
             "hand-drawn face {} (0-based) has an outline that crosses itself (its corners are not in order around the face), so its area counts the difference of its two lobes, not the face; the area is kept as counted. Tell the user and set the face again with set_manual, corners in order",
             w.face.unwrap_or(0)
@@ -277,6 +287,12 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     }
     v
 }
+
+/// The roof line codes `line_details` filters by (DACAD's codes as
+/// `RoofLine::dacad_code` gives them; O and W also match their kinds).
+const LINE_CODES: [&str; 15] = [
+    "T", "F", "G", "K", "O", "OL", "OR", "OS", "P", "c", "S", "W", "WV", "WH", "WS",
+];
 
 /// Why the calculation gave no roof for a part, in English and without
 /// the calculation's own (German) text: the AI passes it on to the user.
@@ -1245,7 +1261,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer`, `item`, `face` or `other_face` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `manual_face_crosses` (the hand-drawn face `face` index has an outline that crosses itself, corners out of order, so its area counts the difference of its two lobes; redraw it with the corners in order), `manual_faces_overlap` (hand-drawn faces `face` and `other_face` lie on each other over `value` m2 of plan, counted twice: ask whether one was drawn twice), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `manual_face_over_roof` (the hand-drawn face `face` lies over `value` m2 of the calculated roof and adds its area: right for a roof drawn over the main roof), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with. A `warnings` list beside `parts` holds the warnings that belong to no building (a hand-drawn face whose outline crosses itself, or two lying on each other, in a job without a building).",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer`, `item`, `face` or `other_face` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `merged_materials` (two walls in line of different materials joined into one plane that could not be split per wall, e.g. cut by another building: the area per material is off; normally such a plane is split square to the wall at the corner and each strip has its wall's material), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `manual_face_crosses` (the hand-drawn face `face` index has an outline that crosses itself, corners out of order, so its area counts the difference of its two lobes; redraw it with the corners in order), `manual_faces_overlap` (hand-drawn faces `face` and `other_face` lie on each other over `value` m2 of plan, counted twice: ask whether one was drawn twice), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `manual_face_over_roof` (the hand-drawn face `face` lies over `value` m2 of the calculated roof and adds its area: right for a roof drawn over the main roof), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with. A `warnings` list beside `parts` holds the warnings that belong to no building (a hand-drawn face whose outline crosses itself, or two lying on each other, in a job without a building).",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1254,6 +1270,15 @@ fn base_tools() -> Value {
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "minimum": 0, "description": "Only this part's walls, faces and lines." }
+            }), &["id"]),
+        },
+        {
+            "name": "line_details",
+            "description": "Details of every calculated roof line, as the editor shows them when the user points at or clicks a line in the plan or 3D: `kind` (eave, verge, ridge, hip, valley, pult, knick, gorge, abutment…), DACAD `code`, end points `a`/`b` (x, y, z in m), true `length` and `plan_length`, the line's own `slope_deg`, the heights `z_low`/`z_high` of its ends above the ground, and the roof `faces` it bounds (`part`, `face`, `wall` index, `pitch_deg`, `material`). `part` (index from 0) limits the parts, `code` the line codes (e.g. \"F\" for ridges; \"O\" matches OL, OR and OS, \"W\" all abutments). `length` is the line as drawn; `counted_length` is what the results count (less the parts on or under chimneys, openings and dormers), and summed per code it gives `calc`'s line totals without hand-drawn lines. Buildings the calculation gave no roof are listed in `not_calculated` (`part`, `name`, `error`); when no line is left the call fails with that reason.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "part": { "type": "integer", "minimum": 0, "description": "Only this part's lines." },
+                "code": { "type": "string", "description": format!("Only lines of this DACAD code, one of {}; \"O\" also matches OL, OR and OS, \"W\" also WV, WH and WS.", LINE_CODES.join(", ")) }
             }), &["id"]),
         },
         {
@@ -1970,6 +1995,109 @@ impl Server {
                 v["id"] = json!(id);
                 Ok(v)
             }
+            "line_details" => {
+                let (id, p) = self.load(args)?;
+                let only = match args.get("part") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let i = v.as_u64().ok_or("`part` must be a part index from 0")? as usize;
+                        if i >= p.parts.len() {
+                            return Err(format!(
+                                "`part` {i} out of range: the design has {} parts",
+                                p.parts.len()
+                            ));
+                        }
+                        Some(i)
+                    }
+                };
+                let code = match args.get("code") {
+                    None | Some(Value::Null) => None,
+                    Some(_) => {
+                        let c = arg_str(args, "code")?;
+                        // Case does not matter ("t" is T); an unknown code is
+                        // refused rather than answered with no lines.
+                        let known = LINE_CODES
+                            .iter()
+                            .find(|k| k.eq_ignore_ascii_case(c))
+                            .ok_or_else(|| {
+                                format!(
+                                    "`code` {c:?} is no line code; use one of {}",
+                                    LINE_CODES.join(", ")
+                                )
+                            })?;
+                        Some(known.to_string())
+                    }
+                };
+                self.live(
+                    "calculating",
+                    Some(&p.name),
+                    format!("Reading the roof lines of “{}”", p.name),
+                    Some(&id),
+                );
+                let (geos, lines) = tectora_core::model::guarded(|| {
+                    let geos = tectora_core::openings::generate_project(&p);
+                    let lines = tectora_core::lineinfo::line_details_of(&p, &geos);
+                    (geos, lines)
+                })?;
+                // Buildings without a roof have no lines: say so instead of
+                // an empty list that reads as "no such lines".
+                let missing: Vec<Value> = geos
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| only.is_none_or(|k| k == *i))
+                    .filter_map(|(i, g)| {
+                        let input: Vec<String> = p
+                            .problems()
+                            .iter()
+                            .filter(|q| {
+                                q.item == tectora_core::model::ProblemItem::Part && q.index == i
+                            })
+                            .map(|q| p.describe(q))
+                            .collect();
+                        let why = match &g.error {
+                            Some(e) => calc_error(e),
+                            // Left out for its input, as `calc.problems` says.
+                            None if !input.is_empty() => json!({
+                                "kind": "input",
+                                "message": format!("the building is left out because of its input: {}", input.join("; ")),
+                            }),
+                            None if g.faces.is_empty() => json!({
+                                "message": "no roof faces: every wall is a gable, or the roof is covered by another building"
+                            }),
+                            None => return None,
+                        };
+                        Some(json!({
+                            "part": i,
+                            "name": p.parts.get(i).map(|x| x.name.clone()),
+                            "error": why,
+                        }))
+                    })
+                    .collect();
+                let lines: Vec<_> = lines
+                    .into_iter()
+                    .filter(|l| only.is_none_or(|i| l.part == i))
+                    .filter(|l| code.as_deref().is_none_or(|c| l.code.starts_with(c)))
+                    .collect();
+                if lines.is_empty() && !missing.is_empty() {
+                    return Err(format!(
+                        "the roof is not calculated, so it has no lines: {}",
+                        missing
+                            .iter()
+                            .map(|m| format!(
+                                "part {}: {}",
+                                m["part"],
+                                m["error"]["message"].as_str().unwrap_or("")
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                }
+                let mut out = json!({ "id": id, "lines": lines });
+                if !missing.is_empty() {
+                    out["not_calculated"] = Value::Array(missing);
+                }
+                Ok(out)
+            }
             "create_standard_roof" => {
                 let kind: StandardRoof = serde_json::from_value(arg(args, "type")?.clone())
                     .map_err(|_| {
@@ -2674,7 +2802,7 @@ mod tests {
         assert_eq!(live.project_id.as_deref(), Some(id.as_str()));
         assert!(live.follow, "a write may be followed in the app");
         // Reading or calculating a job never makes the app switch to it (UX-001).
-        for tool in ["get_project", "calc", "calc_breakdown"] {
+        for tool in ["get_project", "calc", "calc_breakdown", "line_details"] {
             s.call_tool(tool, &json!({ "id": id })).unwrap();
             let live = s.store.live().unwrap();
             assert_eq!(live.project_id.as_deref(), Some(id.as_str()), "{tool}");
@@ -2850,6 +2978,173 @@ mod tests {
             s.call_tool("calc_breakdown", &json!({ "id": id, "part": 9 }))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn line_details_give_each_lines_heights_and_faces() {
+        let mut s = server();
+        let p = tectora_core::examples::find("hip").unwrap().project();
+        let id = s.store.save(None, &p).unwrap();
+        let r = s.call_tool("line_details", &json!({ "id": id })).unwrap();
+        let lines = r["lines"].as_array().unwrap();
+        // 4 eaves, 4 hips, 1 ridge.
+        assert_eq!(lines.len(), 9, "{r}");
+        let ridge = s
+            .call_tool("line_details", &json!({ "id": id, "code": "F" }))
+            .unwrap();
+        let ridge = &ridge["lines"].as_array().unwrap()[..];
+        assert_eq!(ridge.len(), 1);
+        // 3 m eave at the 0.5 m overhang, 4.5 m up the 35° slope.
+        let z = 3.0 + 4.5 * 35f64.to_radians().tan();
+        assert!(
+            (ridge[0]["z_high"].as_f64().unwrap() - z).abs() < 1e-3,
+            "{ridge:?}"
+        );
+        assert_eq!(ridge[0]["faces"].as_array().unwrap().len(), 2);
+        assert_eq!(ridge[0]["kind"], "ridge");
+        let one = s
+            .call_tool("line_details", &json!({ "id": id, "part": 0, "code": "G" }))
+            .unwrap();
+        assert_eq!(one["lines"].as_array().unwrap().len(), 4);
+        assert!(
+            s.call_tool("line_details", &json!({ "id": id, "part": 3 }))
+                .is_err()
+        );
+        assert!(
+            s.call_tool("line_details", &json!({ "id": id, "code": "" }))
+                .is_err()
+        );
+    }
+
+    /// The `part` and `code` filters keep exactly the lines asked for, a
+    /// chimney on the eave shows in `counted_length`, and a building
+    /// without a roof is named instead of giving an empty list.
+    #[test]
+    fn line_details_filter_count_and_name_buildings_without_a_roof() {
+        use tectora_core::examples::{StandardRoof, standard_roof};
+        let mut s = server();
+        let mut p = Project::new("two");
+        p.parts
+            .push(standard_roof(StandardRoof::Hip, 12.0, 8.0, 35.0, 3.0, 0.5));
+        let mut b = standard_roof(StandardRoof::Gable, 10.0, 8.0, 38.0, 3.0, 0.3);
+        for e in b.edges.iter_mut() {
+            e.start.x += 20.0;
+        }
+        p.parts.push(b);
+        p.chimneys.push(tectora_core::Chimney {
+            corners: vec![
+                Point2::new(5.0, -0.5),
+                Point2::new(6.0, -0.5),
+                Point2::new(6.0, 0.5),
+                Point2::new(5.0, 0.5),
+            ],
+            height: 9.0,
+        });
+        let id = s.store.save(None, &p).unwrap();
+        let all = s.call_tool("line_details", &json!({ "id": id })).unwrap();
+        let all = all["lines"].as_array().unwrap().clone();
+        let on = |part: u64| all.iter().filter(|l| l["part"] == part).count();
+        assert!(on(0) > 0 && on(1) > 0);
+
+        let one = s
+            .call_tool("line_details", &json!({ "id": id, "part": 1 }))
+            .unwrap();
+        let one = one["lines"].as_array().unwrap();
+        assert_eq!(one.len(), on(1));
+        assert!(one.iter().all(|l| l["part"] == 1));
+
+        // "O": the gable roof's verges only, OL and OR, nothing else.
+        let verges = s
+            .call_tool("line_details", &json!({ "id": id, "code": "O" }))
+            .unwrap();
+        let verges = verges["lines"].as_array().unwrap();
+        assert_eq!(verges.len(), 4, "{verges:?}");
+        assert!(
+            verges
+                .iter()
+                .all(|l| l["part"] == 1 && matches!(l["code"].as_str(), Some("OL" | "OR")))
+        );
+
+        // The chimney on the hip roof's front eave (13 m): 12 m counted,
+        // whether the joined calculation cut the line or the count does.
+        let eaves = s
+            .call_tool("line_details", &json!({ "id": id, "part": 0, "code": "T" }))
+            .unwrap();
+        let front: f64 = eaves["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["a"][1].as_f64().unwrap() < 0.0 && l["b"][1].as_f64().unwrap() < 0.0)
+            .map(|l| l["counted_length"].as_f64().unwrap())
+            .sum();
+        assert!((front - 12.0).abs() < 1e-3, "{eaves}");
+        assert!(eaves.get("not_calculated").is_none());
+
+        // A code in lower case is that code; an unknown one is refused, not
+        // answered with no lines.
+        let lower = s
+            .call_tool("line_details", &json!({ "id": id, "code": "t" }))
+            .unwrap();
+        let upper = s
+            .call_tool("line_details", &json!({ "id": id, "code": "T" }))
+            .unwrap();
+        assert!(!upper["lines"].as_array().unwrap().is_empty());
+        assert_eq!(lower["lines"], upper["lines"]);
+        for bad in ["zz", "X", "TT"] {
+            let e = s
+                .call_tool("line_details", &json!({ "id": id, "code": bad }))
+                .unwrap_err();
+            assert!(e.contains("no line code"), "{bad}: {e}");
+        }
+
+        // A building with too few walls is left out for its input, and
+        // said so (not "every wall is a gable").
+        let mut short = p.clone();
+        short.parts[1].edges.truncate(2);
+        let sid = s.store.save(None, &short).unwrap();
+        let r = s.call_tool("line_details", &json!({ "id": sid })).unwrap();
+        let missing = r["not_calculated"].as_array().unwrap();
+        assert_eq!(missing.len(), 1, "{r}");
+        assert_eq!(missing[0]["error"]["kind"], "input", "{r}");
+        let why = missing[0]["error"]["message"].as_str().unwrap();
+        assert!(why.contains("input") && !why.contains("gable"), "{why}");
+
+        // A non-convex chimney: no roof at all, so the call fails and says why.
+        let mut gables = p.clone();
+        for e in gables.parts[1].edges.iter_mut() {
+            e.pitch_deg = 90.0;
+        }
+        // Every wall of the second building a gable: no roof there. Its
+        // lines are not silently missing: the building is named, with the
+        // reason in English (never the calculation's own German text).
+        let id = s.store.save(None, &gables).unwrap();
+        let r = s.call_tool("line_details", &json!({ "id": id })).unwrap();
+        let missing = r["not_calculated"].as_array().unwrap();
+        assert_eq!(missing.len(), 1, "{r}");
+        assert_eq!(missing[0]["part"], 1);
+        let why = missing[0]["error"]["message"].as_str().unwrap();
+        assert!(
+            !why.is_empty() && !why.contains("Nicht") && !why.contains("E0"),
+            "{why}"
+        );
+        let e = s
+            .call_tool("line_details", &json!({ "id": id, "part": 1 }))
+            .unwrap_err();
+        assert!(e.contains("not calculated"), "{e}");
+        let mut bad = p.clone();
+        bad.parts.truncate(1);
+        bad.chimneys[0].corners = vec![
+            Point2::new(5.0, 1.0),
+            Point2::new(7.0, 1.0),
+            Point2::new(6.0, 1.5),
+            Point2::new(7.0, 2.0),
+            Point2::new(5.0, 2.0),
+        ];
+        let id = s.store.save(None, &bad).unwrap();
+        let e = s
+            .call_tool("line_details", &json!({ "id": id }))
+            .unwrap_err();
+        assert!(e.contains("not calculated"), "{e}");
     }
 
     #[test]

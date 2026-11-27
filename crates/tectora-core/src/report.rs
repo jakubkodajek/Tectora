@@ -50,6 +50,9 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
         // Each object's distances from the eave and the sides of its face
         // (editor dimension lines; `edit::position`).
         "placements": crate::edit::position::placements(project),
+        // Every roof line's heights, slope and faces, for the editor's line
+        // details on hover (display only; `lineinfo`).
+        "line_details": crate::lineinfo::line_details_of(project, geos),
     });
     // Warnings that belong to no building (a crossing hand-drawn face in a
     // job without one, ERR-1901).
@@ -150,6 +153,22 @@ mod tests {
         p.roof_openings.clear();
         p.chimneys[0] = crate::edit::probe::chimney_from_rect(2.0, 2.0, 0.02, 0.02, 0.0, 6.0);
         assert!(p.problems().is_empty(), "{:?}", p.problems());
+    }
+
+    /// The editor's line card reads its figures from the calculation
+    /// result: every line of the roof is there, with the length the
+    /// results count.
+    #[test]
+    fn the_calc_result_carries_every_lines_details() {
+        let p = examples::find("hip").unwrap().project();
+        let geos = crate::openings::generate_project(&p);
+        let v = calc_of(&p, &geos);
+        let d = v["line_details"].as_array().expect("line_details in calc");
+        assert_eq!(d.len(), geos[0].lines.len());
+        for l in d {
+            assert!(l["counted_length"].as_f64().is_some(), "{l}");
+            assert!(!l["faces"].as_array().unwrap().is_empty(), "{l}");
+        }
     }
 
     #[test]

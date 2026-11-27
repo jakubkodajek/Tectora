@@ -129,14 +129,15 @@ describe("warningText for every kind", () => {
     objects_overlap: { kind: "objects_overlap", value: 2 },
     dormer_above_roof: { kind: "dormer_above_roof", value: 9.65 },
     inside_another: { kind: "inside_another", value: 0 },
+    merged_materials: { kind: "merged_materials", value: 0, edges: [0, 1] },
     hidden_under_neighbour: { kind: "hidden_under_neighbour", value: 2.4 },
     uncovered_plan: { kind: "uncovered_plan", value: 15.3 },
     manual_face_crosses: { kind: "manual_face_crosses", value: 0, face: 1 },
     manual_faces_overlap: { kind: "manual_faces_overlap", value: 36, face: 0, other_face: 2 },
     manual_face_over_roof: { kind: "manual_face_over_roof", value: 8.25, face: 1 },
   };
-  it("gives a filled-in sentence for all 25 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(25);
+  it("gives a filled-in sentence for all 26 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(26);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {
@@ -174,6 +175,7 @@ describe("warningText for every kind", () => {
     expect(warningText(every.overlapping_faces)).toContain("1.25");
     expect(warningText(every.area_mismatch)).toContain("3.4");
     expect(warningText(every.merged_walls)).toMatch(/2\b[\s\S]*3\b/);
+    expect(warningText(every.merged_materials)).toMatch(/1\b[\s\S]*2\b/);
     i18n.locale = "cs";
   });
 });

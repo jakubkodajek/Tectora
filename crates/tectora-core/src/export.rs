@@ -2807,6 +2807,68 @@ Z1.02 35,00° 19,53m\u{2db} Dĺžka krokvy=4,88m
         assert_eq!(&lines[i - 3..i], &["", "", DASHES]);
     }
 
+    /// Sheet metal on one face of a gable roof is not tiled: the tiles'
+    /// area is the roof area less the sheet-metal face, in the results
+    /// (`area_by_material`) and in the list's material rows. DACAD keeps
+    /// one area group per material in its list (`Škridla - `, `Plech - `,
+    /// … in every `dacad_norms` fixture's `area_groups`), so a face counts
+    /// in its own material's group only.
+    #[test]
+    fn sheet_metal_is_not_counted_as_tiles() {
+        let mut p = crate::examples::find("gable").unwrap().project();
+        let all_tiles = crate::quantities::roof_totals(&p).roof_area;
+        p.parts[0].edges[0].material = 2;
+        let geos = crate::openings::generate_project(&p);
+        let sheet_face: f64 = geos[0]
+            .faces
+            .iter()
+            .filter(|f| f.edge == 0)
+            .map(|f| f.area)
+            .sum();
+        assert!(sheet_face > 1.0, "{sheet_face}");
+
+        let q = crate::quantities::roof_totals(&p);
+        // The roof area stays the whole roof; the split moves the face.
+        assert!((q.roof_area - all_tiles).abs() < 1e-9);
+        let by = |m: u8| {
+            q.area_by_material
+                .iter()
+                .find(|(k, _)| *k == m)
+                .map_or(0.0, |x| x.1)
+        };
+        assert!(
+            (by(2) - sheet_face).abs() < 1e-9,
+            "{:?}",
+            q.area_by_material
+        );
+        assert!(
+            (by(1) - (all_tiles - sheet_face)).abs() < 1e-9,
+            "{:?}",
+            q.area_by_material
+        );
+
+        let s = list_summary(&p, &ListOptions::new("", "21.11.2026 12:00"));
+        let mat = |m: u8| s.materials.iter().find(|x| x.material == m).map(|x| x.area);
+        assert!((mat(1).unwrap() - by(1)).abs() < 1e-9, "{:?}", s.materials);
+        assert!((mat(2).unwrap() - by(2)).abs() < 1e-9, "{:?}", s.materials);
+
+        // The price sheet reads the tiles' row: it holds the tiles only.
+        let text = dacad_list(&p, &ListOptions::new("", "21.11.2026 12:00"));
+        assert_eq!(sheet(&text).tiles.as_deref(), Some("Škridla"));
+        let row = |name: &str| -> f64 {
+            let r = text.lines().find(|r| r.starts_with(name)).unwrap();
+            r[name.len()..]
+                .trim()
+                .trim_end_matches("m\u{2db}")
+                .replace(',', ".")
+                .parse()
+                .unwrap()
+        };
+        let tiles = row("Škridla - ");
+        assert!((row("Plech - ") - by(2)).abs() < 0.001, "{text}");
+        assert!((tiles - by(1)).abs() < 0.001, "{tiles} in\n{text}");
+    }
+
     #[test]
     fn the_list_names_verges_left_and_right_for_a_gable_roof() {
         let mut p = Project::new("gable");

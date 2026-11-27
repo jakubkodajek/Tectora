@@ -59,6 +59,7 @@ fn warning_kinds() -> Vec<String> {
         | W::ObjectsOverlap
         | W::DormerAboveRoof
         | W::InsideAnother
+        | W::MergedMaterials
         | W::HiddenUnderNeighbour
         | W::UncoveredPlan
         | W::ManualFaceCrosses
@@ -86,6 +87,7 @@ fn warning_kinds() -> Vec<String> {
         W::ObjectsOverlap,
         W::DormerAboveRoof,
         W::InsideAnother,
+        W::MergedMaterials,
         W::HiddenUnderNeighbour,
         W::UncoveredPlan,
         W::ManualFaceCrosses,

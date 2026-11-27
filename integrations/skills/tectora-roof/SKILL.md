@@ -125,7 +125,8 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    what you assumed and what they should look at in the highlighted
    changes in Tectora. When the user asks how a number came about,
    `calc_breakdown` gives every face (plan area / cos pitch − openings) and
-   every line with its 3D length. Tell the user about every part's
+   every line with its 3D length; `line_details` gives each line's end
+   heights, slope and the pitches of the faces it bounds. Tell the user about every part's
    `warnings` and `error` from `calc` (the guide's "Warnings and errors"):
    a `covered` part has no roof of its own (move or delete it), a
    `dormer_off_roof` dormer and a `window_off_roof`, `chimney_off_roof` or
@@ -134,7 +135,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    `inside_another` and `no_roof_area` name an object or building entered
    twice, too large or too high (fix that object; an `inside_another`
    building that marks part of a face for another material stays and gets
-   the pitch and eave height of the roof around it); `doubled_line` means
+   the pitch and eave height of the roof around it; sheet metal over only
+   part of a wall: split the wall with a corner and set the material on
+   that part, the plane is then split per wall, and `merged_materials`
+   means that split could not be made); `doubled_line` means
    line lengths at a join of two buildings need a look; `far_from_origin`
    means the plan should be moved to the origin; `manual_face_crosses`
    means a hand-drawn face's corners are out of order (set it again with

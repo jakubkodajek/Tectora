@@ -64,6 +64,8 @@ const LISTENERS: Record<string, Entry> = {
   "Roof3D.svelte:el:pointerdown": { passive: INSIDE },
   "Roof3D.svelte:el:pointerup": { passive: INSIDE },
   "Roof3D.svelte:el:contextmenu": { passive: INSIDE },
+  "Roof3D.svelte:el:pointermove": { passive: "hover only: marks the roof line under the pointer and shows its details, writes nothing" },
+  "Roof3D.svelte:el:pointerleave": { passive: "hover only: clears the marked roof line, writes nothing" },
   "tabs.ts:node:keydown": { passive: "moves between tabs, writes nothing" },
   "dragsession.ts:node:*type": { passive: "the refusal itself (refuseInput)" },
   "api.ts:progress:message": { passive: "the update download's progress, writes nothing" },

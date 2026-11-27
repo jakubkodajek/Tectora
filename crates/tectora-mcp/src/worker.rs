@@ -10,7 +10,7 @@
 //! it after [`timeout`] and reports a plain error; the session goes on.
 //!
 //! The tools that only calculate a stored design (`calc`, `calc_breakdown`,
-//! `get_project`) and the exports that draw it (`export_list`,
+//! `line_details`, `get_project`) and the exports that draw it (`export_list`,
 //! `export_plan`; HUNTC-001) run the same way, with [`CALC_TIMEOUT`]: the
 //! count limits of `check_limits` and the work bound of
 //! `tectora_core::work` keep a design to seconds, and the worker is the
@@ -53,7 +53,7 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 pub fn calculates(name: &str) -> bool {
     matches!(
         name,
-        "calc" | "calc_breakdown" | "get_project" | "export_list" | "export_plan"
+        "calc" | "calc_breakdown" | "line_details" | "get_project" | "export_list" | "export_plan"
     )
 }
 

@@ -60,6 +60,17 @@ PAIRS: list[tuple[str, str, str]] = [
     ("line-knick", "surface", "ui"),
     ("line-gorge", "surface", "ui"),
     ("line-abutment", "surface", "ui"),
+    # The highlighted roof line: amber drawn over a dark edge. It reads when
+    # the amber or its edge stands out from the surface ("a+b": the better
+    # of the two), and the amber always stands out from its edge.
+    ("line-hl+line-hl-edge", "surface", "ui"),
+    ("line-hl", "line-hl-edge", "ui"),
+    # Roof materials against the tiles (plan tint, 3D faces): told apart by
+    # lightness, not by hue alone.
+    ("mat-sheet", "scene-roof", "ui"),
+    ("mat-stone", "scene-roof", "ui"),
+    ("mat-slate", "scene-roof", "ui"),
+    ("mat-solar", "scene-roof", "ui"),
 ]
 NEEDS = {"text": 4.5, "large": 3.0, "ui": 3.0}
 HEX = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
@@ -142,6 +153,19 @@ def resolve(name: str, tokens: dict[str, str]) -> tuple[str, str | None]:
 def check(tokens: dict[str, str]) -> list[dict[str, object]]:
     rows = []
     for fg, bg, kind in PAIRS:
+        if "+" in fg:
+            # Two colours drawn together: the better contrast counts.
+            _, bv = resolve(bg, tokens)
+            best = None
+            for part in fg.split("+"):
+                name, fv = resolve(part, tokens)
+                if fv and bv and HEX.match(fv) and HEX.match(bv):
+                    r = ratio(fv, bv)
+                    if best is None or r > best[1]:
+                        best = (name, r)
+            if best:
+                rows.append({"fg": best[0], "bg": bg, "kind": kind, "ratio": round(best[1], 2), "ok": best[1] >= NEEDS[kind]})
+            continue
         fg, fv = resolve(fg, tokens)
         bg, bv = resolve(bg, tokens)
         if not fv or not bv or not HEX.match(fv) or not HEX.match(bv):

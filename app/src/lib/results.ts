@@ -16,6 +16,10 @@ export function warningText(w: RoofWarning): string {
       const [a, b] = w.edges ?? [0, 0];
       return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
     }
+    case "merged_materials": {
+      const [a, b] = w.edges ?? [0, 0];
+      return t("res.warn.merged_materials", { a: a + 1, b: b + 1 });
+    }
     case "plane_over_wall": {
       const [a, b] = w.edges ?? [0, 0];
       return t("res.warn.plane_over_wall", { a: a + 1, b: b + 1, v: num(w.value) });

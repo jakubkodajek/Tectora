@@ -9,7 +9,9 @@
   import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
   import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
   import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-  import type { CalcResult, Point2, Project, Selection } from "./types";
+  import type { CalcResult, LineRef, Point2, Project, Selection } from "./types";
+  import { LINE_TOKENS } from "./lineinfo";
+  import { materialToken } from "./materials";
   import type { ItemRef, PlanTarget } from "./items";
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
@@ -27,6 +29,9 @@
     onpick,
     oncontext,
     onitemdbl,
+    lineMarks = [],
+    onlinehover,
+    onlinepick,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -39,6 +44,12 @@
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
     /** A double-click on an object: open its properties. */
     onitemdbl?: (item: ItemRef) => void;
+    /** Roof lines drawn highlighted (the one under the pointer, the pinned one). */
+    lineMarks?: LineRef[];
+    /** The pointer came onto a roof line (or left it: null). */
+    onlinehover?: (line: LineRef | null) => void;
+    /** A click on a roof line: pin its details. */
+    onlinepick?: (line: LineRef) => void;
   } = $props();
 
   let host: HTMLDivElement;
@@ -52,21 +63,6 @@
   let framedFor: Extent | null = null;
   const extentOf = (b: THREE.Box3): Extent => ({ min: [b.min.x, b.min.y, b.min.z], max: [b.max.x, b.max.y, b.max.z] });
 
-  /** Roof line kind → its plan colour token, so 3D and the plan legend agree. */
-  const LINE_TOKENS: Record<string, string> = {
-    eave: "--line-eave",
-    verge: "--line-verge",
-    ridge: "--line-ridge",
-    hip: "--line-hip",
-    valley: "--line-valley",
-    pult: "--line-pult",
-    knick: "--line-knick",
-    gorge: "--line-gorge",
-    abutment: "--line-abutment",
-    abutment_front: "--line-abutment",
-    abutment_back: "--line-abutment",
-    abutment_side: "--line-abutment",
-  };
   /** How far a roof window's frame stands above the roof and its frame width, m
    *  [no source: display only, typical roof-window proportions]. */
   const WINDOW_PROUD = 0.09;
@@ -76,6 +72,12 @@
 
   let groundMat: THREE.MeshStandardMaterial;
   const lineMats: LineMaterial[] = [];
+  /** Every roof line of the scene, in world space, for the pointer to find. */
+  let pickLines: { ref: LineRef; a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+  /** The highlighted lines, drawn over everything (no rebuild of the scene). */
+  let marks = new THREE.Group();
+  /** Pointer distance to a line that still counts as on it, px. */
+  const PICK_PX = 7;
 
   /** A colour token from app.css (light or dark, as currently applied). */
   function token(name: string, fallback = "#808080"): THREE.Color {
@@ -203,6 +205,7 @@
     for (const m of builtMats) m.dispose();
     content = new THREE.Group();
     lineMats.length = 0;
+    pickLines = [];
     groundMat?.color.copy(token("--scene-ground"));
 
     // Colours come from the theme tokens (app.css, --scene-*), as in the plan:
@@ -218,6 +221,23 @@
     });
     const selMat = roofMat.clone();
     selMat.color.copy(token("--focus"));
+    // Sheet metal and the other materials in their own colours (tiles are
+    // --scene-roof): one material per token, made when a face needs it.
+    const matByToken = new Map<string, THREE.MeshStandardMaterial>([["--scene-roof", roofMat]]);
+    const faceMat = (m: number | undefined) => {
+      const tok = materialToken(m ?? 1);
+      let mat = matByToken.get(tok);
+      if (!mat) {
+        mat = roofMat.clone();
+        mat.color.copy(token(tok));
+        if (tok === "--mat-sheet") {
+          mat.roughness = 0.45;
+          mat.metalness = 0.35;
+        }
+        matByToken.set(tok, mat);
+      }
+      return mat;
+    };
     // Walls end exactly on the underside of the roof: pushed further back in
     // depth than the roof, so their top edges never show through it (UI-001).
     const wallMat = new THREE.MeshStandardMaterial({
@@ -333,7 +353,7 @@
             }
           }
           const target: PlanTarget = dormer >= 0 ? { type: "item", item: { kind: "dormer", index: dormer } } : { type: "edge", part: pi, edge: f.edge };
-          const faceMesh = polyMesh(f.polygon, cut, roofMat, isDormerFace(f.edge) && dormer < 0 ? undefined : target);
+          const faceMesh = polyMesh(f.polygon, cut, faceMat(f.material), isDormerFace(f.edge) && dormer < 0 ? undefined : target);
           content.add(dormer >= 0 ? selectable(faceMesh, itemKey({ kind: "dormer", index: dormer }), selDormerMat) : selectable(faceMesh, edgeKey(pi, f.edge), selMat));
 
           // Dormer cheeks and front: walls hanging from the dormer roof's
@@ -361,6 +381,7 @@
         // Roof lines, grouped by kind, a few px wide so each line code reads
         // against the roof like in the plan.
         const byKind = new Map<string, number[]>();
+        rp.geometry.lines.forEach((l, index) => pickLines.push({ ref: { part: pi, index }, a: v3(l.a), b: v3(l.b) }));
         for (const l of rp.geometry.lines) {
           const tok = LINE_TOKENS[l.kind] ?? "--text-2";
           const a = v3(l.a);
@@ -427,12 +448,76 @@
       content.add(quad([at(iu, iv), at(1 - iu, iv), at(1 - iu, 1 - iv), at(iu, 1 - iv)], glassMat, target));
     });
 
-    builtMats = [roofMat, selMat, wallMat, selDormerMat, selWallMat, brickMat, capMat, frameMat, glassMat, holeMat, selObjMat, manualMat];
+    builtMats = [...matByToken.values(), selMat, wallMat, selDormerMat, selWallMat, brickMat, capMat, frameMat, glassMat, holeMat, selObjMat, manualMat];
     scene.add(content);
     highlight();
     // How often the scene was built, for the guard of UI-602.
     host.dataset.builds = String(+(host.dataset.builds ?? 0) + 1);
     if (result && (!framed || growsPastFrame())) frame();
+    // Not tracked: a new highlight redraws the marks only (the effect below).
+    untrack(drawMarks);
+  }
+
+  /** Draws the highlighted lines: amber over a dark edge, on top of the roof. */
+  function drawMarks() {
+    if (!scene) return;
+    scene.remove(marks);
+    marks.traverse((o) => {
+      const m = o as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material | undefined)?.dispose?.();
+    });
+    marks = new THREE.Group();
+    const pos: number[] = [];
+    for (const m of lineMarks) {
+      const l = pickLines.find((p) => p.ref.part === m.part && p.ref.index === m.index);
+      if (l) pos.push(l.a.x, l.a.y, l.a.z, l.b.x, l.b.y, l.b.z);
+    }
+    if (pos.length) {
+      for (const [tok, px, order] of [["--line-hl-edge", LINE_PX + 4.5, 10], ["--line-hl", LINE_PX + 1.5, 11]] as const) {
+        const mat = new LineMaterial({ color: token(tok).getHex(), linewidth: px, depthTest: false });
+        mat.resolution.set(host.clientWidth, host.clientHeight);
+        const ls = new LineSegments2(new LineSegmentsGeometry().setPositions(pos), mat);
+        ls.renderOrder = order;
+        ls.raycast = () => {};
+        marks.add(ls);
+      }
+    }
+    scene.add(marks);
+  }
+
+  /**
+   * The roof line under the pointer: the nearest within PICK_PX on screen
+   * that no roof face hides (a face hit nearer than the line's point by
+   * more than a few cm is in front of it).
+   */
+  function lineAt(clientX: number, clientY: number, el: HTMLCanvasElement, ray: THREE.Raycaster): LineRef | null {
+    if (!pickLines.length) return null;
+    const r = el.getBoundingClientRect();
+    const px = clientX - r.left;
+    const py = clientY - r.top;
+    const toScreen = (v: THREE.Vector3) => {
+      const p = v.clone().project(camera);
+      return { x: ((p.x + 1) / 2) * r.width, y: ((1 - p.y) / 2) * r.height, z: p.z };
+    };
+    let best: { ref: LineRef; d: number; t: number; l: (typeof pickLines)[number] } | null = null;
+    for (const l of pickLines) {
+      const a = toScreen(l.a);
+      const b = toScreen(l.b);
+      if (a.z > 1 || b.z > 1) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 < 1e-9 ? 0 : Math.min(1, Math.max(0, ((px - a.x) * dx + (py - a.y) * dy) / len2));
+      const d = Math.hypot(px - (a.x + dx * t), py - (a.y + dy * t));
+      if (d <= PICK_PX && (!best || d < best.d)) best = { ref: l.ref, d, t, l };
+    }
+    if (!best) return null;
+    ray.setFromCamera(new THREE.Vector2((px / r.width) * 2 - 1, -(py / r.height) * 2 + 1), camera);
+    const face = ray.intersectObjects(content.children, false).find((h) => h.object.userData.target);
+    const at = best.l.a.clone().lerp(best.l.b, best.t);
+    if (face && face.distance < camera.position.distanceTo(at) - 0.15) return null;
+    return best.ref;
   }
 
   /** True when the built scene reaches outside the extent the camera was framed for. */
@@ -510,6 +595,10 @@
       camera.aspect = w / Math.max(h, 1);
       camera.updateProjectionMatrix();
       for (const m of lineMats) m.resolution.set(w, h);
+      marks.traverse((o) => {
+        const m = (o as THREE.Mesh).material;
+        if (m instanceof LineMaterial) m.resolution.set(w, h);
+      });
     };
     const ro = new ResizeObserver(resize);
     ro.observe(host);
@@ -536,6 +625,10 @@
       if (!press || Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4) return (press = null);
       const b = press.button;
       press = null;
+      if (b === 0) {
+        const line = lineAt(e.clientX, e.clientY, el, ray);
+        if (line) return onlinepick?.(line);
+      }
       const h = hit(e);
       if (b === 0 && h) onpick?.(h.target);
       else if (b === 2) {
@@ -546,6 +639,23 @@
       }
     };
     const noMenu = (e: Event) => e.preventDefault();
+    // The roof line under the pointer, reported when it changes; none while
+    // a button is held (orbiting).
+    let hovered: LineRef | null = null;
+    const move = (e: PointerEvent) => {
+      const line = e.buttons ? null : lineAt(e.clientX, e.clientY, el, ray);
+      if (line?.part === hovered?.part && line?.index === hovered?.index) return;
+      hovered = line;
+      el.style.cursor = line ? "pointer" : "";
+      onlinehover?.(line);
+    };
+    const leave = () => {
+      if (hovered) onlinehover?.(null);
+      hovered = null;
+      el.style.cursor = "";
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerleave", leave);
     // A double-click on a dormer, chimney, window or opening opens its properties.
     const dbl = (e: MouseEvent) => {
       const h = hit(e as PointerEvent);
@@ -569,6 +679,8 @@
       el.removeEventListener("pointerup", up, true);
       el.removeEventListener("contextmenu", noMenu);
       el.removeEventListener("dblclick", dbl);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerleave", leave);
       ro.disconnect();
       controls.dispose();
       releaseRenderer(renderer);
@@ -591,6 +703,12 @@
     void item?.kind;
     void item?.index;
     untrack(highlight);
+  });
+
+  $effect(() => {
+    // Highlight only: the scene stays as it is.
+    void lineMarks;
+    drawMarks();
   });
 </script>
 

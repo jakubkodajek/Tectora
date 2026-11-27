@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import type { CalcResult, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
+  import type { CalcResult, LineRef, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
+  import { materialToken, tiledColour } from "./materials";
   import { isGable } from "./types";
   import { onWall } from "./corners";
   import { t } from "./i18n.svelte";
@@ -48,6 +49,9 @@
     locked = false,
     oncontext,
     onitemdbl,
+    lineMarks = [],
+    onlinehover,
+    onlinepick,
   }: {
     project: Project;
     result: CalcResult | null;
@@ -104,6 +108,12 @@
     oncontext?: (target: PlanTarget, client: { x: number; y: number }, world: Point2) => void;
     /** A double-click on a dormer, chimney, window, opening or hand-drawn shape: open its properties. */
     onitemdbl?: (item: ItemRef) => void;
+    /** Roof lines drawn highlighted (the one under the pointer, the pinned one). */
+    lineMarks?: LineRef[];
+    /** The pointer came onto a roof line (or left it: null). */
+    onlinehover?: (line: LineRef | null) => void;
+    /** A left click on a roof line: pin its details. */
+    onlinepick?: (line: LineRef) => void;
   } = $props();
 
   let cursorWorld = $state<Point2 | null>(null);
@@ -213,6 +223,15 @@
   // face through the reactive result, UI-501).
   const topAt = $derived(hostIndex(result));
   const linePieces = $derived(result ? coveredPieces(result, topAt) : []);
+  /** Faces of a material other than tiles, tinted in its colour (sheet metal grey, …). */
+  const materialFaces = $derived(
+    (result?.parts ?? []).flatMap((rp) => rp.geometry.faces.filter((f) => f.polygon.length >= 3 && !tiledColour(f.material))),
+  );
+  /** The highlighted roof lines' end points. */
+  const markedLines = $derived(
+    lineMarks.map((m) => result?.parts[m.part]?.geometry.lines[m.index]).filter((l) => !!l),
+  );
+  const hovering = () => !drag && !objDrag && !pan && !placing && !drawing;
   // A face under another building's higher roof gets no label: it would be
   // written over the roof that covers it (UX-012).
   const tags = $derived(result ? visibleFaceTags(result, topAt) : []);
@@ -497,7 +516,8 @@
   /** What a press landed on: the plan itself, or one of its shapes. */
   type PressOn =
     | { on: "plan" }
-    | { on: "part"; part: number }
+    /** `line`: the press landed on that roof line of the part (its details are pinned, UI-701). */
+    | { on: "part"; part: number; line?: number }
     | { on: "edge"; part: number; edge: number }
     | { on: "vertex"; part: number; vertex: number }
     | { on: "item"; item: ItemRef };
@@ -520,7 +540,12 @@
     longPress(e, at);
     if (at.on === "plan") pressPlan(e);
     else if (at.on === "item") pressItem(e, at.item);
-    else if (at.on === "part") pressPart(e, at.part);
+    else if (at.on === "part") {
+      // A press on a roof line pins its details and is otherwise a press on
+      // the building under it (UI-701): the first selects it, the next drags it.
+      if (at.line !== undefined && !placing && !drawing && button(e) === 0) onlinepick?.({ part: at.part, index: at.line });
+      pressPart(e, at.part);
+    }
     else if (at.on === "vertex") pressVertex(e, at.part, at.vertex);
     else pressEdge(e, at.part, at.edge);
   }
@@ -1012,6 +1037,25 @@
       />
     {/each}
 
+    {#each materialFaces as f}
+      <path class="mat-face" style:fill={`color-mix(in srgb, var(${materialToken(f.material ?? 1)}) 55%, transparent)`}
+        d={"M" + f.polygon.map((p) => `${sx(p[0])},${sy(p[1])}`).join("L") + "Z"} />
+    {/each}
+
+    <!-- Roof lines answer the pointer under the walls, so a wall on the
+         same line (no overhang) keeps its own press. -->
+    {#if !placing && !drawing}
+      {#each result?.parts ?? [] as rp, pi}
+        {#each rp.geometry.lines as l, li}
+          <line class="line-hit" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])}
+            data-line={`${pi}:${li}`} role="button" tabindex="-1" aria-label={t("lineinfo.title")}
+            onpointerenter={() => { if (hovering()) onlinehover?.({ part: pi, index: li }); }}
+            onpointerleave={() => onlinehover?.(null)}
+            onpointerdown={(ev) => press(ev, { on: "part", part: pi, line: li })} />
+        {/each}
+      {/each}
+    {/if}
+
     {#each linePieces as lines}
       {#each lines as l}
         <!-- Eaves are drawn over the walls below (UX-004). -->
@@ -1120,6 +1164,14 @@
           {/each}
         {/if}
       {/each}
+    {/each}
+    {#each markedLines as l}
+      <g class="line-mark" aria-hidden="true">
+        <line class="edge-hl" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])} />
+        <line class="core-hl" x1={sx(l.a[0])} y1={sy(l.a[1])} x2={sx(l.b[0])} y2={sy(l.b[1])} />
+        <circle cx={sx(l.a[0])} cy={sy(l.a[1])} r="3.5" />
+        <circle cx={sx(l.b[0])} cy={sy(l.b[1])} r="3.5" />
+      </g>
     {/each}
     {#each project.dormers as d, di}
       {@const fs = d.edges.find((x) => x.direction_rad == null)?.start ?? d.edges[0]?.start}
@@ -1346,6 +1398,33 @@
     stroke: var(--accent);
     stroke-width: 2.5;
   }
+  .mat-face {
+    pointer-events: none;
+  }
+  .line-hit {
+    stroke: transparent;
+    stroke-width: 10;
+    stroke-linecap: round;
+    cursor: pointer;
+  }
+  .line-mark {
+    pointer-events: none;
+  }
+  .line-mark .edge-hl {
+    stroke: var(--line-hl-edge);
+    stroke-width: 7;
+    stroke-linecap: round;
+  }
+  .line-mark .core-hl {
+    stroke: var(--line-hl);
+    stroke-width: 4;
+    stroke-linecap: round;
+  }
+  .line-mark circle {
+    fill: var(--line-hl);
+    stroke: var(--line-hl-edge);
+    stroke-width: 1.5;
+  }
   .mark {
     fill: color-mix(in srgb, var(--accent) 22%, transparent);
     stroke: var(--accent);
@@ -1430,11 +1509,14 @@
     stroke: var(--focus);
     stroke-width: 3.5;
   }
-  /* A press on a ridge, hip or valley is a press on the building under it:
-     the lines have no target of their own yet (UI-701). */
+  /* A press on a ridge, hip or valley goes to the line's wider hit line
+     below: its details, and a press on the building under it (UI-701). */
   .roofline {
     stroke-width: 1.8;
     stroke-linecap: round;
+    pointer-events: none;
+  }
+  .roofline.eave {
     pointer-events: none;
   }
   /* Under a higher roof (joined buildings): still there, but not on top. */

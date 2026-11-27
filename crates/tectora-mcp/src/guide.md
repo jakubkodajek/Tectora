@@ -268,8 +268,8 @@ The tools cover every operation of the Tectora editor:
   and 500 of each kind of object (dormers, chimneys, windows, openings,
   hand-drawn lines and faces), 64 pitch breaks per wall (2000 in all); a
   write over them is refused (`too many …`).
-  `calc`, `calc_breakdown`, `get_project`, `export_list` and `export_plan`
-  stop after 60 s. A design inside the limits whose buildings lie on top of
+  `calc`, `calc_breakdown`, `line_details`, `get_project`, `export_list`
+  and `export_plan` stop after 60 s. A design inside the limits whose buildings lie on top of
   each other (copies saved onto one another, a rotate with many copies) is
   refused with "the design is too complex to calculate" by `calc`,
   `calc_breakdown`, `export_list` and `export_plan`. `get_project` still
@@ -373,6 +373,24 @@ Calculation tab does: every face as plan area / cos(pitch) less openings,
 every line as the 3D distance of its ends, and how they sum per material and
 per line code. Use it when the user asks how an area was calculated or wants
 to check a result.
+`line_details` gives what the app shows when the user points at a roof line:
+its kind and code, end points, true and plan length, its own slope, the
+heights of its ends above the ground (`z_low`, `z_high`: e.g. the ridge
+height, the eave height) and the faces it bounds with their pitch and
+material. `counted_length` is what the results count (a chimney or hole on
+the line takes its part off); per code it adds up to `calc`'s line totals
+without hand-drawn lines. Buildings without a roof are named in
+`not_calculated`. Filter with `part` and `code` (`"F"` ridges, `"O"` all
+verges). Use it for "how high is the ridge / this eave", "which pitches meet
+at this hip".
+Faces carry their roof material: the area per material (`area_by_material`,
+the price-sheet list's material rows) counts each face under its own
+material only, so sheet metal on some walls is not in the tiles' area; the
+roof area is the sum of all materials. Walls in line with the same eave
+height and overhang are roofed as one plane; where their materials differ,
+the plane is split square to the wall at the corner and each strip is its
+wall's face with its material (a wall's eave split at a corner can carry
+sheet metal on one part only).
 Several parts are joined like solids: a roof is hidden inside another
 part's walls below that part's roof, and roofs that cross meet in valleys.
 The rules were checked against roofs calculated by DACAD itself: a step
