@@ -41,7 +41,7 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
         .iter()
         .map(|f| json!({ "label": f.label, "pitch_deg": f.pitch_deg, "area": f.area() }))
         .collect();
-    json!({
+    let mut out = json!({
         "parts": parts,
         "manual_faces": manual_faces,
         "totals": total,
@@ -53,7 +53,14 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
         // Every roof line's heights, slope and faces, for the editor's line
         // details on hover (display only; `lineinfo`).
         "line_details": crate::lineinfo::line_details_of(project, geos),
-    })
+    });
+    // Warnings that belong to no building (a crossing hand-drawn face in a
+    // job without one, ERR-1901).
+    let job = crate::check::job_warnings(project, geos);
+    if !job.is_empty() {
+        out["warnings"] = serde_json::to_value(job).unwrap_or(Value::Null);
+    }
+    out
 }
 
 #[cfg(test)]

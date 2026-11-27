@@ -3,6 +3,7 @@
 // Display only; quantities come from the core.
 
 import { ShapeUtils, Vector2 } from "three";
+import { maxOf, minOf } from "./extent";
 import type { Chimney, Dormer, Point2 } from "./types";
 
 export type Poly3 = [number, number, number][];
@@ -143,10 +144,10 @@ export function planBox(polys: Poly3[]): PlanBox | null {
   const pts = polys.flat();
   if (!pts.length) return null;
   return {
-    minX: Math.min(...pts.map((p) => p[0])),
-    minY: Math.min(...pts.map((p) => p[1])),
-    maxX: Math.max(...pts.map((p) => p[0])),
-    maxY: Math.max(...pts.map((p) => p[1])),
+    minX: minOf(pts, (p) => p[0]),
+    minY: minOf(pts, (p) => p[1]),
+    maxX: maxOf(pts, (p) => p[0]),
+    maxY: maxOf(pts, (p) => p[1]),
   };
 }
 
@@ -175,7 +176,7 @@ export function coveredByDormer(poly: Poly3, dormers: { lines: WallLine[]; box: 
 export function chimneyTop(c: Chimney, host: (p: Point2) => number | null): { bottom: number; top: number } {
   const zs = c.corners.map(host).filter((z): z is number => z !== null);
   if (!zs.length) return { bottom: 0, top: Math.max(c.height, 1) };
-  const [lo, hi] = [Math.min(...zs), Math.max(...zs)];
+  const [lo, hi] = [minOf(zs), maxOf(zs)];
   return { bottom: Math.max(0, lo - 0.3), top: c.height > hi + 0.05 ? c.height : hi + 1 };
 }
 
@@ -230,6 +231,57 @@ export function crossings(a: Point2, b: Point2, lines: [Poly3[number], Poly3[num
     if (t > 1e-6 && t < 1 - 1e-6 && u >= -1e-6 && u <= 1 + 1e-6) out.push(t);
   }
   return out.sort((x, y) => x - y).filter((t, i, ts) => i === 0 || t - ts[i - 1] > 1e-6);
+}
+
+/** Work counted by `crossingIndex` for its guard test: roof lines tested against a wall. */
+export interface CrossingStats {
+  lines: number;
+}
+
+/**
+ * `crossings` of a wall with every roof line of a result, for the many
+ * walls of one scene: the lines are copied once into plain numbers with
+ * their plan boxes, building by building, and a wall is tested only against
+ * the lines of the buildings whose box it meets. The same parameters as
+ * `crossings(a, b, all lines)`; testing every wall against every line of
+ * every building, read through the reactive result, froze the window for
+ * seconds at each rebuild of a job of 200 buildings (UI-602). Display only.
+ */
+export function crossingIndex(
+  parts: readonly { geometry: { lines: readonly { a: Poly3[number]; b: Poly3[number] }[] } }[] | null | undefined,
+  stats?: CrossingStats,
+): (a: Point2, b: Point2) => number[] {
+  type Box = { x0: number; x1: number; y0: number; y1: number };
+  type Line = Box & { seg: [Poly3[number], Poly3[number]] };
+  const groups: (Box & { lines: Line[] })[] = [];
+  for (const part of parts ?? []) {
+    const lines: Line[] = [];
+    const box: Box = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+    for (const l of part.geometry.lines) {
+      const p: Poly3[number] = [l.a[0], l.a[1], l.a[2]];
+      const q: Poly3[number] = [l.b[0], l.b[1], l.b[2]];
+      // `crossings` takes a hit up to 1e-6 of the line's length past its ends.
+      const pad = 1e-6 * Math.hypot(q[0] - p[0], q[1] - p[1]) + 1e-9;
+      const b = { x0: Math.min(p[0], q[0]) - pad, x1: Math.max(p[0], q[0]) + pad, y0: Math.min(p[1], q[1]) - pad, y1: Math.max(p[1], q[1]) + pad };
+      lines.push({ ...b, seg: [p, q] });
+      box.x0 = Math.min(box.x0, b.x0);
+      box.x1 = Math.max(box.x1, b.x1);
+      box.y0 = Math.min(box.y0, b.y0);
+      box.y1 = Math.max(box.y1, b.y1);
+    }
+    if (lines.length) groups.push({ ...box, lines });
+  }
+  return (a, b) => {
+    const [x0, x1, y0, y1] = [Math.min(a.x, b.x), Math.max(a.x, b.x), Math.min(a.y, b.y), Math.max(a.y, b.y)];
+    const apart = (o: Box) => o.x1 < x0 || o.x0 > x1 || o.y1 < y0 || o.y0 > y1;
+    const near: [Poly3[number], Poly3[number]][] = [];
+    for (const g of groups) {
+      if (apart(g)) continue;
+      for (const l of g.lines) if (!apart(l)) near.push(l.seg);
+    }
+    if (stats) stats.lines += near.length;
+    return crossings(a, b, near);
+  };
 }
 
 // How far inside the building the roof is read for a wall's top, m: a wall
@@ -321,7 +373,7 @@ export function gableShownByWall(gable: Poly3, wall: Poly3, inward: Point2, over
   const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
   if (len < 1e-6) return false;
   const out = gable.map((p) => -((p[0] - a[0]) * inward.x + (p[1] - a[1]) * inward.y));
-  const [lo, hi] = [Math.min(...out), Math.max(...out)];
+  const [lo, hi] = [minOf(out), maxOf(out)];
   if (hi - lo > ON_LINE || lo < -ON_LINE || hi > Math.max(0, overhang) + ON_LINE) return false;
   return gable.every((p) => {
     const t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / (len * len);

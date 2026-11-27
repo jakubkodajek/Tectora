@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { changedItems, describeChange, describeFigure, ghostOf } from "./changes";
+import { changedEdges, changedItems, describeChange, describeFigure, figureName, ghostOf } from "./changes";
 import { i18n } from "./i18n.svelte";
 import type { CalcResult, Change, EdgeDef, Project } from "./types";
 import { emptyProject } from "./types";
@@ -95,5 +95,78 @@ describe("figures", () => {
     const p = emptyProject("x");
     expect(describeFigure({ key: "roof_area", stored: 182.4, current: 195.12 }, p)).toBe("Roof area 182.40 → 195.12 m² (+12.72)");
     expect(describeFigure({ key: "line:F", stored: 10, current: 8.5 }, p)).toBe("F 10.00 → 8.50 m (−1.50)");
+  });
+});
+
+describe("round-3 audit", () => {
+  it("names an AI status change with the status before and after (UX-207)", () => {
+    const p = emptyProject("x");
+    expect(describeChange({ kind: "modified", field: "job.status", before: "draft", after: "ordered" }, p)).toBe("Status: Draft → Ordered");
+  });
+  it("names a line in the stored-offer comparison with its code and name (UX-205)", () => {
+    const p = emptyProject("x");
+    expect(figureName("line:OL", p)).toBe("OL Verge left");
+    expect(figureName("roof_area", p)).toBe("Roof area");
+  });
+});
+
+describe("malformed changes from a received change log (HUNT-301)", () => {
+  const p = () => ({ ...emptyProject("x"), parts: [rect(12)] });
+  const bad: unknown[] = [
+    { kind: "modified", field: "vertex", part: 0, edge: 1, before: null, after: null },
+    { kind: "modified", field: "vertex", part: 0, edge: 1, before: null, after: "x" },
+    { kind: "modified", field: "windows", before: null, after: null },
+    { kind: "modified", field: "dormers", before: null, after: 7 },
+    { kind: "modified", field: "half_hip", part: 0, edge: 0, before: null, after: 3 },
+    { kind: "added", field: "chimney", item: "x", before: null, after: null },
+    { kind: "modified", field: 7, before: null, after: null },
+    { kind: "removed", field: "chimney", item: 0, before: { corners: null }, after: null },
+    { kind: "removed", field: "manual_line", item: 0, before: { a: null }, after: null },
+    { kind: "removed", field: "dormer", item: 0, before: { edges: null }, after: null },
+    { kind: "removed", field: "manual_face", item: 0, before: "x", after: null },
+    null,
+    "text",
+  ];
+
+  it("describes every one without throwing", () => {
+    for (const c of bad) {
+      expect(() => describeChange(c as Change, p())).not.toThrow();
+      expect(typeof describeChange(c as Change, p())).toBe("string");
+    }
+  });
+
+  it("highlights and ghosts them without throwing", () => {
+    expect(() => changedEdges(bad as Change[], p())).not.toThrow();
+    expect(() => changedItems(bad as Change[])).not.toThrow();
+    const g = ghostOf(bad as Change[], p(), p(), null);
+    for (const s of g.shapes) expect(Array.isArray(s)).toBe(true);
+    for (const l of g.lines) expect(l.every((pt) => typeof pt?.x === "number")).toBe(true);
+  });
+
+  it("shows texts without control or bidi characters and cut to a line", () => {
+    const name = describeChange({ kind: "modified", field: "name", before: "a", after: "Faktura ‮fdp.exe\u0007" }, p());
+    expect(name).toBe("Name: Faktura fdp.exe");
+    const long = describeChange({ kind: "modified", field: "job.customer", before: "", after: "x".repeat(100_000) }, p());
+    expect(long.length).toBeLessThan(300);
+  });
+
+  // Audit 2026-11-22 TEST-405 (C2, C3, C7): what the guards stand for, not only "no throw".
+  it("shows an unknown status or job field as another change", () => {
+    const other = describeChange(null as unknown as Change, null);
+    expect(describeChange({ kind: "modified", field: "job.status", before: "draft", after: "evil" } as Change, p())).toBe(other);
+    expect(describeChange({ kind: "modified", field: "job.status", before: "evil", after: "offer" } as Change, p())).toBe(other);
+    expect(describeChange({ kind: "modified", field: "job.foo", before: "", after: "x" } as Change, p())).toBe(other);
+    expect(describeChange({ kind: "modified", field: "job.customer", before: "", after: "Novák" } as Change, p())).not.toBe(other);
+  });
+
+  it("puts no building prefix on a part index that is not a whole number", () => {
+    const two = { ...emptyProject("x"), parts: [rect(12), rect(8)] };
+    const named = (part: unknown) => describeChange({ kind: "modified", field: "part_name", part, before: "", after: "A" } as Change, two);
+    expect(named(1)).toMatch(/2/);
+    for (const part of ["x", 1.5, -1, null]) {
+      const shown = named(part);
+      expect(shown).not.toMatch(/x1|NaN|undefined|1\.5|-1/);
+      expect(shown).toBe(describeChange({ kind: "modified", field: "part_name", before: "", after: "A" } as Change, two));
+    }
   });
 });

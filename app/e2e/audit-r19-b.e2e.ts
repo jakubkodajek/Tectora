@@ -1,0 +1,415 @@
+// Guards for the round-19 audit (2026-11-24), editor side, second half.
+//
+// HUNT-1801 a hand-drawn face clicked out of order (a bow tie) is refused
+//          with a note and the draft stays open; in order it is added.
+// UI-1801  after Revert, Revert all, the AI tab's Revert, Undo / Redo through
+//          the core and the offer put-back the plan and the 3D view take a
+//          real mouse click (no `dispatchEvent`: it reaches inert elements).
+import fs from "node:fs";
+import path from "node:path";
+import type { Page } from "@playwright/test";
+import { bar, clickPlan, openEditor, tool } from "./editor";
+import { LIBRARY_DIR } from "./env";
+import { createExample, expect, loadProject, test, waitForProject } from "./fixtures";
+import { cs } from "./i18n";
+import { olderOffer } from "./review";
+
+// TECTORA_SHOTS=<folder>/ saves a screenshot after each test (fix evidence).
+test.afterEach(async ({ page }, info) => {
+  const dir = process.env.TECTORA_SHOTS;
+  if (!dir) return;
+  const id = info.title.match(/(HUNT|UX|UI|ERR|TEST|ARCH)-\d+/)?.[0] ?? "r19";
+  const n = info.title.replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
+  await page.screenshot({ path: `${dir}r19-${id}-${n}-${process.env.TECTORA_SHOTS_TAG ?? "after"}.png`, timeout: 10_000 }).catch(() => {});
+});
+
+const review = (page: Page) => page.locator(".review");
+const dockTab = (page: Page, key: string) => page.locator("aside .tabs").getByRole("tab", { name: cs(key) });
+const footerSave = (page: Page) => page.locator(".statusbar .save");
+const undo = (page: Page) => page.locator("body").press("ControlOrMeta+z");
+const redo = (page: Page) => page.locator("body").press("ControlOrMeta+Shift+z");
+
+/** The point of the page in the middle of `loc`, and nothing covers it. */
+async function freePoint(page: Page, loc: import("@playwright/test").Locator) {
+  const box = await loc.boundingBox();
+  expect(box, "the element is on the page").not.toBeNull();
+  const x = box!.x + box!.width / 2;
+  const y = box!.y + box!.height / 2;
+  // `inert` does not change what lies on top, but an inert element is not hit-tested:
+  // Chromium returns its live ancestor (UI-1801 read "<div class=main> intercepts").
+  const hit = await loc.evaluate((el, [px, py]) => {
+    const top = document.elementFromPoint(px, py);
+    return { mine: !!top && (top === el || el.contains(top)), inert: !!el.closest("[inert]") };
+  }, [x, y] as const);
+  expect(hit, "the element itself takes the click").toEqual({ mine: true, inert: false });
+  return { x, y };
+}
+
+/** The editor is live again: a real click on wall `index` selects it, a real click on a 3D view button picks it. */
+async function editorIsLive(page: Page, index: number) {
+  await expect(footerSave(page)).toHaveText(cs("editor.saved"));
+  const hit = page.locator(".view .wrap > svg g.edge line.hit").nth(index);
+  const p = await freePoint(page, hit);
+  await page.mouse.click(p.x, p.y);
+  await expect(bar(page, "def.title").locator(".which strong")).toHaveText(cs("def.wall", { n: index + 1 }));
+  const views = page.getByRole("radiogroup", { name: cs("view.title") });
+  const view = views.getByRole("radio").nth(index + 1);
+  const v = await freePoint(page, view);
+  await page.mouse.click(v.x, v.y);
+  await expect(view).toHaveAttribute("aria-checked", "true");
+}
+
+async function oneAiSave(page: Page, mcp: any, id: string) {
+  await mcp.call("update_edges", { id, changes: [{ index: 0, overhang: 0.9 }], summary: "AI přesah 0.9" });
+  await expect(review(page)).toContainText("AI přesah 0.9");
+}
+
+test.describe("round 19, UI-1801: the plan and the 3D view are live after every review transaction", () => {
+  test("after the banner's Revert a real click selects a wall and picks a 3D view (UI-1801)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 živý revert");
+    await openEditor(app, "R19 živý revert");
+    await oneAiSave(page, mcp, id);
+    await review(page).getByRole("button", { name: cs("ai.revert"), exact: true }).click();
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang !== 0.9);
+    await expect(review(page)).toHaveCount(0);
+    await editorIsLive(page, 1);
+    await editorIsLive(page, 0);
+  });
+
+  test("after Revert all a real click selects a wall (UI-1801)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 živý vše");
+    await openEditor(app, "R19 živý vše");
+    await oneAiSave(page, mcp, id);
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    await app.answerConfirm(true);
+    await review(page).getByRole("button", { name: cs("review.revertAll") }).click();
+    await waitForProject(id, (p) => !p.notes && p.parts[0].edges[0].overhang !== 0.9);
+    await expect(review(page)).toHaveCount(0);
+    await editorIsLive(page, 1);
+  });
+
+  test("after the AI tab's Revert a real click selects a wall (UI-1801)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 živý panel");
+    await openEditor(app, "R19 živý panel");
+    await oneAiSave(page, mcp, id);
+    await dockTab(page, "dock.ai").click();
+    await page.getByRole("tabpanel").getByRole("button", { name: cs("ai.revert"), exact: true }).click();
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang !== 0.9);
+    await expect(review(page)).toHaveCount(0);
+    await editorIsLive(page, 1);
+  });
+
+  test("after Ctrl+Z over an AI save and after Ctrl+Y a real click selects a wall (UI-1801)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 živý zpět");
+    await openEditor(app, "R19 živý zpět");
+    await oneAiSave(page, mcp, id);
+    await undo(page);
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang !== 0.9);
+    await expect(review(page)).toHaveCount(0);
+    await editorIsLive(page, 1);
+    await page.locator("body").focus();
+    await redo(page);
+    await waitForProject(id, (p) => p.parts[0].edges[0].overhang === 0.9);
+    await expect(review(page)).toContainText("AI přesah 0.9");
+    await editorIsLive(page, 0);
+  });
+
+  test("after the put-back of the offer's figures a real click selects a wall (UI-1801)", async ({ app, page, mcp }) => {
+    const id = await olderOffer(mcp, "R19 živý nabídka");
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("R19 živý nabídka");
+    await waitForProject(id, (q) => q.result_snapshot?.engine_version !== "0.8.0");
+    await app.saved();
+    await dockTab(page, "dock.results").click();
+    await page.getByTestId("snap-restore").click();
+    await waitForProject(id, (q) => q.result_snapshot?.engine_version === "0.8.0");
+    await expect(page.getByTestId("snap-restore")).toHaveCount(0);
+    await editorIsLive(page, 1);
+  });
+});
+
+test.describe("round 19, HUNT-1801: a hand-drawn face that crosses itself", () => {
+  test("four corners clicked out of order and Enter: a note, no face, the draft stays; in order it closes (HUNT-1801)", async ({ app, page }) => {
+    const id = await createExample("gable", "R19 motýlek");
+    await openEditor(app, "R19 motýlek");
+    await app.saved();
+    await tool(page, "tool.face").click();
+    const pb = page.getByTestId("place-bar");
+    for (const [x, y] of [
+      [2, 1],
+      [6, 3],
+      [6, 1],
+      [2, 3],
+    ])
+      await clickPlan(page, x, y);
+    await expect(pb.getByTestId("place-points")).toHaveText(cs("place.points", { n: 4 }));
+    await page.keyboard.press("Enter");
+    await expect(app.toasts().filter({ hasText: cs("manual.refused.face_crosses") })).toHaveCount(1);
+    await expect(pb).toBeVisible();
+    await expect(pb.getByTestId("place-points")).toHaveText(cs("place.points", { n: 4 }));
+    expect((await loadProject(id)).manual_faces ?? []).toHaveLength(0);
+    // Esc and the same corners in order: the face is added, no note.
+    await page.keyboard.press("Escape");
+    await expect(pb).toHaveCount(0);
+    await tool(page, "tool.face").click();
+    for (const [x, y] of [
+      [2, 1],
+      [6, 1],
+      [6, 3],
+      [2, 3],
+    ])
+      await clickPlan(page, x, y);
+    await page.keyboard.press("Enter");
+    await waitForProject(id, (p) => (p.manual_faces ?? []).length === 1);
+    await expect(pb).toHaveCount(0);
+  });
+
+  test("a stored face that crosses itself keeps its area and the Results tab warns about it (HUNT-1801)", async ({ app, page }) => {
+    const id = await createExample("gable", "R19 uložený motýlek");
+    const p = await loadProject(id);
+    p.manual_faces = [{ points: [{ x: 1, y: 1 }, { x: 6, y: 6 }, { x: 6, y: 1 }, { x: 1, y: 6 }], pitch_deg: 30 }];
+    fs.writeFileSync(path.join(LIBRARY_DIR, `${id}.tectora`), JSON.stringify(p));
+    await openEditor(app, "R19 uložený motýlek");
+    await dockTab(page, "dock.results").click();
+    await expect(page.getByTestId("results-warned")).toBeVisible();
+    await expect(page.getByRole("tabpanel")).toContainText(cs("res.warn.manual_face_crosses", { n: 1 }));
+  });
+});
+
+test.describe("round 19, UX-1802: Undo / Redo pressed in the dock while an Undo is with the core", () => {
+  test("two Ctrl+Z with the focus on the AI tab: the second is queued behind the first and both go out (UX-1802)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 fronta v panelu");
+    await openEditor(app, "R19 fronta v panelu");
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    await expect(review(page)).toContainText("Poznámka od AI");
+    await mcp.call("update_job", { id, customer: "AI Zákazník", summary: "Zákazník od AI" });
+    await expect(review(page)).toContainText(cs("review.steps", { n: 2 }));
+    await app.saved();
+    await dockTab(page, "dock.ai").click();
+    await dockTab(page, "dock.ai").focus();
+    let calls = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    await page.route("**/revert_changes", async (route) => {
+      calls++;
+      const res = await route.fetch();
+      if (calls === 1) await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
+    await page.keyboard.press("ControlOrMeta+z");
+    await expect.poll(() => calls).toBe(1);
+    // The focus is still in the dock while the first answer is held.
+    expect(await page.evaluate(() => !!document.activeElement?.closest("aside"))).toBe(true);
+    await page.keyboard.press("ControlOrMeta+z");
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    expect(calls).toBe(1);
+    open();
+    await waitForProject(id, (p) => !p.notes && p.job.customer === "");
+    await expect.poll(() => calls).toBe(2);
+    await expect(review(page)).toHaveCount(0);
+    expect(await page.locator(".stack .toast.error").count()).toBe(0);
+  });
+});
+
+test.describe("round 19, UX-1803 / UI-1803: the status bar during an Undo / Redo through the core", () => {
+  test("Ctrl+Z says undoing and Ctrl+Shift+Z says redoing while the core answers, not reverting (UX-1803)", async ({ app, page, mcp }) => {
+    const id = await createExample("gable", "R19 stav zpět");
+    await openEditor(app, "R19 stav zpět");
+    await oneAiSave(page, mcp, id);
+    await app.saved();
+    for (const [key, cmd, text, check] of [
+      [undo, "revert_changes", "editor.undoing", (p: any) => p.parts[0].edges[0].overhang !== 0.9],
+      [redo, "take_back_revert", "editor.redoing", (p: any) => p.parts[0].edges[0].overhang === 0.9],
+    ] as const) {
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      let held = 0;
+      await page.route(`**/${cmd}`, async (route) => {
+        held++;
+        const res = await route.fetch();
+        await gate;
+        await route.fulfill({ response: res }).catch(() => {});
+      });
+      await key(page);
+      await expect.poll(() => held).toBe(1);
+      await expect(footerSave(page)).toHaveText(cs(text));
+      await expect(footerSave(page)).not.toHaveText(cs("editor.reverting"));
+      open();
+      await waitForProject(id, check);
+      await expect(footerSave(page)).toHaveText(cs("editor.saved"));
+      await page.unroute(`**/${cmd}`);
+    }
+  });
+});
+
+/** The next confirm() waits for the test: `answer(true|false)` gives the user's answer. */
+async function holdConfirm(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.confirm = (m: string) => {
+      w.__e2e.dialogs.push({ kind: "confirm", message: String(m) });
+      return new Promise((res) => (w.__answer = res));
+    };
+  });
+  await page.evaluate(() => delete (window as any).__answer);
+  return {
+    asked: () => expect.poll(() => page.evaluate(() => typeof (window as any).__answer)).toBe("function"),
+    answer: (yes: boolean) => page.evaluate((y) => (window as any).__answer(y), yes),
+  };
+}
+
+test.describe("round 19, UI-1804: a refused Delete job", () => {
+  test("an AI step during the question: nothing is deleted and the focus is on the banner, not the page (UI-1804)", async ({ app, page, mcp }) => {
+    const created = await mcp.call("create_from_example", { example_id: "gable", name: "R19 fokus smazat", summary: "Založeno podle výkresu" });
+    const id = created.id as string;
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("R19 fokus smazat");
+    const q = await holdConfirm(page);
+    await review(page).getByTestId("review-delete").click();
+    await q.asked();
+    await mcp.call("update_job", { id, notes: "Od AI", summary: "Poznámka od AI" });
+    await waitForProject(id, (p) => p.notes === "Od AI");
+    await q.answer(true);
+    await expect(app.toasts().filter({ hasText: cs("review.deleteChanged") })).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.closest(".review") !== null)).toBe(true);
+    expect(fs.existsSync(path.join(LIBRARY_DIR, `${id}.tectora`))).toBe(true);
+  });
+
+  test("a review read that fails during the question: nothing is deleted, the note says it could not be checked", async ({ app, page, mcp }) => {
+    const created = await mcp.call("create_from_example", { example_id: "gable", name: "R19 neověřeno", summary: "Založeno podle výkresu" });
+    const id = created.id as string;
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob("R19 neověřeno");
+    const q = await holdConfirm(page);
+    await review(page).getByTestId("review-delete").click();
+    await q.asked();
+    await page.route("**/review_status", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ err: { code: "io", id, detail: "read failed" } }) }));
+    await q.answer(true);
+    await expect(app.toasts().filter({ hasText: cs("review.deleteUnchecked") })).toHaveCount(1);
+    await expect(page.locator(".editor")).toBeVisible();
+    expect(fs.existsSync(path.join(LIBRARY_DIR, `${id}.tectora`))).toBe(true);
+    app.errors.length = 0;
+  });
+});
+
+test.describe("round 19, UI-1805: an AI save in a narrow window with the drawer open", () => {
+  for (const [w, h] of [
+    [600, 420],
+    [800, 600],
+  ] as const) {
+    test(`at ${w}x${h} the drawer closes and the banner's Accept takes a real click (UI-1805)`, async ({ app, page, mcp }) => {
+      await page.setViewportSize({ width: w, height: h });
+      const id = await createExample("gable", `R19 úzké ${w}`);
+      await openEditor(app, `R19 úzké ${w}`);
+      await app.saved();
+      await dockTab(page, "dock.results").click();
+      await expect(page.locator("aside.open")).toHaveCount(1);
+      await oneAiSave(page, mcp, id);
+      await expect(page.locator("aside.open")).toHaveCount(0);
+      // The AI tab is the one the drawer opens with.
+      await expect(dockTab(page, "dock.ai")).toHaveAttribute("aria-selected", "true");
+      const accept = review(page).getByRole("button", { name: cs("review.accept") });
+      if (process.env.TECTORA_SHOTS) await page.screenshot({ path: `${process.env.TECTORA_SHOTS}r19-UI-1805-${w}x${h}-after-ai-save.png` });
+      const p = await freePoint(page, accept);
+      await page.mouse.click(p.x, p.y);
+      await expect(review(page)).toHaveCount(0);
+    });
+  }
+});
+
+test.describe("round 19, HUNT-1804: a long AI summary in the AI tab", () => {
+  test("a summary of one 161-character word wraps in the AI tab, which does not scroll sideways (HUNT-1804)", async ({ app, page, mcp }) => {
+    await page.setViewportSize({ width: 1100, height: 700 });
+    const id = await createExample("gable", "R19 dlouhé shrnutí");
+    await openEditor(app, "R19 dlouhé shrnutí");
+    const word = "vykres_" + "x".repeat(150) + ".pdf";
+    await mcp.call("update_job", { id, notes: "Od AI", summary: word });
+    await expect(review(page)).toContainText(word.slice(0, 20));
+    await dockTab(page, "dock.ai").click();
+    const row = page.getByTestId("history-entry").first().locator(".summary");
+    await expect(row).toContainText(word);
+    const panel = page.getByRole("tabpanel");
+    const [rw, pw] = [(await row.boundingBox())!.width, await panel.evaluate((e) => e.clientWidth)];
+    expect(rw).toBeLessThanOrEqual(pw);
+    const wide = await panel.evaluate((e) => {
+      const r = e.getBoundingClientRect();
+      return [...e.querySelectorAll("*")].filter((c) => c.getBoundingClientRect().right > r.right + 1 || (c as HTMLElement).scrollWidth > e.clientWidth + 1).map((c) => `${c.tagName}.${c.className}`).slice(0, 8);
+    });
+    expect(wide).toEqual([]);
+    // Nothing in the tab is wider than it, and it does not scroll sideways.
+    expect(await panel.evaluate((e) => e.scrollWidth <= e.clientWidth + 1)).toBe(true);
+  });
+});
+
+test.describe("round 19, HUNT-1805: Restore of a job the AI already brought back", () => {
+  async function deletedFromBanner(app: any, page: Page, mcp: any, name: string) {
+    const created = await mcp.call("create_from_example", { example_id: "gable", name, summary: "Založeno podle výkresu" });
+    await app.open({ prefs: { followAi: false } });
+    await app.openJob(name);
+    await app.answerConfirm(true);
+    // The preview bridge's poll that sees the file gone (audit 2026-11-24
+    // TEST-1904): a restore inside the same poll would leave the file as it
+    // was and no event would come.
+    const id = created.id as string;
+    const gone = page.waitForResponse(async (r) => r.url().endsWith("/__events") && (await r.text()).includes(id), { timeout: 20_000 });
+    await review(page).getByTestId("review-delete").click();
+    await expect(page.locator("header .brand")).toBeVisible();
+    const toast = app.toasts().filter({ hasText: cs("home.deleted", { name }) });
+    await expect(toast).toHaveCount(1);
+    const entry = (await mcp.call("list_deleted", {})).find((e: any) => e.id === created.id).entry as string;
+    return { id, toast, entry, gone };
+  }
+
+  test("Restore pressed after the AI restored the entry says it is no longer in the trash, not that the job is gone (HUNT-1805)", async ({ app, page, mcp }) => {
+    const name = "R19 obnoveno AI";
+    const { id, toast, entry, gone } = await deletedFromBanner(app, page, mcp, name);
+    // The bridge has seen the file gone, so the restore below is an event of
+    // its own (TEST-1904), and the wait started in deletedFromBanner ends
+    // inside this test (audit 2026-11-24 TEST-2003).
+    await gone;
+    // The library's trash read is held, so the notice is still there when the user presses.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    await page.route("**/list_deleted", async (route) => {
+      const res = await route.fetch();
+      await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
+    await mcp.call("restore_project", { entry, summary: "Zakázka zpět" });
+    await toast.getByRole("button", { name: cs("home.restore") }).click();
+    await expect(app.toasts().filter({ hasText: cs("home.restoreGone", { name }) })).toHaveCount(1);
+    await expect(page.locator(".stack .toast.error")).toHaveCount(0);
+    release();
+    await page.unroute("**/list_deleted");
+    await expect(toast).toHaveCount(0);
+    await expect(page.getByRole("row").filter({ hasText: name })).toHaveCount(1);
+    expect(fs.existsSync(path.join(LIBRARY_DIR, `${id}.tectora`))).toBe(true);
+  });
+
+  test("the delete notice goes by itself once the AI has restored its entry (HUNT-1805)", async ({ app, page, mcp }) => {
+    const name = "R19 obnoveno samo";
+    const { toast, entry, gone } = await deletedFromBanner(app, page, mcp, name);
+    // The pointer on the notice keeps it open: it may only go by the trash read.
+    await toast.hover();
+    await gone;
+    // The trash read is held: the notice goes with the trash read that no
+    // longer lists its entry, not before (audit 2026-11-24 TEST-2010, Z14).
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held = 0;
+    await page.route("**/list_deleted", async (route) => {
+      const res = await route.fetch();
+      held++;
+      await gate;
+      await route.fulfill({ response: res }).catch(() => {});
+    });
+    await mcp.call("restore_project", { entry, summary: "Zakázka zpět" });
+    await expect(page.getByRole("row").filter({ hasText: name })).toHaveCount(1);
+    await expect.poll(() => held, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(toast).toHaveCount(1);
+    release();
+    await expect(toast).toHaveCount(0);
+    await page.unroute("**/list_deleted");
+  });
+});

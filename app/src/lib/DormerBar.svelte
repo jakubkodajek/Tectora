@@ -2,6 +2,7 @@
   // DACAD's dormer definition (Gaube definieren): type, width, position,
   // eave height and pitches of the selected dormer, docked like the wall bar.
   import Icon from "./Icon.svelte";
+  import { freshBar } from "./dblclick";
   import { numberLocale, t } from "./i18n.svelte";
   import type { CalcResult, Dormer, Project } from "./types";
   import { materialIds, materialName } from "./materials";
@@ -13,6 +14,11 @@
   import { prefs, savePrefs } from "./settings.svelte";
   import PlaceFields from "./PlaceFields.svelte";
   import { placementOf } from "./items";
+  import { api } from "./api";
+  import { dormerRefusal, toAppError } from "./errors";
+  import { notify, notifyError } from "./notify.svelte";
+  import type { BarEdit } from "./jobedits";
+  import { PITCH } from "./limits";
 
   let {
     project,
@@ -22,49 +28,93 @@
     ondelete,
     onedit,
     onplace,
+    edit,
   }: {
     project: Project;
     result: CalcResult | null;
     index: number | null;
-    onchange: (d: Dormer) => void;
+    /** Stores `d` as dormer `at` (the one the value was typed for, even when the selection moved since). */
+    onchange: (d: Dormer, at: number) => void;
     ondelete: () => void;
     /** Opens the dormer window (plan and section). */
     onedit?: () => void;
     /** A distance on the roof face typed (from eave, left, right; the others null). */
     onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
+    /** Queues a core-backed edit of item `index` of `list`, held now (the editor's `barEdit`, jobedits.ts). */
+    edit: BarEdit;
   } = $props();
   const placement = $derived(index !== null ? placementOf(result, { kind: "dormer", index }) : null);
 
   const dormer = $derived(index !== null ? project.dormers[index] : null);
+  /** The dormer the fields edit now: a field reused for the next one forgets the one before (UI-403). */
+  const itemKey = $derived(`dormer:${index}`);
   const params = $derived(dormer ? parseDormer(dormer) : null);
-  /** Host roof height at the middle of the front, for "on the roof" eaves. */
-  const host = $derived.by(() => {
-    if (!params) return null;
+  /** Host roof height at the middle of the front of a dormer, for "on the roof" eaves. */
+  function hostOf(p: DormerParams | null): number | null {
+    if (!p) return null;
     const m = {
-      x: params.start.x + (Math.cos(params.angle) * params.width) / 2,
-      y: params.start.y + (Math.sin(params.angle) * params.width) / 2,
+      x: p.start.x + (Math.cos(p.angle) * p.width) / 2,
+      y: p.start.y + (Math.sin(p.angle) * p.width) / 2,
     };
     // Just inside the front, where the host face is.
-    const n = { x: -Math.sin(params.angle) * 0.01, y: Math.cos(params.angle) * 0.01 };
+    const n = { x: -Math.sin(p.angle) * 0.01, y: Math.cos(p.angle) * 0.01 };
     return roofHeightAt(result, { x: m.x + n.x, y: m.y + n.y });
-  });
+  }
+  const host = $derived(hostOf(params));
   const kind = $derived<DormerKind | null>(
     params && params.kind === "gable" && host !== null && Math.abs(params.eave_height - host) < 0.01 ? "pointed" : (params?.kind ?? null),
   );
   const angleDeg = $derived(params ? +(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2) : 0);
 
 
-  function set(patch: Partial<DormerParams>) {
-    if (!params) return;
-    const next = { ...params, ...patch };
-    if (next.kind === "general") return;
+  /**
+   * A field of the bar changed: checked by the core, then stored on the
+   * dormer it was typed for (held at this moment, so ▶, PageDown or an AI
+   * save that moves it in the list does not send the value elsewhere:
+   * UI-101, ERR-302). Edits run one after another, each on the dormer as
+   * the one before left it, so quick arrow steps and a second field typed
+   * while a check is out all land (UI-201). Only the field typed is the
+   * user's: the rest is the dormer as it is when the check starts.
+   */
+  const set = (patch: Partial<DormerParams>) => {
+    if (index === null) return;
+    return edit(
+      "dormers",
+      index,
+      async (job, at) => {
+        const d = patched(parseDormer($state.snapshot(job.dormers[at]) as Dormer), patch);
+        if (!d) return null;
+        // The core says whether the dormer can stand there (an eave below the
+        // roof, a pitch under 2°), as for MCP add_dormer (MATH-001, MATH-003).
+        const probe = { ...$state.snapshot(job), dormers: job.dormers.map((x, i) => (i === at ? d : $state.snapshot(x))) } as Project;
+        await api.checkDormer(probe, at);
+        return d;
+      },
+      (d, at) => {
+        if (d) onchange(d, at);
+      },
+    ).catch((e) => {
+      const why = dormerRefusal(e);
+      if (why === null) {
+        notifyError(e, "calc");
+        return false;
+      }
+      notify({ kind: "error", code: toAppError(e).code, title: t("dormer.refusedTitle"), message: why, detail: toAppError(e).detail });
+      return why;
+    });
+  };
+  /** Dormer `cur` with `patch`: the kind's own defaults follow a kind change. */
+  function patched(cur: DormerParams, patch: Partial<DormerParams>): Dormer | null {
+    const next = { ...cur, ...patch };
+    if (next.kind === "general") return null;
     // A front pitch carries over only between kinds that have one.
     const fronted = (k: DormerKind) => k === "shed" || k === "trapezoid";
-    if (patch.kind && fronted(patch.kind) && !fronted(params.kind)) {
+    if (patch.kind && fronted(patch.kind) && !fronted(cur.kind)) {
       next.front_pitch_deg = defaultParams(patch.kind, next.start, next.angle, next.eave_height).front_pitch_deg;
     }
-    if (next.kind === "pointed" && host !== null && patch.kind) next.eave_height = +host.toFixed(3);
-    onchange(buildDormer(next));
+    const h = hostOf(cur);
+    if (next.kind === "pointed" && h !== null && patch.kind) next.eave_height = +h.toFixed(3);
+    return buildDormer(next);
   }
 
   /** Position, direction and material sit in the "More" row, opened per user (UX-008, UI-008). */
@@ -83,7 +133,9 @@
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t("dormer.title")} use:pageStep={step}>
+<div class="bar" role="toolbar" aria-label={t("dormer.title")} use:pageStep={step} use:freshBar>
+  <!-- More and Delete sit beside the scrolled strip, not on it: at 600 px they never lie over a field (UI-1901). -->
+  <div class="line">
   <div class="row" use:hscroll>
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('dormer.prev')} (PageUp)" aria-label={t("dormer.prev")}><Icon name="left" /></button>
@@ -108,80 +160,83 @@
         </label>
         <label>
           <span>{t("dormer.width")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => set({ width: v }) }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.width, step: 0.05, min: 0.1, onchange: (v) => set({ width: v }) }} /><em>m</em></div>
         </label>
         {#if kind === "round"}
           <label>
             <span>{t("round.segments")}</span>
-            <input type="text" use:numeric={{ value: params.segments, step: 1, min: 1, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
+            <input type="text" use:numeric={{ key: itemKey, value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => set({ segments: Math.round(v) }) }} />
           </label>
         {/if}
         {#if kind !== "shed" && kind !== "round"}
           <label>
             <span>{kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
         {#if kind === "shed" || kind === "trapezoid"}
           <label>
             <span>{t("dormer.frontPitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ front_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
         {#if kind === "half_hip"}
           <label>
             <span>{t("dormer.halfHipHeight")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => set({ half_hip_height: v }) }} /><em>m</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => set({ half_hip_height: v }) }} /><em>m</em></div>
           </label>
           <label>
             <span>{t("edge.halfHipPitch")}</span>
-            <div class="unit"><input type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 2, max: 89.9, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.half_hip_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => set({ half_hip_pitch_deg: v }) }} /><em>°</em></div>
           </label>
         {/if}
       {/if}
-      <div class="end">
-        {#if onedit && kind !== "general"}
-          <button class="btn sm edit" onclick={onedit} title={t("dormer.editHint")} aria-label={t("dormer.edit")}><Icon name="draw" size={15} /><span class="label">{t("dormer.edit")}</span></button>
-        {/if}
-        {#if kind !== "general"}
-          <button class="btn sm more-btn" class:on={moreOpen} data-testid="dormer-more" aria-expanded={moreOpen} aria-controls="dormer-more-row"
-            aria-describedby={moreSet.length ? "dormer-more-set" : undefined}
-            title={moreTitle} onclick={toggleMore}>
-            {t("bar.more")}
-            {#if moreSet.length}<b class="count" data-testid="dormer-more-count">{moreSet.length}</b><span class="sr-only" id="dormer-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-          </button>
-        {/if}
-        <button class="btn sm ghost danger del" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" size={15} /><span class="label">{t("dormer.delete")}</span></button>
-      </div>
+    {/if}
+  </div>
+    {#if params && kind}
+    <div class="end">
+      {#if onedit && kind !== "general"}
+        <button class="btn sm edit" onclick={onedit} title={t("dormer.editHint")} aria-label={t("dormer.edit")}><Icon name="draw" size={15} /><span class="label">{t("dormer.edit")}</span></button>
+      {/if}
+      {#if kind !== "general"}
+        <button class="btn sm more-btn" class:on={moreOpen} data-testid="dormer-more" aria-expanded={moreOpen} aria-controls="dormer-more-row"
+          aria-describedby={moreSet.length ? "dormer-more-set" : undefined}
+          title={moreTitle} onclick={toggleMore}>
+          {t("bar.more")}
+          {#if moreSet.length}<b class="count" data-testid="dormer-more-count">{moreSet.length}</b><span class="sr-only" id="dormer-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
+        </button>
+      {/if}
+      <button class="btn sm ghost danger del" onclick={ondelete} title={t("dormer.delete")} aria-label={t("dormer.delete")}><Icon name="trash" size={15} /><span class="label">{t("dormer.delete")}</span></button>
+    </div>
     {/if}
   </div>
 
   {#if params && kind && kind !== "general" && moreOpen}
     <div class="row more" id="dormer-more-row" use:hscroll>
-      {#if onplace}<PlaceFields {placement} {onplace} />{/if}
+      {#if onplace}<PlaceFields {placement} {onplace} item={itemKey} />{/if}
       <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
         <span>{t("edge.eaveHeight")}</span>
-        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ key: itemKey, value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("dormer.frontOverhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("dormer.sideOverhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
       </label>
       <label>
         <span>X</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
       </label>
       <label>
         <span>Y</span>
-        <div class="unit"><input type="text" use:numeric={{ value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
       </label>
       <label>
         <span>{t("edge.direction")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
       </label>
       <label title={t("edge.materialHint")}>
         <span>{t("edge.material")}</span>
@@ -224,19 +279,25 @@
   .row.more .unit input {
     width: 92px;
   }
-  /* Stays in view at the row's end when a narrow window scrolls the row. */
-  /* More and Delete stay in view at the row's end when a narrow window scrolls the row. */
+  /* The first row, and More and Delete beside it: the row scrolls, they
+     stay at the end, never over a field (UI-1901). */
+  .line {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .line > .row {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .end {
-    position: sticky;
-    right: 0;
-    z-index: 1;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 8px;
     margin-left: auto;
-    margin-bottom: 1px;
-    background: var(--surface);
-    box-shadow: -8px 0 8px -4px var(--surface);
+    margin-bottom: 3px;
   }
   .more-btn {
     display: inline-flex;

@@ -18,6 +18,7 @@
 
 import { untrack } from "svelte";
 import { numberLocale, t } from "./i18n.svelte";
+import { anyWriterOpen } from "./dragsession";
 
 /** Width the ▲▼ buttons take from the field's right padding, px. */
 const SPIN_W = 15;
@@ -64,6 +65,13 @@ export interface NumericOptions {
   arrows?: boolean;
   /** Told when the typed text becomes invalid (the reason) or valid again (null). */
   onvalidity?: (reason: string | null) => void;
+  /**
+   * Which item the field edits now, when one input is reused for several
+   * (a bar that switches from chimney 1 to chimney 2): when it changes, the
+   * field forgets what it sent and stepped for the item before, and an
+   * answer for that item no longer marks the field (UI-403).
+   */
+  key?: string | number;
 }
 
 /** Parses a typed number: comma or dot as the decimal separator, spaces ignored. */
@@ -110,6 +118,45 @@ function isThenable(r: unknown): r is PromiseLike<unknown> {
   return typeof r === "object" && r !== null && typeof (r as PromiseLike<unknown>).then === "function";
 }
 
+/** A burst of arrow steps: the value it started from, the last step asked for and when. */
+export interface Stepped {
+  from: number | null | undefined;
+  to: number;
+  at: number;
+}
+
+/** How long a step whose value has not come back yet stays the base of the next, ms. */
+export const STEP_WAIT_MS = 1500;
+
+/**
+ * The value the next arrow step goes on from while earlier steps of the
+ * burst are still with the core, or null to go on from the stored value.
+ * The stored value may be any step of the burst that came back meanwhile
+ * (each is checked in turn), so a stored value on the way from `from` to
+ * `to` still waits for `to` (UI-201). Only for a moment: a step the core
+ * refused must not stay the base.
+ */
+export function waitingStep(stepped: Stepped | null, value: number | null | undefined, now: number): number | null {
+  if (!stepped || now - stepped.at >= STEP_WAIT_MS || value === stepped.to) return null;
+  if (value === stepped.from) return stepped.to;
+  if (value == null || stepped.from == null) return null;
+  const lo = Math.min(stepped.from, stepped.to);
+  const hi = Math.max(stepped.from, stepped.to);
+  return value >= lo && value <= hi ? stepped.to : null;
+}
+
+/**
+ * Whether a committed value `v` goes to `onchange`: when it differs from
+ * the stored value, or, while an earlier value is still with the core
+ * (`out`), when it differs from that one. So ArrowUp then ArrowDown, or the
+ * old value typed back, while the first answer is out sends the old value
+ * after it and the field keeps the last value the user set (UI-307); the
+ * same value committed twice is sent once.
+ */
+export function toSend(v: number, stored: number | null | undefined, out: number | null): boolean {
+  return out !== null ? out !== v : stored !== v;
+}
+
 export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   let opts = initial;
   let dirty = false;
@@ -121,6 +168,8 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     input.toggleAttribute("data-typing", d);
   };
   let invalid = false;
+  /** The mark is a later refusal that stays until the next input (UX-401). */
+  let stays = false;
 
   input.type = "text";
   input.inputMode = "decimal";
@@ -132,6 +181,8 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
 
   let ownTitle = input.title;
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Counts item switches (`key`): an answer for an earlier item is not this field's any more. */
+  let item = 0;
 
   /** Why `text` cannot be stored, for the tooltip; null when it can. */
   function reason(text: string): string | null {
@@ -148,6 +199,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     clearTimeout(clearTimer);
     if (invalid !== (why !== null) || (why !== null && input.title !== why)) opts.onvalidity?.(why);
     invalid = why !== null;
+    stays = false;
     if (why !== null) {
       input.setAttribute("aria-invalid", "true");
       input.title = why;
@@ -159,7 +211,15 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
 
   function render() {
     if (dirty) return;
-    const text = fmt(opts.value);
+    // While a burst of steps is with the core, the field shows the newest
+    // step, not each earlier step as it comes back (UX-403); as long as
+    // the newest step itself is still out, also past STEP_WAIT_MS.
+    const lastOut = stepped !== null && out?.v === stepped.to;
+    const waiting = waitingStep(stepped, opts.value, lastOut ? stepped!.at : performance.now());
+    // A typed value still with the core is the field's last word: an
+    // earlier step coming back meanwhile is not shown (TEST-502, N12).
+    const typed = stepped === null && out !== null ? out.v : null;
+    const text = fmt(waiting ?? typed ?? opts.value);
     if (input.value !== text) input.value = text;
   }
 
@@ -173,21 +233,43 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   /** Why the last stored value was refused, when `onchange` said so. */
   let refusal: string | null = null;
 
+  /** The last value sent whose answer is still out (a value the core checks). */
+  let out: { v: number } | null = null;
+
   function store(v: number): boolean {
     refusal = null;
-    if (opts.value === v) return true;
+    if (!toSend(v, opts.value, out?.v ?? null)) return true;
     const r = opts.onchange(v);
-    if (isThenable(r)) later(r, v);
+    if (isThenable(r)) {
+      const mine = (out = { v });
+      // A refusal first (it shows the stored value and says why), then the
+      // field lets go of the value; a burst of steps shows what it now may.
+      later(r, v, mine);
+      const settle = () => {
+        if (out !== mine) return;
+        out = null;
+        render();
+      };
+      r.then(settle, settle);
+    }
     if (typeof r === "string") refusal = r;
     return r !== false && typeof r !== "string";
   }
 
-  /** Marks the field refused with `why` and shows the stored value again. */
-  function refuse(why: string) {
+  /**
+   * Marks the field refused with `why` and shows the stored value again.
+   * A value refused at once (out of range) is marked for a moment, while
+   * the user still looks at the field; one the editor refused later (the
+   * core, the item changed meanwhile) stays marked until the user edits
+   * the field again or it is switched to another item, so a lost value
+   * stays visible (UX-401).
+   */
+  function refuse(why: string, stay = false) {
     input.value = fmt(opts.value);
     setInvalid(why);
+    stays = stay;
     opts.onrefuse?.(why);
-    clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
+    if (!stay) clearTimer = setTimeout(() => !dirty && setInvalid(null), 2500);
   }
 
   /**
@@ -195,16 +277,24 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
    * refusal puts the stored value back and says why, so a refused value
    * never stays in the field as if stored.
    */
-  function later(p: PromiseLike<unknown>, v: number) {
-    const shown = fmt(v);
-    const still = () => !dirty && input.value === shown;
+  function later(p: PromiseLike<unknown>, v: number, sent: { v: number }) {
+    const mine = item;
+    // Still the field's last word for this item: nothing typed or sent
+    // since. Not whether the field still shows `v`: a re-render (an AI
+    // save meanwhile) shows the stored value again, and the refusal must
+    // still be marked (UX-401).
+    const still = () => mine === item && !dirty && out === sent;
+    const refused = (why: string) => {
+      if (!still()) return;
+      // A refused step is no base of the next one, nor what the field shows.
+      if (stepped?.to === v) stepped = null;
+      refuse(why, true);
+    };
     p.then(
       (r) => {
-        if ((r === false || typeof r === "string") && still()) refuse(typeof r === "string" ? r : t("num.refused"));
+        if (r === false || typeof r === "string") refused(typeof r === "string" ? r : t("num.refused"));
       },
-      () => {
-        if (still()) refuse(t("num.refused"));
-      },
+      () => refused(t("num.refused")),
     );
   }
 
@@ -219,6 +309,8 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     }
     const text = input.value;
     const v = accept(parseNumber(text));
+    // A typed value ends a burst of steps: it is what the field shows now.
+    if (v !== null) stepped = null;
     const ok = v !== null && store(v);
     // The stored value may arrive later (parent re-render); show the typed
     // number now, or the stored one when it was refused.
@@ -233,23 +325,29 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
 
   // The last step stored while its value had not come back yet (a field
   // whose value returns from the core): the next step goes on from it, so
-  // four quick arrow presses make four steps (review UI-002).
-  let stepped: { from: number | null | undefined; to: number; at: number } | null = null;
+  // four quick arrow presses make four steps (review UI-002, UI-201).
+  let stepped: Stepped | null = null;
+  let stepTimer: ReturnType<typeof setTimeout> | undefined;
 
   function stepBy(dir: number) {
     if (input.disabled || input.readOnly) return;
     const typed = dirty ? parseNumber(input.value) : null;
     // Only for a moment: a step the core refused must not stay the base.
-    const waiting = stepped && opts.value === stepped.from && performance.now() - stepped.at < 1500 ? stepped.to : null;
+    const now = performance.now();
+    const waiting = waitingStep(stepped, opts.value, now);
     const base = typed ?? waiting ?? opts.value ?? opts.min ?? 0;
     const { min, max } = fieldBounds(opts.min, opts.max);
     const v = stepValue(base, dir, opts.step ?? 1, min, max);
     setDirty(false);
     setInvalid(null);
-    const from = opts.value;
+    // A burst of steps keeps the value it started from.
+    const from = waiting !== null && stepped ? stepped.from : opts.value;
     if (store(v)) {
       input.value = fmt(v);
-      stepped = { from, to: v, at: performance.now() };
+      stepped = { from, to: v, at: now };
+      // Once the burst is over, the field shows what is stored.
+      clearTimeout(stepTimer);
+      stepTimer = setTimeout(render, STEP_WAIT_MS);
     } else input.value = fmt(opts.value);
   }
 
@@ -286,6 +384,10 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   // A press anywhere outside commits first, before the press itself selects
   // another wall, closes a bar or opens a dialog (capture phase on window).
   function onOutsidePress(e: Event) {
+    // Not while a writer of the job is out (a drag, Revert, the offer
+    // put-back): the value would land in the job the answer replaces
+    // (round 12, fix design 1).
+    if (anyWriterOpen()) return;
     const target = e.target as Node | null;
     if (target && (input.contains(target) || spin?.contains(target))) return;
     commit();
@@ -386,14 +488,24 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
 
   return {
     update(next: NumericOptions) {
+      const switched = next.key !== opts.key;
       opts = next;
-      if (!dirty && invalid && fmt(opts.value) !== input.value) setInvalid(null);
+      if (switched) {
+        // Another item: what was sent or stepped for the one before is not
+        // this item's (the same value typed, one step), nor its refusal.
+        item++;
+        out = null;
+        stepped = null;
+        refusal = null;
+        if (invalid) setInvalid(null);
+      } else if (!dirty && invalid && !stays && fmt(opts.value) !== input.value) setInvalid(null);
       render();
       syncDisabled();
     },
     destroy() {
       window.removeEventListener("pointerdown", onOutsidePress, true);
       clearTimeout(clearTimer);
+      clearTimeout(stepTimer);
       stop();
       observer.disconnect();
       resize?.disconnect();

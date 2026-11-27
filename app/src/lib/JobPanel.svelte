@@ -1,15 +1,23 @@
 <script lang="ts">
-  import { info, notifyError } from "./notify.svelte";
+  import { info, notify, notifyError } from "./notify.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
   import { safeFileName } from "./filename";
   import { t } from "./i18n.svelte";
-  import type { Attachment, Project } from "./types";
+  import type { Attachment, JobStatus, Project, ResultSnapshot } from "./types";
   import { JOB_STATUSES } from "./types";
   import { DACAD_MATERIALS, defaultMaterialName } from "./materials";
   import { textfield } from "./textfield";
+  import { fileSize, m2 } from "./format";
+  import { hasBuilding, snapshotDifferences } from "./offer";
+  import { figureName, formatFigure } from "./changes";
+  import { exclusive } from "./inflight";
+  import { sequence } from "./latest";
+  import type { JobEdits, RoofHold } from "./jobedits";
+  import type { FigureDifference } from "./types";
 
   /** Opens an attached file; files that are not drawings or documents are only shown in their folder. */
   async function openFile(name: string) {
@@ -27,6 +35,10 @@
     onsave,
     track = (p) => p,
     blocked = null,
+    current,
+    edits,
+    recalculated = false,
+    onresulttoast,
   }: {
     id: string;
     project: Project;
@@ -37,43 +49,171 @@
     track?: (p: Promise<unknown>) => Promise<unknown>;
     /** Why the roof cannot be offered or ordered now (the core gave no roof), or null. */
     blocked?: string | null;
+    /**
+     * The stored result is the engine's recalculation of the offer's: a
+     * bundle carries it without the offer's own figures, which stay here
+     * (owner decision 2026-11-23, UX-1003); the export says so.
+     */
+    recalculated?: boolean;
+    /** The project the editor holds now. The panel may be gone (the AI tab took the dock)
+     *  when an awaited answer comes back, so its own prop can be the replaced project (ERR-102). */
+    current?: () => Project | null;
+    /** The editor's edit rule (jobedits.ts): a status change holds the roof it stores the result of. */
+    edits: JobEdits;
+    /**
+     * A notice whose text quotes the stored result was shown: the editor
+     * closes it once the stored result changes (the panel may be gone by
+     * then), so it never stands with old figures (UI-1202).
+     */
+    onresulttoast?: (toast: number) => void;
   } = $props();
 
-  /** Statuses that make an offer from the figures: not from a roof the core refused (ERR-003). */
-  const OFFER_STATUSES = new Set(["offer", "ordered"]);
-  const refused = (s: string) => !!blocked && OFFER_STATUSES.has(s) && s !== status;
+  /** Whether status `s` cannot be chosen now: any status past the draft while the core gives
+   *  no roof for a building or leaves input out (ERR-003, UX-005). Done too, also with a stored
+   *  result: the job now has a building the offer's figures do not contain (UX-103). */
+  const refused = (s: JobStatus) => !!why && s !== status && s !== "draft";
+  /** Why offer statuses are off: the core gave no roof, or there is no building at all (UX-102). */
+  const why = $derived(blocked ?? (hasBuilding(project) ? null : t("res.empty")));
+
+  /** The job as the editor holds it now: a status change writes through it, never through the
+   *  unbound prop (UI-010, ERRU-004), as `setText` does for the texts. */
+  const latest = (): Project | null => (current ? current() : project);
 
   // Leaving the draft status stores the result the offer is made with.
-  let status = $state(untrack(() => project.job.status));
-  const statusChanged = () => track(statusChangedNow());
-  async function statusChangedNow() {
-    const was = status;
-    if (refused(project.job.status)) {
-      project.job.status = was;
+  let status = $state<JobStatus>(untrack(() => project.job.status));
+  $effect(() => {
+    // An AI save or an undo may change the status under the panel.
+    const now = project.job.status;
+    untrack(() => (status = now));
+  });
+  /** A status change is storing its result: the select is off and a second choice waits (jobedits.ts, one-shot). */
+  let changing = $state(false);
+  const changeStatus = exclusive(statusChangedNow, (b) => (changing = b));
+  /** The status chosen last; while it is stored, the select shows it and takes no other. */
+  let chosen: JobStatus = untrack(() => status);
+  const statusChanged = (e: Event) => {
+    const sel = e.currentTarget as HTMLSelectElement;
+    // Busy, not disabled: a disabled select drops the keyboard focus (UI-402).
+    if (changing) {
+      sel.value = chosen;
       return;
     }
-    status = project.job.status;
-    if (was === "draft" && status !== "draft" && !project.result_snapshot) {
+    chosen = sel.value as JobStatus;
+    return track(changeStatus(sel.value as JobStatus, sel));
+  };
+  /** While a status is stored, keys and presses that would choose another do nothing (UI-402). */
+  const holdWhileChanging = (e: Event) => {
+    if (!changing) return;
+    if (e instanceof KeyboardEvent && (e.key === "Tab" || e.key === "Escape")) return;
+    e.preventDefault();
+  };
+  async function statusChangedNow(next: JobStatus, sel: HTMLSelectElement) {
+    const was = status;
+    /** The status stays as it is: the select shows it again. */
+    const back = () => {
+      const s = latest()?.job.status ?? was;
+      sel.value = s;
+      status = s;
+    };
+    if (refused(next)) {
+      sel.value = was;
+      return;
+    }
+    let snap: ResultSnapshot | null = null;
+    let kept: ResultSnapshot | null = null;
+    let fresh: ResultSnapshot | null = null;
+    let roof: RoofHold | null = null;
+    if (was === "draft" && next !== "draft") {
+      // A value typed just before is part of the roof: wait for it.
+      await edits.idle();
+      const p = latest();
+      if (!p) return;
+      // A result stored before (the job went back to draft since) stays the
+      // offer's; the user is told when the roof now gives other figures (UX-206).
+      kept = p.result_snapshot ?? null;
+      // Taken now: the notices below may come after the editor closed and
+      // then stand over the library, so they name the job (UI-1401).
+      const name = p.name.trim() || id;
+      roof = edits.holdRoof();
       try {
-        project.result_snapshot = await api.takeSnapshot(JSON.parse(JSON.stringify(project)));
+        fresh = await api.takeSnapshot(JSON.parse(JSON.stringify(p)));
       } catch (e) {
-        // No figures to make the offer with: the job stays a draft (DR-002).
-        project.job.status = was;
-        status = was;
-        notifyError(e, "save");
+        // No figures of the roof as it is now: the job stays a draft (DR-002),
+        // also when it keeps an earlier result, which is not of this roof
+        // (ERR-303). Not a failed save: the status was refused (UX-005).
+        back();
+        notifyError(e, "status", name);
         return;
       }
+      // The roof changed while the core calculated, by an AI save (ERR-102)
+      // or by the user's own edit (ERR-201): the figures are of a roof the
+      // job no longer has, so the status is refused with a note. An AI save
+      // of the notes or the job data leaves the roof as it was (ERR-301).
+      if (!latest()) return;
+      if (!edits.roofSame(roof)) {
+        back();
+        info(t("err.ofJob", { name, title: t("job.statusStale") }));
+        return;
+      }
+      if (!kept) snap = fresh;
     }
+    const now = latest();
+    if (!now) return;
+    if (snap && !now.result_snapshot) now.result_snapshot = snap;
+    now.job.status = next;
+    status = next;
     onchange();
+    if (kept && fresh && roof) {
+      const differences = snapshotDifferences(kept, fresh);
+      if (differences.length) offerKept(differences, fresh, roof);
+    }
+  }
+
+  /** What differs, in words: the two areas, or the first other figure with its name (ERR-304). */
+  function keptText(differences: FigureDifference[]): string {
+    const d = differences[0];
+    if (d.key === "roof_area") return t("job.offerKept", { a: m2(d.stored), b: m2(d.current) });
+    return t("job.offerKeptOther", { what: figureName(d.key, latest()), a: formatFigure(d.key, d.stored), b: formatFigure(d.key, d.current) });
+  }
+
+  /** Says that the job keeps its earlier result, with the figure that differs and the action that stores the new one (UX-206). */
+  function offerKept(differences: FigureDifference[], fresh: ResultSnapshot, roof: RoofHold) {
+    // Named: the notice can stand over another screen (HUNT-1302).
+    const name = latest()?.name.trim();
+    const toast = notify({
+      kind: "warning",
+      title: name ? t("err.ofJob", { name, title: t("job.offerKeptTitle") }) : t("job.offerKeptTitle"),
+      message: keptText(differences),
+      action: {
+        label: t("snap.store"),
+        run: () => {
+          const now = latest();
+          if (!now) return;
+          // Only figures of the roof the job still has (as the Editor's store, ERR-102).
+          if (!edits.roofSame(roof)) {
+            info(t("snap.stale"));
+            return;
+          }
+          now.result_snapshot = fresh;
+          onchange();
+        },
+      },
+    });
+    onresulttoast?.(toast);
   }
 
   // Files attached to the job (drawings, photos).
   let files = $state<Attachment[]>([]);
+  /** Only the newest listing of this job's files is shown, never one of the job before (audit 2026-11-24 ERR-1904). */
+  const fileReads = sequence();
   async function loadFiles() {
+    const k = fileReads.next();
+    const of = id;
     try {
-      files = await api.listAttachments(id);
+      const listed = await api.listAttachments(of);
+      if (fileReads.current(k) && of === id) files = listed;
     } catch (e) {
-      notifyError(e, "files");
+      if (fileReads.current(k) && of === id) notifyError(e, "files");
     }
   }
   $effect(() => {
@@ -93,16 +233,26 @@
     loadFiles();
   }
 
+  /** Files with a removal under way: a double click asks once and removes once (UI-009). */
+  // A set: a file name never finds an Object.prototype member (ARCH-1301).
+  const removing = new SvelteSet<string>();
+
   async function removeFile(name: string) {
-    // Tauri's dialog plugin makes window.confirm asynchronous (a Promise is
-    // always truthy), so the answer must be awaited.
-    if (!(await confirm(t("files.confirmRemove", { name })))) return;
+    if (removing.has(name)) return;
+    removing.add(name);
     try {
-      await api.removeAttachment(id, name);
-    } catch (e) {
-      notifyError(e, "files");
+      // Tauri's dialog plugin makes window.confirm asynchronous (a Promise is
+      // always truthy), so the answer must be awaited.
+      if (!(await confirm(t("files.confirmRemove", { name })))) return;
+      try {
+        await api.removeAttachment(id, name);
+      } catch (e) {
+        notifyError(e, "files");
+      }
+      await loadFiles();
+    } finally {
+      removing.delete(name);
     }
-    loadFiles();
   }
 
   async function exportJob() {
@@ -119,12 +269,21 @@
         return;
       }
       await api.exportJob(id, path);
+      // A warning that stays long enough to be read, naming the job and the
+      // way to send the offer's own figures (UX-1101).
+      if (recalculated) {
+        const name = (current?.()?.name ?? project.name).trim();
+        notify({
+          kind: "warning",
+          title: name ? t("snap.titleOf", { name }) : t("snap.title"),
+          message: t("snap.exportRecalculated", { tab: t("dock.results"), button: t("snap.revertRefresh") }),
+        });
+      }
     } catch (e) {
       notifyError(e, "export");
     }
   }
 
-  const size = (b: number) => (b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(0)} kB` : `${(b / 1048576).toFixed(1)} MB`);
 
   const ids = Array.from({ length: DACAD_MATERIALS }, (_, i) => i + 1);
 
@@ -152,7 +311,7 @@
     <label><span>{t("job.number")}</span><input type="text" use:textfield={{ value: project.job.number, onchange: setText((p, v) => (p.job.number = v)) }} /></label>
     <label>
       <span>{t("job.status")}</span>
-      <select bind:value={project.job.status} onchange={statusChanged} title={blocked ?? undefined}>
+      <select value={status} onchange={statusChanged} onkeydown={holdWhileChanging} onmousedown={holdWhileChanging} title={why ?? undefined} aria-disabled={changing} aria-busy={changing}>
         {#each JOB_STATUSES as s}<option value={s} disabled={refused(s)}>{t(`status.${s}`)}</option>{/each}
       </select>
     </label>
@@ -166,8 +325,8 @@
       {#each files as f (f.name)}
         <li>
           <button class="link" onclick={() => openFile(f.name)} title={t("files.open")}>{f.name}</button>
-          <span class="size">{size(f.size)}</span>
-          <button class="icon" onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
+          <span class="size">{fileSize(f.size)}</span>
+          <button class="icon" disabled={removing.has(f.name)} onclick={() => removeFile(f.name)} title={t("files.remove")} aria-label={t("files.remove")}><Icon name="trash" size={14} /></button>
         </li>
       {/each}
     </ul>

@@ -202,6 +202,7 @@ pub fn split_all(st: &mut State, tol: &Tol) {
                                     continue;
                                 }
                                 let edges = other.edges.clone();
+                                crate::work::tick(edges.len());
                                 for s in &edges {
                                     let pieces = split_edge(&e, s, t);
                                     if pieces.is_empty() {

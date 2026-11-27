@@ -30,6 +30,8 @@ import type {
   Placement,
   Project,
   ProjectSummary,
+  Recalculation,
+  RefreshedEntry,
   ResultSnapshot,
   ReviewStatus,
   RoofPart,
@@ -49,7 +51,20 @@ export interface ListSummary {
   lines: { code: string; length: number }[];
 }
 
-export type CheckedSave = { status: "saved"; id: string } | { status: "conflict"; current: Project };
+/** `repaired`: the file could not be read (another program damaged it) and was written over (audit 2026-11-23 ERR-1502). */
+export type CheckedSave = { status: "saved"; id: string; repaired?: boolean } | { status: "conflict"; current: Project };
+/** What Revert all did (`Store::revert_to_counted`): the job as it is now and how many recorded changes it undid. */
+export interface RevertedChanges {
+  project: Project;
+  /** The changes undone (reverts among them not counted again), as the history line says; 0 when nothing was written. */
+  undone: number;
+  /** The AI's entries undone, the banner's own rule (`isAi`): compared with the AI steps the banner showed (HUNT-1401). */
+  undone_ai: number;
+  /** The job file could not be read (another program damaged it) and the revert wrote over it (audit 2026-11-23 ERR-1502). */
+  repaired?: boolean;
+  /** The revert entry just logged, null when nothing was written: the editor's Undo takes exactly this one back (`takeBackRevert`, UX-1601). */
+  entry_ts_ms?: number | null;
+}
 
 export interface StandardParams {
   kind: StandardKind;
@@ -73,6 +88,14 @@ export const api = {
   listProjects: () => invoke<Library>("list_projects"),
   startupWarnings: () => invoke<AppError[]>("startup_warnings"),
   loadProject: (id: string) => invoke<Project>("load_project", { id }),
+  /** What reading the job left out of it (a stored result with an impossible
+      time, `result_dropped`), to tell when the job opens; empty when nothing was. */
+  loadWarnings: (id: string) => invoke<AppError[]>("load_warnings", { id }),
+  /** Recalculates the job's stored result where an older engine stored it,
+      before the job is loaded (`load_project` no longer does): the change
+      log's summary when it did, else null. Never fails; an error is logged
+      and the stored result stays. */
+  refreshStoredResult: (id: string) => invoke<RefreshedEntry | null>("refresh_stored_result", { id }),
   saveProject: (id: string | null, project: Project) => invoke<string>("save_project", { id, project }),
   /** Saves only if the file still holds `base` (the version last read or
       written); otherwise nothing is written and the current file comes back. */
@@ -92,8 +115,21 @@ export const api = {
   duplicateProject: (id: string, name: string, job?: Pick<JobInfo, "number" | "customer" | "address">, withFiles = true) =>
     invoke<string>("duplicate_project", { id, name, job: job ? { ...job, status: "draft" } : null, withFiles }),
   projectActivity: (id: string) => invoke<ActivityItem[]>("project_activity", { id }),
-  revertLastChange: (id: string) => invoke<Project>("revert_last_change", { id }),
-  revertChanges: (id: string, tsMs: number) => invoke<Project>("revert_changes", { id, tsMs }),
+  /** The engine's recalculation the job's stored result is, if it still is one. */
+  resultRecalculation: (id: string) => invoke<Recalculation | null>("result_recalculation", { id }),
+  /** Puts the offer's own stored result back in place of the recalculation logged at `entryTsMs`, and nothing else. */
+  restoreOfferResult: (id: string, entryTsMs: number) => invoke<Project>("restore_offer_result", { id, entryTsMs }),
+  /** Undoes the latest change; with `expectTs` only if it is still that entry (`revert_stale` otherwise). */
+  /** Answers as Revert all (`Store::revert_last_reported`), with `repaired` (ERR-1502). */
+  revertLastChange: (id: string, expectTs?: number) => invoke<RevertedChanges>("revert_last_change", { id, expectTs: expectTs ?? null }),
+  /** Revert all: undoes the change at `tsMs` and every later one; `undone_ai` counts the AI entries undone, also ones that came in after the press (ERR-1002, HUNT-1401). `seenTs`: the newest entry the editor has applied (its Undo over an AI's save); the core answers `revert_stale` when a newer one is there (ERR-1704). */
+  revertAll: (id: string, tsMs: number, seenTs?: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs, seenTs: seenTs ?? null }),
+  /** Revert all of the review the banner showed (`since_ts_ms`): writes the job as the user last settled it (ADR 0007); `revert_stale` when that review is not open any more (ERR-1905). */
+  revertReview: (id: string, sinceTsMs: number) => invoke<RevertedChanges>("revert_changes", { id, tsMs: sinceTsMs, seenTs: null, review: true }),
+  revertChanges: (id: string, tsMs: number) =>
+    invoke<RevertedChanges>("revert_changes", { id, tsMs, seenTs: null }).then((r) => r.project),
+  /** Takes back the review revert logged at `revertTs` (Undo / Redo of a Revert), itself logged (UX-1601). `seenTs`: the newest entry the editor has applied; `revert_stale` when the log ends at another one (ARCH-1703, design B). */
+  takeBackRevert: (id: string, revertTs: number, seenTs: number) => invoke<RevertedChanges>("take_back_revert", { id, revertTs, seenTs }),
   reviewStatus: (id: string) => invoke<ReviewStatus | null>("review_status", { id }),
   acceptChanges: (id: string, tsMs: number) => invoke<number>("accept_changes", { id, tsMs }),
   liveStatus: () => invoke<LiveStatus | null>("live_status"),
@@ -124,6 +160,8 @@ export const api = {
     invoke<{ index: number; area: number; face_area: number } | null>("check_windows", { project }),
   /** The roof under dormer `index` at the middle of its front (height, rise per metre into the roof), or null off it. */
   dormerHost: (project: Project, index: number) => invoke<HostSlope | null>("dormer_host", { project, index }),
+  /** Whether dormer `index` can be stored as it is; refused with `dormer_pitch`, `dormer_segments` or `dormer_below_roof` (core `check_dormer`). */
+  checkDormer: (project: Project, index: number) => invoke<null>("check_dormer", { project, index }),
   /** What the calculation dialog needs to know about wall `edge` of `part`: facing wall, span, parallel walls, roof points (`withPoints`). */
   roofHelperContext: (project: Project, part: number, edge: number, withPoints = false) =>
     invoke<HelperContext>("roof_helper_context", { project, part, edge, withPoints }),
@@ -159,6 +197,9 @@ export const api = {
     invoke<Chimney>("item_geometry", { request: { op: "chimney_from_rect", x: r.x, y: r.y, width: r.width, depth: r.depth, rotation_deg: r.rotation, height: r.height } }),
   /** The sloped area of a hand-drawn face, m². */
   faceArea: (face: ManualFace) => invoke<{ area: number }>("item_geometry", { request: { op: "face_area", face } }).then((r) => r.area),
+  /** Why the core refuses a new hand-drawn face (`face_corners`, `pitch_range`, `face_crosses`: corners out of order), or null (HUNT-1801). */
+  checkFace: (face: ManualFace) =>
+    invoke<{ refused: "face_corners" | "pitch_range" | "face_crosses" | null }>("item_geometry", { request: { op: "check_face", face } }).then((r) => r.refused),
   /** Part `part` moved, rotated, mirrored or copied with what lies on it (the MCP tool transform_part); the project afterwards and the moved or new parts. */
   transformPart: (project: Project, part: number, map: PlanMapSpec, copies: number) =>
     invoke<{ project: Project; parts: number[] }>("transform_part", { project, part, map, copies }),
@@ -188,6 +229,8 @@ export const api = {
   /** `path`: the request the dialog showed; a request replaced meanwhile is not answered. */
   answerFileRequest: (path: string, allow: boolean) =>
     invoke<AppSettingsView>("answer_file_request", { path, allow }),
+  /** The user's answer to an AI settings change: `revert` puts the values before it back. */
+  answerAiChange: (id: number, revert: boolean) => invoke<AppSettingsView>("answer_ai_change", { id, revert }),
   openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),

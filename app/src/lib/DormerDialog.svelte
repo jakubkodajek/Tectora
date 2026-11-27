@@ -15,13 +15,17 @@
   import type { Placement, Project } from "./types";
   import PlaceFields from "./PlaceFields.svelte";
   import { notifyError, notifyRefusal } from "./notify.svelte";
-  import { describeError, type Described } from "./errors";
+  import { describeError, dormerRefusal, type Described } from "./errors";
+  import { PITCH } from "./limits";
 
   let {
     project,
     params = $bindable(),
     track = (p: Promise<unknown>) => p,
     roofFailed = false,
+    fresh = false,
+    blocked = $bindable(null),
+    notice = $bindable(null),
   }: {
     project: Project;
     /** The core gave no roof for a building of the job: no roof under the front is not "off the roof" (ERRU-006). */
@@ -30,6 +34,12 @@
     params: DormerParams;
     /** Registers a placement in flight, so OK waits for it (review UI-001). */
     track?: (p: Promise<unknown>) => Promise<unknown>;
+    /** A new dormer with the app's defaults: lowered once to fit below the ridge (UX-002). */
+    fresh?: boolean;
+    /** Why OK cannot store the dormer as it stands (a refused value, a front off the roof), else null (UI-102, UX-109). */
+    blocked?: string | null;
+    /** A warning OK does not wait for (the dormer rises above the roof), for the footer next to OK (UX-109). */
+    notice?: string | null;
   } = $props();
   // Set once the dialog is gone: a late answer then writes nothing.
   let closed = false;
@@ -47,7 +57,8 @@
     void hostKey;
     const n = ++asked;
     const probe = { ...$state.snapshot(project), dormers: [buildDormer($state.snapshot(params) as DormerParams)] } as Project;
-    api.dormerHost(probe, 0).then(
+    // Tracked, so OK right after a width or position change waits for the answer (UX-109).
+    void track(api.dormerHost(probe, 0).then(
       (h) => {
         if (n !== asked) return;
         host = h;
@@ -60,7 +71,7 @@
         hostReady = true;
         hostError = describeError(e, "calc");
       },
-    );
+    ));
   });
 
   // Where the dormer sits on its roof face (from the eave, from the sides),
@@ -104,7 +115,40 @@
     }
   }
 
+  // How far the dormer as edited rises above the top of its roof: the core's
+  // own plausibility check (`dormer_above_roof`) on the job with only this
+  // dormer, asked while editing so the dialog says it before OK (UX-002).
+  let aboveRoof = $state<number | null>(null);
+  let aboveAsked = 0;
+  /** The user changed a value: the defaults are no longer lowered for them. */
+  let edited = false;
+  let autoFitted = false;
+  $effect(() => {
+    void placeKey;
+    const n = ++aboveAsked;
+    api.calc(probeProject()).then(
+      (r) => {
+        if (n !== aboveAsked || closed) return;
+        const w = r.parts.flatMap((p) => p.geometry.warnings ?? []).find((w) => w.kind === "dormer_above_roof");
+        aboveRoof = w && Number.isFinite(w.value) && w.value > 0 ? w.value : null;
+        fitDefault();
+      },
+      () => n === aboveAsked && (aboveRoof = null),
+    );
+  });
+  /** A new dormer whose defaults run past the ridge is lowered by as much as
+   *  it rises above it (its whole roof moves down with its eave), as long as
+   *  the front wall keeps a height; once, and only before the user edits. */
+  function fitDefault() {
+    if (!fresh || edited || autoFitted || aboveRoof === null || !host || params.kind === "pointed") return;
+    autoFitted = true;
+    const lowest = eaveFor(params, host, { wall_height: 0 });
+    const target = Math.round((params.eave_height - aboveRoof - 0.05) * 1000) / 1000;
+    if (typeof lowest === "number" && Number.isFinite(target) && target >= lowest) params = { ...params, eave_height: target };
+  }
+
   const sec = $derived(host ? dormerSection(params, host) : null);
+
   let problem = $state<SectionProblem | null>(null);
 
   const angleDeg = $derived(+(((params.angle * 180) / Math.PI + 360) % 360).toFixed(2));
@@ -114,6 +158,7 @@
   const hasRidge = $derived(!shedTop);
 
   function set(patch: Partial<DormerParams>) {
+    edited = true;
     const next = { ...params, ...patch };
     if (patch.kind && fronted(patch.kind) && !fronted(params.kind)) {
       next.front_pitch_deg = defaultParams(patch.kind, next.start, next.angle, next.eave_height).front_pitch_deg;
@@ -124,7 +169,81 @@
       if (typeof e === "number") next.eave_height = e;
     }
     problem = null;
+    // The fields hold storable values again: an earlier refusal no longer blocks OK.
+    refusal = null;
     params = next;
+  }
+
+  /** Why the core refused the last pitch or eave typed (`check_dormer`), shown under the section. */
+  let refusal = $state<string | null>(null);
+
+  // What keeps OK from storing the dormer: the last typed value the core
+  // refused (it is not in `params`), or a front that stands on no roof face
+  // (the dormer would not count). A roof the core could not calculate is
+  // not "off the roof" (ERRU-006).
+  const offRoof = $derived(hostReady && !host && !hostError && !roofFailed);
+  $effect(() => {
+    blocked = refusal ?? (offRoof ? t("dormer.offRoof") : null);
+  });
+  // The section's notes scroll away at small window sizes: the footer repeats this one (UX-109).
+  $effect(() => {
+    notice = aboveRoof !== null ? t("dormer.aboveRoof", { v: fmt(aboveRoof, 2) }) : null;
+  });
+
+  /**
+   * Asks the core whether the dormer with `patch` can be stored (an eave
+   * below the roof, a pitch under 2°: MATH-001, MATH-003) and only then
+   * applies it; a refusal stays on the field with its reason.
+   */
+  const checked = (patch: Partial<DormerParams>, apply: () => void) => track(inTurn(() => checkedNow(patch, apply))) as Promise<true | string | false>;
+
+  /**
+   * The checks run one after another: each probes the dormer as the one
+   * before left it. Run side by side, a width check sent while the segment
+   * count's check was out probed the old count and let a combination the
+   * core refuses through as accepted (TEST-506 item 8).
+   */
+  let checks: Promise<unknown> = Promise.resolve();
+  function inTurn<T>(run: () => Promise<T>): Promise<T> {
+    const p = checks.then(run);
+    checks = p.catch(() => {});
+    return p;
+  }
+  async function checkedNow(patch: Partial<DormerParams>, apply: () => void): Promise<true | string | false> {
+    const next = { ...$state.snapshot(params), ...patch } as DormerParams;
+    const probe = { ...$state.snapshot(project), dormers: [buildDormer(next)] } as Project;
+    try {
+      await api.checkDormer(probe, 0);
+    } catch (e) {
+      if (closed) return false;
+      const why = dormerRefusal(e);
+      if (why === null) {
+        notifyError(e, "calc");
+        return false;
+      }
+      refusal = why;
+      return why;
+    }
+    if (closed) return false;
+    refusal = null;
+    apply();
+    return true;
+  }
+
+  /**
+   * OK's last word: the core checks the dormer as it stands, so a value that
+   * got in without its own check (a kind or shape change, a width that
+   * makes a round dormer's segments too flat) never reaches the job (UI-203).
+   * Resolves to true when it can be stored; a refusal blocks OK with its reason.
+   */
+  export async function finalCheck(): Promise<boolean> {
+    const r = await inTurn(() => checkedNow({}, () => {}));
+    return r === true;
+  }
+
+  /** A field typed again after a refusal: its reason no longer blocks OK; OK checks once more (UI-207). */
+  function oninput() {
+    if (refusal !== null) refusal = null;
   }
 
   /** Keeps the front wall height when the shape changes, as the dialog does. */
@@ -141,6 +260,7 @@
     if (!host) return;
     const e = eaveFor(params, host, target);
     if (typeof e === "number") {
+      edited = true;
       problem = null;
       params = { ...params, eave_height: e };
     } else {
@@ -183,7 +303,7 @@
   };
 </script>
 
-<div class="dlg">
+<div class="dlg" {oninput}>
   <div class="kinds" role="radiogroup" use:radiogroup aria-label={t("dormer.kind")}>
     {#each DORMER_KINDS as k}
       <button
@@ -224,7 +344,7 @@
         <path class="dim" d="M220 110H244" />
       </svg>
       <label class="f" style="left:50%;top:84%" title={t("dormer.width")}>
-        <input aria-label={t("dormer.width")} type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => setShape({ width: v }) }} /><em>m</em>
+        <input aria-label={t("dormer.width")} type="text" use:numeric={{ value: params.width, step: 0.05, min: 0.1, onchange: (v) => checked({ width: v }, () => setShape({ width: v })) }} /><em>m</em>
       </label>
       <label class="f" style="left:10%;top:50%" title={t("dormer.depth")}>
         <input aria-label={t("dormer.depth")} type="text" disabled={!sec || params.kind === "pointed"} use:numeric={{ value: mm(sec?.depth), step: 0.05, min: 0.01, onchange: (v) => setBy({ depth: v }) }} /><em>m</em>
@@ -239,20 +359,20 @@
       {/if}
       {#if params.kind === "round"}
         <label class="f" style="left:50%;top:22%" title={t("round.segments")}>
-          <input aria-label={t("round.segments")} type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => setShape({ segments: Math.round(v) }) }} />
+          <input aria-label={t("round.segments")} type="text" use:numeric={{ value: params.segments, step: 1, min: 0, max: MAX_ROUND_SEGMENTS, onchange: (v) => checked({ segments: Math.round(v) }, () => setShape({ segments: Math.round(v) })) }} />
         </label>
       {:else}
         <label class="f" style="left:50%;top:{params.kind === "trapezoid" ? 40 : 22}%" title={params.kind === "shed" ? t("dormer.frontPitch") : params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")}>
           {#if params.kind === "shed"}
-            <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ front_pitch_deg: v }) }} /><em>°</em>
+            <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ front_pitch_deg: v }, () => setShape({ front_pitch_deg: v })) }} /><em>°</em>
           {:else}
-            <input aria-label={params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")} type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ pitch_deg: v }) }} /><em>°</em>
+            <input aria-label={params.kind === "trapezoid" ? t("dormer.cheekPitch") : t("edge.pitch")} type="text" use:numeric={{ value: params.pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ pitch_deg: v }, () => setShape({ pitch_deg: v })) }} /><em>°</em>
           {/if}
         </label>
       {/if}
       {#if params.kind === "trapezoid"}
         <label class="f" style="left:50%;top:62%" title={t("dormer.frontPitch")}>
-          <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ front_pitch_deg: v }) }} /><em>°</em>
+          <input aria-label={t("dormer.frontPitch")} type="text" use:numeric={{ value: params.front_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ front_pitch_deg: v }, () => setShape({ front_pitch_deg: v })) }} /><em>°</em>
         </label>
       {/if}
       {#if params.kind === "half_hip"}
@@ -260,7 +380,7 @@
           <input aria-label={t("dormer.halfHipHeight")} type="text" use:numeric={{ value: params.half_hip_height, step: 0.05, min: 0.05, onchange: (v) => setShape({ half_hip_height: v }) }} /><em>m</em>
         </label>
         <label class="f" style="left:64%;top:64%" title={t("edge.halfHipPitch")}>
-          <input aria-label={t("edge.halfHipPitch")} type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: 0.1, max: 89.9, onchange: (v) => setShape({ half_hip_pitch_deg: v }) }} /><em>°</em>
+          <input aria-label={t("edge.halfHipPitch")} type="text" use:numeric={{ value: params.half_hip_pitch_deg, step: 1, min: PITCH.min, max: PITCH.max, onchange: (v) => checked({ half_hip_pitch_deg: v }, () => setShape({ half_hip_pitch_deg: v })) }} /><em>°</em>
         </label>
       {/if}
     </figure>
@@ -325,6 +445,12 @@
   {#if problem}
     <p class="note" role="alert"><i></i><code>{problem}</code> {t(`dormer.err.${problem}`)}</p>
   {/if}
+  {#if refusal}
+    <p class="note" role="alert" data-testid="dormer-refusal"><i></i>{refusal}</p>
+  {/if}
+  {#if aboveRoof !== null}
+    <p class="note" role="alert" data-testid="dormer-above-roof"><i></i><code>dormer_above_roof</code> {t("dormer.aboveRoof", { v: fmt(aboveRoof, 2) })}</p>
+  {/if}
 
   <div class="row place-row">
     <span class="row-title">{t("place.title")}</span>
@@ -338,7 +464,7 @@
   <div class="row">
     <label>
       <span>{t("dormer.eaveAbs")}</span>
-      <div class="unit"><input type="text" disabled={params.kind === "pointed" && !!host} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
+      <div class="unit"><input type="text" disabled={params.kind === "pointed" && !!host} use:numeric={{ value: params.eave_height, step: 0.05, onchange: (v) => checked({ eave_height: v }, () => set({ eave_height: v })) }} /><em>m</em></div>
     </label>
     <label>
       <span>X</span>

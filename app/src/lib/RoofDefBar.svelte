@@ -1,18 +1,8 @@
-<script lang="ts" module>
-  /**
-   * The pitch each wall had before it became a gable, so Eave brings back
-   * that wall's own pitch (not the last one switched). Keyed by part and
-   * the wall's start corner, which survive undo and reloads; kept for the
-   * session, also while another bar is shown.
-   */
-  const eavePitch = new Map<string, number>();
-  const wallKey = (part: number, e: { start: { x: number; y: number } }) => `${part}:${e.start.x},${e.start.y}`;
-</script>
-
 <script lang="ts">
   // DACAD's "roof definition" toolbar: the selected wall's roof parameters in
   // one row, with previous/next wall buttons, docked under the views.
   import Icon from "./Icon.svelte";
+  import { freshBar } from "./dblclick";
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
   import type { CalcResult, EdgeDef, PitchBreak, Project, Selection } from "./types";
@@ -27,6 +17,7 @@
   import { prefs, presets, savePrefs } from "./settings.svelte";
   import { tick } from "svelte";
   import { stepWall, wallStepKey } from "./wallstep";
+  import { eavePitchFor, rememberEavePitch } from "./walltype";
 
   let {
     project,
@@ -68,6 +59,8 @@
 
   const part = $derived(selection ? project.parts[selection.part] : null);
   const edge = $derived(part && selection ? part.edges[selection.edge] : null);
+  /** The wall the fields edit now: a field reused for the next one forgets the one before (UI-403). */
+  const wallKey = $derived(selection ? `${selection.part}:${selection.edge}` : "");
   const partName = $derived(part && selection ? partLabel(part.name, selection.part) : "");
   const length = $derived.by(() => {
     if (!part || !selection || !edge) return 0;
@@ -207,31 +200,23 @@
     if (!edge || toGable === gable) return;
     if (!selection || !part) return;
     if (toGable) {
-      eavePitch.set(wallKey(selection.part, edge), edge.pitch_deg);
+      rememberEavePitch(selection.part, edge);
       onchange({ pitch_deg: GABLE_PITCH });
     } else {
       onchange({ pitch_deg: eaveFallback(), half_hip: null });
     }
   }
 
-  /** The pitch for a gable turned back into an eave: its own from before,
-   *  else the nearest eave wall's in this part, else the roof default. */
+  /** The pitch for a gable turned back into an eave (`walltype.ts`, one rule with the context menu and MCP). */
   function eaveFallback(): number {
     if (!selection || !part || !edge) return presets.pitch_deg;
-    const own = eavePitch.get(wallKey(selection.part, edge));
-    if (own !== undefined) return own;
-    const n = part.edges.length;
-    for (let d = 1; d <= n / 2; d++) {
-      for (const k of [selection.edge - d, selection.edge + d]) {
-        const e = part.edges[((k % n) + n) % n];
-        if (!isGable(e) && !isMarker(e)) return e.pitch_deg;
-      }
-    }
-    return presets.pitch_deg;
+    return eavePitchFor(selection.part, part.edges, selection.edge, presets.pitch_deg);
   }
 </script>
 
-<div class="bar" role="toolbar" aria-label={t("def.title")} bind:this={barEl}>
+<div class="bar" role="toolbar" aria-label={t("def.title")} bind:this={barEl} use:freshBar>
+  <!-- More sits beside the scrolled strip, not on it: at 600 px it never lies over a field (UI-1901). -->
+  <div class="line">
   <div class="row" use:hscroll>
     <div class="nav">
       <button class="icon-btn" onclick={() => step(-1)} title="{t('def.prev')} (PageUp, {alt}←)" aria-label={t("def.prev")}><Icon name="left" /></button>
@@ -252,7 +237,7 @@
         <div class="kind" title={t("edge.markerHint")}>{t("edge.marker")}</div>
         <label>
           <span>{t("edge.direction")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: directionDeg, step: 1, onchange: setDirection }} /><em>°</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: directionDeg, step: 1, onchange: setDirection }} /><em>°</em></div>
         </label>
         <button class="icon-btn" onclick={() => setDirection(directionDeg + 180)} title={t("edge.flip")} aria-label={t("edge.flip")}><Icon name="refresh" /></button>
       {:else}
@@ -263,7 +248,7 @@
         <label class:off={gable || flat} title={flat ? t("edge.flatOff") : leaning ? t("edge.leaningHint") : undefined}>
           <span>{t("edge.pitch")}{#if leaning && !flat}<b class="mark" data-testid="pitch-leaning"><i></i>{t("edge.leaning")}</b>{/if}</span>
           <div class="unit"><input type="text" disabled={gable || flat} aria-describedby={flat ? "def-flat-note" : undefined}
-            use:numeric={{ value: gable ? null : edge.pitch_deg, step: 1, min: 2, max: 90, onchange: setPitch }} /><em>°</em></div>
+            use:numeric={{ key: wallKey, value: gable ? null : edge.pitch_deg, step: 1, min: 2, max: 90, onchange: setPitch }} /><em>°</em></div>
         </label>
         {#if flat}<p class="flat-note" id="def-flat-note" data-testid="flat-note"><i></i>{t("edge.flatOff")}</p>{/if}
       {/if}
@@ -271,34 +256,39 @@
         <label class="wrap" title={unusualHeight ? t("edge.unusualHint", { v: num(buildingHeight ?? 0) }) : t("edge.buildingHeightHint", { name: partName })}>
           <span>{t("edge.buildingHeight")}{#if unusualHeight}<b class="mark" data-testid="unusual-height"><i></i>{t("edge.unusual")}</b>{/if}</span>
           <div class="unit"><input type="text" data-testid="building-height"
-            use:numeric={{ value: buildingHeight, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: onheight }} /><em>m</em></div>
+            use:numeric={{ key: wallKey, value: buildingHeight, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: onheight }} /><em>m</em></div>
         </label>
       {/if}
       {#if !onheight}
         <label title={unusualEave ? t("edge.unusualHint", { v: num(edge.eave_height) }) : undefined}>
           <span>{t("edge.eaveHeight")}{#if unusualEave}<b class="mark" data-testid="unusual-eave"><i></i>{t("edge.unusual")}</b>{/if}</span>
-          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
+          <div class="unit"><input type="text" data-testid="eave-height" use:numeric={{ key: wallKey, value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
         </label>
       {/if}
       <label title={unusualOverhang ? t("edge.unusualHint", { v: num(edge.overhang) }) : undefined}>
         <span>{t("edge.overhang")}{#if unusualOverhang}<b class="mark" data-testid="unusual-overhang"><i></i>{t("edge.unusual")}</b>{/if}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: edge.overhang, step: 0.05, min: 0, onchange: bounded(OVERHANG, (v) => ({ overhang: v })) }} /><em>m</em></div>
+        <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.overhang, step: 0.05, min: 0, onchange: bounded(OVERHANG, (v) => ({ overhang: v })) }} /><em>m</em></div>
       </label>
-      <button class="btn sm more-btn" class:on={moreOpen} data-testid="def-more" aria-expanded={moreOpen} aria-controls="def-more-row"
-        aria-describedby={moreSet.length ? "def-more-set" : undefined}
-        title={moreTitle} onclick={toggleMore}>
-        {t("bar.more")}
-        {#if moreSet.length}<b class="count" data-testid="def-more-count">{moreSet.length}</b><span class="sr-only" id="def-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
-      </button>
     {:else}
       {#if project.parts.length === 0}
         <!-- An empty job: no wall to pick, so say how to start (UX-004). -->
-        <p class="tip" data-testid="empty-tip">{t("editor.empty")}</p>
+        <!-- The two ways to start come first, so both stay in the bar at 600 px;
+             the tip after them wraps instead of running out of the bar (UI-303). -->
         {#if ondraw}<button class="btn sm" onclick={ondraw}><Icon name="draw" size={15} />{t("tool.draw")}</button>{/if}
         {#if onstandard}<button class="btn sm" onclick={onstandard}><Icon name="house" size={15} />{t("tool.standard")}</button>{/if}
+        <p class="tip empty" data-testid="empty-tip">{t("editor.empty")}</p>
       {:else}
-        <p class="tip">{t("editor.tip")}</p>
+        <p class="tip" data-testid="def-tip">{t("editor.tip")}</p>
       {/if}
+    {/if}
+  </div>
+    {#if edge && part}
+      <button class="btn sm more-btn" class:on={moreOpen} data-testid="def-more" aria-expanded={moreOpen} aria-controls="def-more-row"
+      aria-describedby={moreSet.length ? "def-more-set" : undefined}
+      title={moreTitle} onclick={toggleMore}>
+      {t("bar.more")}
+      {#if moreSet.length}<b class="count" data-testid="def-more-count">{moreSet.length}</b><span class="sr-only" id="def-more-set">{t("bar.moreSet", { list: moreSet.join(", ") })}</span>{/if}
+    </button>
     {/if}
   </div>
 
@@ -310,7 +300,7 @@
              960x540 (review UI-003). -->
         <label title={unusualEave ? t("edge.unusualHint", { v: num(edge.eave_height) }) : undefined}>
           <span title={t("edge.eaveHeightHint")}>{t("edge.eaveHeight")}{#if unusualEave}<b class="mark" data-testid="unusual-eave"><i></i>{t("edge.unusual")}</b>{/if}</span>
-          <div class="unit"><input type="text" data-testid="eave-height" aria-describedby="def-eave-note" use:numeric={{ value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
+          <div class="unit"><input type="text" data-testid="eave-height" aria-describedby="def-eave-note" use:numeric={{ key: wallKey, value: edge.eave_height, step: 0.05, min: 0, onchange: bounded(WALL_HEIGHT, (v) => ({ eave_height: v })) }} /><em>m</em></div>
         </label>
         <!-- Said on screen, not only in the tooltip: this is the eave the roof
              is calculated from, the value the defaults set (UX-008). -->
@@ -319,17 +309,17 @@
       {#if !marker}
         <label title={unusualLength ? t("edge.unusualHint", { v: num(length) }) : t("edge.lengthHint")}>
           <span>{t("edge.length")}{#if unusualLength}<b class="mark" data-testid="unusual-length"><i></i>{t("edge.unusual")}</b>{/if}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: length, digits: 2, step: 0.05, min: 0.01, onchange: onlength }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: length, digits: 2, step: 0.05, min: 0.01, onchange: onlength }} /><em>m</em></div>
         </label>
       {/if}
       {#if onpoint}
         <label class="xy" title={t("edge.startHint")}>
           <span>{t("edge.startX")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: edge.start.x, step: 0.05, onchange: (v) => onpoint(v, edge.start.y) }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.start.x, step: 0.05, onchange: (v) => onpoint(v, edge.start.y) }} /><em>m</em></div>
         </label>
         <label class="xy" title={t("edge.startHint")}>
           <span>{t("edge.startY")}</span>
-          <div class="unit"><input type="text" use:numeric={{ value: edge.start.y, step: 0.05, onchange: (v) => onpoint(edge.start.x, v) }} /><em>m</em></div>
+          <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.start.y, step: 0.05, onchange: (v) => onpoint(edge.start.x, v) }} /><em>m</em></div>
         </label>
       {/if}
       {#if !marker}
@@ -358,11 +348,11 @@
           {#if edge.half_hip}
             <label title={halfHipHigh ? t("edge.halfHipAboveRidgeHint", { v: num(ridge ?? 0) }) : undefined}>
               <span>{t("edge.halfHipHeight")}{#if halfHipHigh}<b class="mark" data-testid="halfhip-above-ridge"><i></i>{t("edge.aboveRidge")}</b>{/if}</span>
-              <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.height, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
+              <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.half_hip.height, step: 0.05, min: WALL_HEIGHT.min, max: WALL_HEIGHT.max, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, height: v } }); } }} /><em>m</em></div>
             </label>
             <label>
               <span>{t("edge.halfHipPitch")}</span>
-              <div class="unit"><input type="text" use:numeric={{ value: edge.half_hip.pitch_deg, step: 1, min: 2, max: 89.9, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); } }} /><em>°</em></div>
+              <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: edge.half_hip.pitch_deg, step: 1, min: 2, max: 89.9, onchange: (v) => { if (edge.half_hip) onchange({ half_hip: { ...edge.half_hip, pitch_deg: v } }); } }} /><em>°</em></div>
             </label>
           {/if}
         {/if}
@@ -378,11 +368,11 @@
             <div class="break">
               <label title={aboveRidge(b.height, ridge) ? t("edge.breakAboveRidgeHint", { v: num(ridge ?? 0) }) : undefined}>
                 <span>{t("edge.breakHeight", { n: i + 1 })}{#if aboveRidge(b.height, ridge)}<b class="mark" data-testid="break-above-ridge"><i></i>{t("edge.aboveRidge")}</b>{/if}</span>
-                <div class="unit"><input type="text" use:numeric={{ value: b.height, step: 0.05, min: edge.eave_height, max: WALL_HEIGHT.max, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
+                <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: b.height, step: 0.05, min: edge.eave_height, max: WALL_HEIGHT.max, onchange: (v) => setBreak(i, { height: v }) }} /><em>m</em></div>
               </label>
               <label>
                 <span>{t("edge.breakPitch")}</span>
-                <div class="unit"><input type="text" use:numeric={{ value: b.pitch_deg, step: 1, min: 2, max: 90, onchange: (v) => setBreak(i, { pitch_deg: v }) }} /><em>°</em></div>
+                <div class="unit"><input type="text" use:numeric={{ key: wallKey, value: b.pitch_deg, step: 1, min: 2, max: 90, onchange: (v) => setBreak(i, { pitch_deg: v }) }} /><em>°</em></div>
               </label>
               <button class="icon-btn" onclick={() => onchange({ breaks: breaks.filter((_, j) => j !== i).map((x) => ({ ...x })) })}
                 title={t("edge.removeBreak")} aria-label={t("edge.removeBreak")}><Icon name="x" /></button>
@@ -449,18 +439,25 @@
   .row.more .unit input {
     width: 92px;
   }
-  /* Stays in view at the row's end when a narrow window scrolls the row. */
+  /* The first row and More: the row scrolls, More stays beside it at the
+     end, never over a field (UI-1901). */
+  .line {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .line > .row {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   .more-btn {
-    position: sticky;
-    right: 0;
-    z-index: 1;
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    margin-bottom: 1px;
+    margin-bottom: 3px;
     margin-left: auto;
-    background: var(--surface);
-    box-shadow: -8px 0 8px -4px var(--surface);
   }
   .more-btn.on {
     background: var(--accent-soft);
@@ -642,5 +639,13 @@
     margin: 0;
     font-size: 13px;
     color: var(--text-2);
+  }
+  /* A tip (the empty job's, and the one with no wall selected) takes the
+     room that is left and wraps in it, never cut mid-word in the strip
+     (UI-303, audit 2026-11-24 UI-2001). */
+  .row > .tip {
+    flex: 1 1 0;
+    min-width: 120px;
+    line-height: 1.25;
   }
 </style>

@@ -112,8 +112,10 @@ fn unknown_keys_are_bounded_and_never_reach_the_calculation() {
         .insert("big".into(), Value::String("x".repeat(MAX_EXTRA_BYTES + 1)));
     assert_eq!(p.check_input().unwrap_err().code, "too_many");
     p.extra.clear();
+    // A big number in a key another tool added is metadata, not geometry:
+    // it opens and calculates (Jakub's decision 2026-11-23, HUNT-901).
     p.extra.insert("huge".into(), json!(1e300));
-    assert_eq!(p.check_input().unwrap_err().code, "out_of_range");
+    assert!(p.check_input().is_ok());
     // The roof does not depend on them.
     p.extra.clear();
     let area = tectora_core::quantities::roof_totals(&p).roof_area;
@@ -137,6 +139,47 @@ fn an_older_format_migrates_and_a_newer_one_is_refused() {
     let store = Store::new(dir.clone()).unwrap();
     std::fs::write(dir.join("later.tectora"), v.to_string()).unwrap();
     assert_eq!(store.load("later").unwrap_err().code(), "newer_format");
+    // TEST-306 R7: the newer version written as a float is refused by the
+    // store as well, and a save leaves the file as it is.
+    let text = v.to_string().replace(
+        &format!("\"schema_version\":{}", SCHEMA_VERSION + 1),
+        &format!("\"schema_version\":{}.0", SCHEMA_VERSION + 1),
+    );
+    assert!(text.contains(".0"), "{text}");
+    std::fs::write(dir.join("float.tectora"), &text).unwrap();
+    assert_eq!(store.load("float").unwrap_err().code(), "newer_format");
+    let e = store.save(Some("float".into()), &gable()).unwrap_err();
+    assert_eq!(e.code(), "newer_format");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("float.tectora")).unwrap(),
+        text
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_schema_version_that_is_not_a_whole_number_is_refused() {
+    // Round-1 TEST-008: a damaged version must not open as format 1, or a
+    // newer file whose version is no integer slips past `newer_format`.
+    let mut v = serde_json::to_value(gable()).unwrap();
+    let bad: [Value; 5] = [
+        "99".into(),
+        "1".into(),
+        99.5.into(),
+        (-1).into(),
+        serde_json::from_str("18446744073709551617").unwrap(),
+    ];
+    for version in bad {
+        v["schema_version"] = version.clone();
+        assert!(
+            Project::from_json(&v.to_string()).is_err(),
+            "schema_version {version} opened"
+        );
+    }
+    // A file without the field is a format-1 file and still opens.
+    v.as_object_mut().unwrap().remove("schema_version");
+    let p = Project::from_json(&v.to_string()).unwrap();
+    assert_eq!(p.schema_version, SCHEMA_VERSION);
 }
 
 #[test]

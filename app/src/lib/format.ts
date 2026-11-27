@@ -36,6 +36,12 @@ export interface CardFigures {
   figures_pending?: boolean;
   /** Buildings the core gave no roof for. */
   parts_failed?: number;
+  /** Too complex to calculate: no figures (ARCH-102). */
+  too_complex?: boolean;
+  /** Hand-drawn faces: a roof even when every building is without one (ERR-202). */
+  faces?: number;
+  /** Outside the limits: nothing calculated, faces neither (TEST-301). */
+  refused?: boolean;
 }
 
 /**
@@ -45,22 +51,30 @@ export interface CardFigures {
  */
 export function cardRoof(p: CardFigures): "pending" | "none" | "partial" | "ok" {
   if (p.figures_pending) return "pending";
+  // Nothing was calculated, hand-drawn faces neither (TEST-301).
+  if (p.too_complex || p.refused) return "none";
   const failed = p.parts_failed ?? 0;
   if (failed <= 0) return "ok";
-  return failed >= (p.parts ?? failed) ? "none" : "partial";
+  return failed >= (p.parts ?? failed) && !(p.faces ?? 0) ? "none" : "partial";
 }
 
 /** The area on a library card: "…" while the roof is still being calculated, "—" when the core gave none. */
 export function cardArea(p: CardFigures): string {
   const state = cardRoof(p);
-  return state === "pending" ? "…" : state === "none" ? "—" : m2(p.roof_area);
+  return state === "pending" ? "…" : state === "none" || noBuilding(p) ? "—" : m2(p.roof_area);
+}
+
+/** A job with no building and no area (no hand-drawn face either): nothing to show as 0,00 m² (UX-111). */
+function noBuilding(p: CardFigures): boolean {
+  return p.parts === 0 && !(p.faces ?? 0) && Math.abs(p.roof_area) < 0.005;
 }
 
 /** Why a card's area is not the whole roof, for its tooltip and the status mark; undefined when it is. */
 export function cardAreaNote(p: CardFigures): string | undefined {
   const state = cardRoof(p);
   if (state === "pending") return t("lib.areaPending");
-  if (state === "none") return t("res.notCalculated");
+  if (state === "none") return p.too_complex ? t("err.too_complex") : t("res.notCalculated");
+  if (noBuilding(p)) return t("res.empty");
   if (state === "partial") return t("lib.areaPartial", { n: p.parts_failed ?? 0, of: p.parts ?? 0 });
   return undefined;
 }
@@ -69,4 +83,13 @@ export function cardAreaNote(p: CardFigures): string | undefined {
 export function pendingRetryMs(pending: boolean, tries: number): number | null {
   if (!pending || tries >= 8) return null;
   return Math.min(1000 * 2 ** tries, 30000);
+}
+
+/** A file size in the given locale's number format: "512 B", "152 kB", "1,5 MB" (UI-010). */
+export function fileSize(b: number, locale: string = numberLocale()): string {
+  const f = (v: number, d: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
+  if (!Number.isFinite(b) || b < 0) return "—";
+  if (b < 1024) return `${f(b, 0)} B`;
+  if (b < 1048576) return `${f(b / 1024, 0)} kB`;
+  return `${f(b / 1048576, 1)} MB`;
 }

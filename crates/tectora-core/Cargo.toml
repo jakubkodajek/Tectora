@@ -19,3 +19,9 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 approx = "0.5.1"
 flate2 = "1.1"
 proptest = "1"
+
+# The browser preview's bridge carries its own self-tests (the E2E lock
+# wait, audit 2026-11-23 TEST-1203): `cargo test` builds and runs them.
+[[example]]
+name = "ui_bridge"
+test = true

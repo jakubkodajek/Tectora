@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeCalcError, describeError, describeProblem, describeRefusal, refusalReason, toAppError } from "./errors";
+import { describeBroken, describeCalcError, describeError, describeProblem, describeRefusal, refusalReason, toAppError } from "./errors";
 import { DICTS, i18n, t, type Locale } from "./i18n.svelte";
 
 const setLocale = (l: Locale) => (i18n.locale = l);
@@ -31,6 +31,57 @@ describe("describeError", () => {
     expect(d.detail).toBe("dum: project not found");
   });
 
+  it("revert_out_of_limits says the job is fine, not damaged, in every language (audit 2026-11-23 HUNT-1402)", () => {
+    const detail = "dum: the earlier version is outside the current limits and cannot be restored; the job itself is unchanged (value 1000000000 at `parts[0].edges[0].start.x` is out of range)";
+    const seen = new Set<string>();
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "revert_out_of_limits", id: "dum", detail }, "revert");
+      expect(d.code).toBe("revert_out_of_limits");
+      expect(d.message, l).toBe(DICTS[l]["err.revert_out_of_limits"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.unreadable"]);
+      expect(d.detail).toBe(detail);
+      seen.add(d.message);
+    }
+    expect(seen.size).toBe(4);
+    setLocale("en");
+    expect(describeError({ code: "revert_out_of_limits", detail }, "revert").message).not.toMatch(/damaged|backup/i);
+  });
+
+  it("revert_out_of_limits_damaged does not call a job whose file cannot be read fine, in every language (audit 2026-11-23 ARCH-1503)", () => {
+    const detail = "dum: the earlier version is outside the current limits and cannot be restored; the job file itself cannot be read (value 1000000000 at `parts[0].edges[0].start.x` is out of range)";
+    const seen = new Set<string>();
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "revert_out_of_limits_damaged", id: "dum", detail }, "revert");
+      expect(d.code).toBe("revert_out_of_limits_damaged");
+      expect(d.message, l).toBe(DICTS[l]["err.revert_out_of_limits_damaged"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.revert_out_of_limits"]);
+      expect(d.detail).toBe(detail);
+      seen.add(d.message);
+    }
+    expect(seen.size).toBe(4);
+    setLocale("en");
+    const m = describeError({ code: "revert_out_of_limits_damaged", detail }, "revert").message;
+    expect(m).not.toMatch(/is fine|not changed/i);
+    expect(m).toMatch(/cannot be read/);
+  });
+
+  it("too_complex says the job is too complex and what to remove, in every language (HUNTIO-004)", () => {
+    const detail = "the design is too complex to calculate: its buildings overlap too much";
+    const seen = new Set<string>();
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "too_complex", detail }, "calc");
+      expect(d.code).toBe("too_complex");
+      expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+      expect(d.message, l).toBe(DICTS[l]["err.too_complex"]);
+      expect(d.detail).toBe(detail);
+      seen.add(d.message);
+    }
+    expect(seen.size).toBe(4);
+  });
+
   it("too_many names the pitch break and dormer limits and points to the details (DR-004)", () => {
     for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
       setLocale(l);
@@ -43,12 +94,41 @@ describe("describeError", () => {
     }
   });
 
+  it("too_many for unknown keys names them, not buildings or walls (audit 2026-11-23 ARCH-1201)", () => {
+    for (const detail of [
+      "deep: the job cannot be opened (unknown keys nested too deep: 40 levels (at most 32))",
+      "too much data in unknown keys: 70000 bytes (at most 65536)",
+    ]) {
+      for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+        setLocale(l);
+        const d = describeError({ code: "too_many", detail }, "load");
+        expect(d.code).toBe("too_many");
+        expect(d.message, l).toBe(DICTS[l]["err.unknown_keys"]);
+        expect(d.message, l).toContain("32");
+        expect(d.detail).toBe(detail);
+      }
+    }
+    setLocale("en");
+    expect(describeError({ code: "too_many", detail: "too many parts: 201 (at most 200)" }, "load").message).toBe(DICTS.en["err.too_many"]);
+  });
+
   it("not_calculated says the result cannot be stored for the offer", () => {
     for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
       setLocale(l);
       const d = describeError({ code: "not_calculated" }, "save");
       expect(d.message, l).toBe(DICTS[l]["err.not_calculated"]);
       expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+    }
+  });
+
+  it("a file type a job does not carry is refused with its own message (HUNTIO-001)", () => {
+    for (const l of ["cs", "sk", "en", "de"] as Locale[]) {
+      setLocale(l);
+      const d = describeError({ code: "not_attachable", detail: "mail.msg: only drawings, photos and documents can be attached" }, "files");
+      expect(d.message, l).toBe(DICTS[l]["err.not_attachable"]);
+      expect(d.message, l).not.toBe(DICTS[l]["err.unknown"]);
+      expect(d.message, l).toContain("PDF");
+      expect(d.detail).toContain("mail.msg");
     }
   });
 
@@ -189,5 +269,124 @@ describe("settings command errors (ERRU-002)", () => {
     expect(d.message).toBe(t("settings.err.not_writable"));
     // From another action the reason is the same.
     expect(describeError("not_writable", "save").message).toBe(t("settings.err.not_writable"));
+  });
+});
+
+describe("round-3 audit: a job too large to export (ARCH-205)", () => {
+  it("names the job's own size, not the attachment limits", () => {
+    setLocale("en");
+    const job = describeError({ code: "too_large", detail: "job bundle: the job is too large to hand over (17 MB, at most 16 MB); shorten its notes" }, "export");
+    expect(job.message).toBe(t("err.job_too_large"));
+    expect(job.message).not.toMatch(/256/);
+    const file = describeError({ code: "too_large", detail: "x.pdf: larger than 256 MB" }, "files");
+    expect(file.message).toBe(t("err.too_large"));
+  });
+  it("titles a refused stored result as a refusal, not as a failed save (UI-206)", () => {
+    setLocale("cs");
+    const d = describeError({ code: "no_building" }, "storeResult");
+    expect(DICTS.cs["err.action.storeResult"]).toBeTruthy();
+    expect(d.title).toBe(DICTS.cs["err.action.storeResult"]);
+    expect(d.title).not.toBe(t("err.action.save"));
+  });
+});
+
+describe("round-5 audit: a result too large to keep (HUNT-405)", () => {
+  it("says the roof is too large, not that the stored result is damaged", () => {
+    for (const locale of ["cs", "sk", "en", "de"] as const) {
+      setLocale(locale);
+      const d = describeError(
+        { code: "figures_too_large", detail: "the figures are too large to keep: a figure is not a number of a real roof (at most 1000000000)" },
+        "storeResult",
+      );
+      expect(d.message).toBe(DICTS[locale]["err.figures_too_large"]);
+      expect(d.message).not.toBe(t("err.unknown"));
+    }
+  });
+});
+
+describe("a job file in another encoding (round 5)", () => {
+  it("is called not readable text, not damaged, in every language", () => {
+    const was = i18n.locale;
+    try {
+      for (const loc of ["cs", "sk", "en", "de"] as Locale[]) {
+        i18n.locale = loc;
+        const d = describeError({ code: "unreadable", detail: "cp1250.tectora: not UTF-8 text (saved in another encoding?), at byte 58" }, "load");
+        expect(d.message).toBe(t("err.unreadable_text"));
+        expect(d.message).not.toBe(t("err.unreadable"));
+        expect(describeError({ code: "unreadable", detail: "expected value at line 1 column 1" }, "load").message).toBe(t("err.unreadable"));
+      }
+    } finally {
+      i18n.locale = was;
+    }
+    expect(DICTS.en["err.unreadable_text"]).not.toMatch(/damaged/i);
+    expect(DICTS.cs["err.unreadable_text"]).not.toMatch(/poškozen/i);
+    expect(DICTS.sk["err.unreadable_text"]).not.toMatch(/poškoden/i);
+    expect(DICTS.de["err.unreadable_text"]).not.toMatch(/beschädigt/i);
+  });
+});
+
+describe("round 14: the press's own notices (TEST-1303, UX-1301, UI-1301)", () => {
+  const LOCALES = ["cs", "sk", "en", "de"] as Locale[];
+
+  it("busy_edits, busy_open and left_before_action give their own text in every language, as warnings", async () => {
+    const { notifyError, toasts, dismiss } = await import("./notify.svelte");
+    for (const l of LOCALES) {
+      setLocale(l);
+      const texts = new Set<string>();
+      for (const code of ["busy_edits", "busy_open", "left_before_action"]) {
+        const d = describeError({ code, id: "x", detail: "d" }, "revert");
+        expect(d.code).toBe(code);
+        expect(d.message, `${l} ${code}`).toBe(t(`err.${code}`));
+        expect(d.message, `${l} ${code} is not the unknown-code text`).not.toBe(t("err.unknown"));
+        texts.add(d.message);
+        const id = notifyError({ code, id: "x" }, "revert", "Job");
+        expect(toasts.find((x) => x.id === id)?.kind, `${l} ${code}`).toBe("warning");
+        dismiss(id);
+      }
+      expect(texts.size, l).toBe(3);
+    }
+  });
+
+  it("busy_edits speaks of the press, not of a step, and cs / sk have no comma before nebo / alebo (UX-1301)", () => {
+    expect(DICTS.cs["err.busy_edits"]).toContain("před stisknutím");
+    expect(DICTS.sk["err.busy_edits"]).toContain("pred stlačením");
+    expect(DICTS.en["err.busy_edits"]).toContain("before you pressed it");
+    expect(DICTS.de["err.busy_edits"]).toContain("vor dem Klick");
+    expect(DICTS.cs["err.busy_edits"]).not.toMatch(/, nebo/);
+    expect(DICTS.sk["err.busy_edits"]).not.toMatch(/, alebo/);
+    for (const l of LOCALES) expect(DICTS[l]["err.busy_edits"], l).not.toMatch(/tímto krokem|týmto krokom|this step|diesem Schritt/);
+  });
+
+  it("Revert all refused is titled in the plural, its own key in every language (UI-1301)", () => {
+    for (const l of LOCALES) {
+      setLocale(l);
+      const all = describeError({ code: "busy", id: "x" }, "revertAll").title;
+      expect(all, l).toBe(t("err.action.revertAll"));
+      expect(all, l).not.toBe(t("err.action.revert"));
+    }
+    setLocale("en");
+    expect(describeError({ code: "busy" }, "revertAll").title).toBe("Could not revert the changes");
+  });
+});
+
+describe("round 14: the library's list of files that cannot be read (ARCH-1303)", () => {
+  const LOCALES = ["cs", "sk", "en", "de"] as Locale[];
+
+  it("a job refused for too-deep unknown keys is explained as such, never as the operating system's refusal", () => {
+    for (const l of LOCALES) {
+      setLocale(l);
+      const text = describeBroken({ id: "deep", code: "too_many", detail: "unknown keys nested too deep: 33 levels (at most 32)" });
+      expect(text, l).toBe(t("err.unknown_keys"));
+      expect(text, l).not.toBe(t("err.io"));
+    }
+  });
+
+  it("each code the store's scan gives has its own text; one errors.ts does not know is an io error", () => {
+    setLocale("en");
+    for (const code of ["unreadable", "newer_format", "permission_denied", "internal", "disk_full", "foreign_entry", "invalid_id", "not_found", "busy", "too_many", "io"]) {
+      expect(describeBroken({ id: "j", code, detail: "" }), code).toBe(t(`err.${code}`, { id: "j" }));
+    }
+    expect(describeBroken({ id: "j", code: "unreadable", detail: "j: not UTF-8 text" })).toBe(t("err.unreadable_text"));
+    expect(describeBroken({ id: "j", code: "something_new", detail: "" })).toBe(t("err.io"));
   });
 });

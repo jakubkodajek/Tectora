@@ -1,43 +1,70 @@
 <script lang="ts">
   // Results in DACAD's terms: roof areas per part and line lengths by
   // DACAD line code (T eave, F ridge, G hip, K valley, O verge, P shed top edge, c pitch break).
-  import { figureLabel, formatFigure } from "./changes";
+  import { figureName, formatFigure } from "./changes";
+  import { hasBuilding } from "./offer";
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName, materialToken } from "./materials";
-  import { areaRows, failedParts, joinedWith, roofState, warningText } from "./results";
+  import { areaListShown, areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, resultWarnings, roofState } from "./results";
+  import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
   import { partLabel } from "./partname";
   import { api } from "./api";
-  import type { CalcBreakdown, CalcResult, Project } from "./types";
+  import { pressKeepingFocus } from "./press";
+  import type { CalcBreakdown, CalcResult, Project, ResultRefresh } from "./types";
 
   let {
     result,
     project = null,
     onstore,
+    storing = false,
     blocked = null,
+    failure = null,
+    pending = false,
+    recalculated = null,
+    onrestore,
+    restoring = false,
+    received = null,
   }: {
     result: CalcResult | null;
     project?: Project | null;
-    onstore?: () => void;
+    onstore?: () => void | Promise<void>;
+    /** The result is being stored: the button is off. */
+    storing?: boolean;
     /** Why the figures cannot become the offer's stored result now (the core gave no roof), or null. */
     blocked?: string | null;
+    /** Why the last calculation of the whole job failed (too complex, …), kept until one succeeds (UX-101). */
+    failure?: Described | null;
+    /** A recalculation is on its way: the figures are of the roof before the last edit (ERR-204). */
+    pending?: boolean;
+    /** The engine recalculated the stored result (when: `at`, its entry: `entry_ts_ms`) and nothing stored one since (UX-702b). */
+    recalculated?: (ResultRefresh & { at: number; entry_ts_ms?: number }) | null;
+    /** Puts the offer's own figures back in place of the recalculation logged at `ts` (HUNT-902: also once the history no longer lists the entry). */
+    onrestore?: (ts: number) => void | Promise<void>;
+    /** A put-back or another review action is running: the button is off. */
+    restoring?: boolean;
+    /**
+     * The sender's engine recalculated the stored result of this received
+     * job (`receivedRecalculation`): said on the card, without the put-back,
+     * as the offer's own figures stayed with the sender (UX-1003).
+     */
+    received?: { at: number; from: string; to: string; area: number | null } | null;
   } = $props();
+  const day = (ms: number) => new Date(ms).toLocaleDateString(numberLocale());
+  /** The card's heading: the keyboard's focus lands there when the pressed button went away (UI-1001). */
+  let cardHead: HTMLElement | undefined = $state();
+  const pressCard = (run: () => void | Promise<void>) => pressKeepingFocus(run, () => cardHead);
 
   // What is on the roof (UX-005): counts and window sizes from the job,
-  // the area each kind took off the roof from the core's breakdown.
-  const objects = $derived(
-    project
-      ? {
-          windows: project.windows ?? [],
-          chimneys: project.chimneys?.length ?? 0,
-          holes: project.roof_openings?.length ?? 0,
-          dormers: project.dormers?.length ?? 0,
-        }
-      : null,
+  // the area each kind took off the roof from the core's breakdown. What
+  // the core reported on no roof face is counted apart (UX-1503).
+  const objects = $derived(project ? objectCounts(project, result) : null);
+  const hasObjects = $derived(
+    !!objects &&
+      objects.windows.length + objects.chimneys + objects.holes + objects.dormers + objects.off.windows + objects.off.chimneys + objects.off.holes + objects.off.dormers > 0,
   );
-  const hasObjects = $derived(!!objects && objects.windows.length + objects.chimneys + objects.holes + objects.dormers > 0);
   let breakdown = $state<CalcBreakdown | null>(null);
   let seq = 0;
   $effect(() => {
@@ -63,7 +90,17 @@
 
   /** The stored result (figures of the offer) against the current one. */
   const stored = $derived(result?.stored_result ?? null);
-  const diffLabel = (key: string) => figureLabel(key, project);
+  /**
+   * A job past the draft without a stored result (dropped for an impossible
+   * date, or an old job): the card says so and offers to store one, which
+   * the load warning asks for (audit 2026-11-23 UX-902).
+   */
+  const noneStored = $derived(!stored && !!result && !!project && project.job.status !== "draft" && !project.result_snapshot);
+  const diffLabel = (key: string) => figureName(key, project);
+  /** A roof of hand-drawn faces only: no "ridge 0,00 m" and no rows of zeros (UX-302). */
+  const facesOnly = $derived(isFacesOnly(project));
+  /** Why the current figures cannot be stored: the core gave no roof, or there is no building at all (UI-206). */
+  const storeBlocked = $derived(blocked ?? (project && !hasBuilding(project) ? t("res.empty") : null));
   const fmtDiff = formatFigure;
   /** Per part, the parts the calculation joined its roof with (named under the part's area). */
   const joins = $derived(joinedWith(result));
@@ -82,12 +119,15 @@
   const failedSet = $derived(roofState(result) === "partial" ? failedParts(result) : []);
   const failedNames = $derived(failedSet.map((i) => partLabel(result!.parts[i].name, i)).join(", "));
   const NONE = "—";
+  /** No building yet (empty job, footprint being drawn): a dash and a hint, not 0,00 (UX-011). */
+  const missing = $derived(missingResult(project, result, failure));
+  const empty = $derived(missing === "empty");
+  /** No figures to show at all. */
+  const none = $derived(failed || missing !== null);
 
   /** Plausibility warnings of every part, with the part's name when there are several. */
   const warnings = $derived(
-    (result?.parts ?? []).flatMap((p, i) =>
-      (p.geometry.warnings ?? []).map((w) => ({ part: result!.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w) })),
-    ).concat(
+    resultWarnings(result).concat(
       // Typed values that are allowed but unlikely (a lost decimal comma,
       // UX-009) and half-hips or breaks above the ridge (UX-003).
       inputWarnings(project, result),
@@ -108,6 +148,7 @@
         ].filter((r) => r.value >= 0.005 || !["P", "c", "S", "W"].includes(r.code))
       : [],
   );
+  const shownRows = $derived(lineRowsShown(rows, facesOnly && !none));
   /** The core's lengths by code (OL, OR, WV, …), for the parts of the O and W rows and the legend. */
   const codes = $derived(result?.codes ?? {});
   /** "Napojení čelní 2,60 m · boční …": the W row split by kind, which matter for the flashing (UX-013). */
@@ -115,12 +156,16 @@
     (SUB_CODES[code] ?? []).filter((c) => (codes[c] ?? 0) >= 0.005).map((c) => ({ code: c, label: lineName(c), value: codes[c] }));
 </script>
 
-<div class="results">
+<div class="results" class:pending={pending && !!result} aria-busy={pending}>
   <div class="hero">
     <span>{t("res.area")}</span>
-    <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !failed ? m2(totals.roof_area) : NONE}</strong>
-    {#if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
-    {:else if totals}<small>{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    <strong data-testid="res-area" title={failed ? t("res.notCalculated") : undefined}>{totals && !none ? m2(totals.roof_area) : NONE}</strong>
+    {#if empty}<small data-testid="res-empty">{t("res.empty")}</small>
+    {:else if missing === "failed" && failure}<small data-testid="res-calc-failed"><code>{failure.code}</code> {failure.message}</small>
+    {:else if missing === "calculating"}<small data-testid="res-calculating">{t("res.calculating")}</small>
+    {:else if failed}<small data-testid="res-not-calculated">{t("res.notCalculated")}</small>
+    {:else if totals && !facesOnly}<small data-testid="res-ridge">{t("res.ridgeHeight", { v: num(totals.ridge_height) })}</small>{/if}
+    {#if pending && result}<small class="stale" role="status" data-testid="res-stale">{t("res.calculating")}</small>{/if}
     {#if failedSet.length}<small data-testid="res-partial">{t("res.partialNote", { names: failedNames })}</small>{/if}
     {#if totals && !failed && deductedTotal >= 0.005}<small data-testid="res-deducted">{t("res.obj.netOf", { a: m2(deductedTotal) })}</small>{/if}
   </div>
@@ -135,7 +180,7 @@
     </div>
   {/if}
 
-  {#if result && areas.length > 1}
+  {#if result && areaListShown(areas, facesOnly)}
     <h4>{t("res.areas")}</h4>
     <table class="areas">
       <tbody>
@@ -171,58 +216,90 @@
     <h4>{t("res.objects")}</h4>
     <table class="objects" data-testid="res-objects">
       <tbody>
-        {#if objects.windows.length}
+        {#if objects.windows.length || objects.off.windows}
           <tr>
             <td>
               {t("res.obj.windows", { n: objects.windows.length })}
-              <small class="joined">{objects.windows.map((w) => `${num(w.width)} × ${num(w.height)} m`).join(", ")}</small>
+              {#if objects.windows.length}<small class="joined">{objects.windows.map((w) => `${num(w.width)} × ${num(w.height)} m`).join(", ")}</small>{/if}
+              {#if objects.off.windows}<small class="joined" data-testid="res-off-windows">{t("res.offRoof", { n: objects.off.windows })}</small>{/if}
             </td>
             <td class="v">{#if deducted.window}−{m2(deducted.window)}{/if}</td>
           </tr>
         {/if}
-        {#if objects.chimneys}
-          <tr><td>{t("res.obj.chimneys", { n: objects.chimneys })}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
+        {#if objects.chimneys || objects.off.chimneys}
+          <tr><td>{t("res.obj.chimneys", { n: objects.chimneys })}{#if objects.off.chimneys} <small class="joined">{t("res.offRoof", { n: objects.off.chimneys })}</small>{/if}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
         {/if}
-        {#if objects.holes}
-          <tr><td>{t("res.obj.holes", { n: objects.holes })}</td><td class="v">{#if deducted.hole}−{m2(deducted.hole)}{/if}</td></tr>
+        {#if objects.holes || objects.off.holes}
+          <tr><td>{t("res.obj.holes", { n: objects.holes })}{#if objects.off.holes} <small class="joined">{t("res.offRoof", { n: objects.off.holes })}</small>{/if}</td><td class="v">{#if deducted.hole}−{m2(deducted.hole)}{/if}</td></tr>
         {/if}
-        {#if objects.dormers}
-          <tr><td>{t("res.obj.dormers", { n: objects.dormers })}</td><td class="v">{#if deducted.dormer}−{m2(deducted.dormer)}{/if}</td></tr>
+        {#if objects.dormers || objects.off.dormers}
+          <tr><td>{t("res.obj.dormers", { n: objects.dormers })}{#if objects.off.dormers} <small class="joined">{t("res.offRoof", { n: objects.off.dormers })}</small>{/if}</td><td class="v">{#if deducted.dormer}−{m2(deducted.dormer)}{/if}</td></tr>
         {/if}
       </tbody>
     </table>
     <p class="note">{t("res.obj.note")}</p>
   {/if}
 
+  <!-- No lines (a job of hand-drawn faces only): no empty section and no "Line codes: ." (UX-1904). -->
+  {#if shownRows.length}
   <h4>{t("res.lines")}</h4>
   <table data-testid="res-lines">
     <tbody>
-      {#each rows as r}
-        <tr class:zero={failed || r.value < 0.005}>
+      {#each shownRows as r}
+        <tr class:zero={none || r.value < 0.005}>
           <td class="code"><i style="background:{r.color}"></i>{r.code}</td>
           <td>{r.label}{#if r.n && !failed}<span class="n">×{r.n}</span>{/if}
             {#if r.code === "W" && !failed && subRows("W").length}
               <small class="joined" data-testid="res-abutments">{subRows("W").map((s) => `${s.code} ${s.label} ${m(s.value)}`).join(" · ")}</small>
             {/if}</td>
-          <td class="v">{failed ? NONE : m(r.value)}</td>
+          <td class="v">{none ? NONE : m(r.value)}</td>
         </tr>
       {/each}
     </tbody>
   </table>
-  <p class="note" data-testid="res-legend">{legend(rows.map((r) => r.code), codes)}</p>
+  <p class="note" data-testid="res-legend">{legend(shownRows.map((r) => r.code), codes)}</p>
+  {/if}
 
   {#if stored}
-    <h4>{t("snap.title")}</h4>
-    <div class="snap" class:changed={stored.differences.length > 0}>
-      <div class="snap-head">
+    <h4 bind:this={cardHead} tabindex="-1" data-testid="snap-title">{t("snap.title")}</h4>
+    <!-- Figures that leave out a building the calculation cannot take are no
+         comparison: equal figures would read "unchanged" (UX-103). -->
+    <div class="snap" class:changed={stored.differences.length > 0 || !!blocked}>
+      <div class="snap-head" data-testid="snap-state">
         <i class="sq"></i>
-        <span>
-          {stored.differences.length ? t("snap.changed") : t("snap.same")}
-          · {new Date(stored.stored.taken_ms).toLocaleDateString(numberLocale())}
+        <span title={blocked ?? undefined}>
+          {#if recalculated && !blocked && !stored.differences.length}
+            <!-- Not "unchanged since stored" with the date of the open: the engine stored these figures (UX-702b). -->
+            {t("snap.recalculated", { date: day(recalculated.at), from: recalculated.from, to: recalculated.to })}
+          {:else if received && !recalculated && !blocked && !stored.differences.length}
+            {t("snap.recalculated", { date: day(received.at), from: received.from, to: received.to })}
+          {:else}
+            {blocked ? t("snap.unchecked") : stored.differences.length ? t("snap.changed") : t("snap.same")}
+            · {day(stored.stored.taken_ms)}
+          {/if}
         </span>
       </div>
+      {#if recalculated}
+        {#if blocked || stored.differences.length}
+          <p class="mono" data-testid="snap-recalculated">{t("snap.recalculated", { date: day(recalculated.at), from: recalculated.from, to: recalculated.to })}</p>
+        {/if}
+        <p class="mono" data-testid="snap-offer">{t("snap.offerStored", { date: day(recalculated.offer_ms) })}</p>
+        {#if onrestore && recalculated.entry_ts_ms != null}
+          {@const ts = recalculated.entry_ts_ms}
+          <!-- The same put-back as on the history's entry, which the change log may have dropped by now (HUNT-902). -->
+          <button class="btn sm" data-testid="snap-restore" aria-disabled={restoring} aria-busy={restoring} onclick={() => !restoring && pressCard(() => onrestore?.(ts))}>{t("snap.revertRefresh")}</button>
+        {/if}
+      {/if}
+      {#if received && !recalculated}
+        {#if blocked || stored.differences.length}
+          <p class="mono" data-testid="snap-recalculated">{t("snap.recalculated", { date: day(received.at), from: received.from, to: received.to })}</p>
+        {/if}
+        <p class="mono" data-testid="snap-received">{received.area != null ? t("snap.receivedOfferArea", { a: m2(received.area) }) : t("snap.receivedOffer")}</p>
+      {/if}
       {#if stored.differences.length}
         <table class="diff">
+          <!-- Which column is the offer and which the roof now (UX-205). -->
+          <thead><tr><th></th><th class="v">{t("snap.colStored")}</th><th class="v">{t("snap.colNow")}</th></tr></thead>
           <tbody>
             {#each stored.differences as d}
               <tr><td>{diffLabel(d.key)}</td><td class="v">{fmtDiff(d.key, d.stored)}</td><td class="v">{fmtDiff(d.key, d.current)}</td></tr>
@@ -234,13 +311,32 @@
         <p class="mono">{t("snap.engine", { v: stored.stored.engine_version })}</p>
       {/if}
       {#if stored.differences.length && onstore}
-        <button class="btn sm" disabled={!!blocked} title={blocked ?? undefined} onclick={onstore}>{t("snap.store")}</button>
+        <button class="btn sm" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && pressCard(() => onstore?.())}>{t("snap.store")}</button>
+      {/if}
+    </div>
+  {:else if noneStored}
+    <h4 bind:this={cardHead} tabindex="-1" data-testid="snap-title">{t("snap.title")}</h4>
+    <div class="snap" data-testid="snap-none">
+      <div class="snap-head" data-testid="snap-state">
+        <i class="sq"></i>
+        <span>{t("snap.none")}</span>
+      </div>
+      {#if onstore}
+        <button class="btn sm" data-testid="snap-store" disabled={!!storeBlocked} aria-disabled={storing} aria-busy={storing} title={storeBlocked ?? undefined} onclick={() => !storing && pressCard(() => onstore?.())}>{t("snap.store")}</button>
       {/if}
     </div>
   {/if}
 </div>
 
 <style>
+  /* Figures of the roof before the last edit while its recalculation runs (ERR-204). */
+  /* --text-2: --text-3 on the hero's --accent-soft is 2.67:1 (UI-305; the pair is in contrast.py). */
+  .results.pending .hero strong {
+    color: var(--text-2);
+  }
+  .results.pending .hero ~ * {
+    opacity: 0.6;
+  }
   .joined {
     display: block;
     font-size: 11.5px;
@@ -268,6 +364,10 @@
     font-weight: 700;
     letter-spacing: -0.02em;
     font-variant-numeric: tabular-nums;
+  }
+  h4:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
   h4 {
     margin: 6px 0 0;
@@ -311,6 +411,9 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
+    /* The figure and its unit stay on one line; the label column wraps instead (UI-006). */
+    white-space: nowrap;
+    padding-left: 8px;
   }
   .warn {
     padding: 10px 12px;
@@ -362,19 +465,42 @@
   .snap.changed .sq {
     background: var(--danger);
   }
+  .diff th {
+    padding: 0 0 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-3);
+    text-align: left;
+  }
+  .diff th.v {
+    text-align: right;
+  }
   .diff td {
     padding: 4px 0;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px;
   }
+  /* The two figure columns keep apart ("152,73 m²  142,29 m²", UX-205). */
+  .diff td.v,
+  .diff th.v {
+    padding-left: 12px;
+  }
   .mono {
     margin: 0;
+    overflow-wrap: anywhere;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 11.5px;
     color: var(--text-2);
   }
   .btn.sm {
     align-self: flex-start;
+    /* A long label (de "put the offer's figures back") wraps inside the
+       button instead of leaving it (the UI-901 class). */
+    height: auto;
+    min-height: 30px;
+    padding: 4px 12px;
+    white-space: normal;
+    text-align: left;
   }
   .note {
     margin: 0;

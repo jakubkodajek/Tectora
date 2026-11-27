@@ -12,14 +12,19 @@
   import { cardArea, cardAreaNote, cardRoof, m2, relativeTime } from "./format";
   import { listedArea, offerDiffers, storedArea, storedAreaHint } from "./offer";
   import { numberLocale, t } from "./i18n.svelte";
-  import { actorName, entrySummary, isFresh, live, liveText } from "./live.svelte";
-  import type { Action } from "./errors";
-  import { notify, notifyError } from "./notify.svelte";
+  import { actorLabel, actorName, entryText, isFresh, live, liveText } from "./live.svelte";
+  import { describeBroken, toAppError, type Action } from "./errors";
+  import { fold, searchWords } from "./fold";
+  import { foreignSentences, type Foreign } from "./foreign";
+  import { dismiss, notify, notifyError } from "./notify.svelte";
+  import { takeDeleted } from "./deleted";
   import UpdateBanner from "./UpdateBanner.svelte";
   import { prefs, savePrefs } from "./settings.svelte";
   import { hscroll } from "./hscroll";
   import { tick } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { firstPress } from "./dblclick";
+  import { sequence } from "./latest";
   import type { BrokenFile, ExampleInfo, JobStatus, ProjectSummary, TrashEntry } from "./types";
   import { JOB_STATUSES, isAi } from "./types";
 
@@ -30,6 +35,7 @@
     onopen,
     onchanged,
     broken = [],
+    foreign = [],
     onconnect,
     onsettings,
   }: {
@@ -40,11 +46,13 @@
     onchanged: () => void;
     /** Project files in the folder that could not be read. */
     broken?: BrokenFile[];
+    /** What in the library's own folders blocks work (UX-601, ARCH-701). */
+    foreign?: Foreign[];
     onconnect: () => void;
     onsettings: () => void;
   } = $props();
 
-  type Filter = "all" | JobStatus | "ai" | "examples" | "trash";
+  type Filter = "all" | JobStatus | "ai" | "review" | "examples" | "trash";
   type SortKey = "modified" | "name" | "number" | "customer" | "area";
   let query = $state("");
   let filter = $state<Filter>("all");
@@ -56,24 +64,29 @@
   const yearOf = (ms: number) => new Date(ms).getFullYear();
   const years = $derived([...new Set(projects.map((p) => yearOf(p.modified_ms)))].sort((a, b) => b - a));
 
-  const norm = (s: string) => s.toLocaleLowerCase("cs").normalize("NFD").replace(/\p{M}/gu, "");
+  // The core's folding (library::fold), so the MCP search and this one find the same jobs.
+  const norm = fold;
   const counts = $derived.by(() => {
-    const c: Record<string, number> = { all: projects.length, ai: 0 };
+    const c: Record<string, number> = { all: projects.length, ai: 0, review: 0 };
     for (const s of JOB_STATUSES) c[s] = 0;
     for (const p of projects) {
       c[p.job.status] = (c[p.job.status] ?? 0) + 1;
-      if (p.last_activity && isAi(p.last_activity.actor)) c.ai++;
+      // One rule for "changed by AI", the core's (UX-806).
+      if (p.changed_by_ai) c.ai++;
+      // The banner's check, from the core (UX-2003).
+      if (p.review_pending) c.review++;
     }
     return c;
   });
 
   const rows = $derived.by(() => {
     // Every word must appear somewhere (same rule as the MCP search).
-    const words = norm(query).split(/\s+/).filter(Boolean);
+    const words = searchWords(norm(query));
     const list = projects.filter((p) => {
       if (year !== null && yearOf(p.modified_ms) !== year) return false;
-      if (filter === "ai" && !(p.last_activity && isAi(p.last_activity.actor))) return false;
-      if (filter !== "all" && filter !== "ai" && filter !== "examples" && filter !== "trash" && p.job.status !== filter) return false;
+      if (filter === "ai" && !p.changed_by_ai) return false;
+      if (filter === "review" && !p.review_pending) return false;
+      if (filter !== "all" && filter !== "ai" && filter !== "review" && filter !== "examples" && filter !== "trash" && p.job.status !== filter) return false;
       if (!words.length) return true;
       const hay = norm([p.name, p.job.number, p.job.customer, p.job.address, p.notes].join("\n"));
       return words.every((w) => hay.includes(w));
@@ -94,7 +107,7 @@
   const selected = $derived(projects.find((p) => p.id === selectedId) ?? null);
   /** The list row that takes the Tab stop: the selected one, else the first. */
   const focusId = $derived(rows.some((p) => p.id === selectedId) ? selectedId : (rows[0]?.id ?? null));
-  const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
+  const filterLabel = $derived(filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "review" ? t("lib.waitsReview") : filter === "examples" ? t("home.examples") : t(`status.${filter}`));
   let tbody: HTMLElement | undefined = $state();
   /** The row a double click's first press selected; the detail pane may move the rows before the second (UI-008). */
   const rowPress = firstPress<string>();
@@ -132,6 +145,20 @@
   }
 
   let showBroken = $state(false);
+  let showForeign = $state(false);
+  /** A job's name for its id, for the note about one job's entry. */
+  const jobName = (id: string) => projects.find((p) => p.id === id)?.name || id;
+  /**
+   * The list again when the window gets the focus back: the user may have
+   * moved a blocking entry away in the file manager, and the folder watcher
+   * only sees job files (audit 2026-11-22 UX-701).
+   */
+  let focusedAt = 0;
+  function onwindowfocus() {
+    if (Date.now() - focusedAt < 1000) return;
+    focusedAt = Date.now();
+    onchanged();
+  }
 
   async function run<T>(action: Action, fn: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -156,15 +183,17 @@
 
   /** Jobs with a delete or duplicate under way: a double click must not
    *  make two copies, or ask twice and then fail (UI-018). */
-  let busy = $state<Record<string, boolean>>({});
+  // A set, not a plain object: a job id such as "constructor" must not find
+  // Object.prototype's member and look busy for good (ARCH-1301).
+  const busy = new SvelteSet<string>();
 
   async function once(id: string, f: () => Promise<void>) {
-    if (busy[id]) return;
-    busy[id] = true;
+    if (busy.has(id)) return;
+    busy.add(id);
     try {
       await f();
     } finally {
-      delete busy[id];
+      busy.delete(id);
     }
   }
 
@@ -178,15 +207,24 @@
       onchanged();
       loadTrash();
       // The confirm promised the trash: say where it went and offer it back at once (UX-010).
-      if (gone) notify({ kind: "info", title: t("home.deleted", { name: gone.name || p.name }), action: { label: t("home.restore"), run: () => restore(gone) } });
+      if (gone) deletedToast(gone, p.name);
     });
 
   /** Deleted jobs in the library's trash (removed attachments are left out), newest first. */
   let trash = $state<TrashEntry[]>([]);
+  /** Only the newest trash listing is shown (audit 2026-11-24 ERR-1904). */
+  const trashReads = sequence();
   async function loadTrash() {
+    const k = trashReads.next();
     try {
-      trash = (await api.listDeleted()).filter((e) => !e.file);
+      const entries = await api.listDeleted();
+      if (!trashReads.current(k)) return;
+      trash = entries.filter((e) => !e.file);
+      // A delete notice whose entry left the trash offers nothing to restore (HUNT-1805).
+      const left = new Set(trash.map((e) => e.entry));
+      for (const entry of [...deleteToasts.keys()]) if (!left.has(entry)) dropDeleteToast(entry);
     } catch (e) {
+      if (!trashReads.current(k)) return;
       trash = [];
       notifyError(e, "list");
     }
@@ -197,15 +235,47 @@
     loadTrash();
   });
 
-  /** Brings a deleted job back into the library and selects it. */
-  async function restore(e: TrashEntry) {
-    const id = await run("restore", () => api.restoreDeleted(e.entry));
-    if (!id) return loadTrash();
-    notify({ kind: "info", title: t("home.restored", { name: e.name }) });
-    selectedId = id;
-    onchanged();
-    loadTrash();
+  /** The delete toast offering each trash entry back, so a restore from the
+   *  trash list takes the offer away (UI-001). */
+  const deleteToasts = new Map<string, number>();
+  function dropDeleteToast(entry: string) {
+    const toast = deleteToasts.get(entry);
+    if (toast !== undefined) dismiss(toast);
+    deleteToasts.delete(entry);
   }
+  function deletedToast(gone: TrashEntry, name: string) {
+    deleteToasts.set(gone.entry, notify({ kind: "info", title: t("home.deleted", { name: gone.name || name }), key: gone.entry, action: { label: t("home.restore"), run: () => restore(gone) } }));
+  }
+  // The review banner's Delete job left the editor for the library: the
+  // same notice, with Restore, and the focus on the list (UX-1703, UI-1702).
+  const handed = takeDeleted();
+  if (handed) deletedToast(handed.gone, handed.name);
+
+  /** Brings a deleted job back into the library and selects it. Once: a
+   *  double click must not restore and then report the entry missing (UI-001). */
+  const restore = (e: TrashEntry) =>
+    once(`trash:${e.entry}`, async () => {
+      let id: string | undefined;
+      try {
+        id = await api.restoreDeleted(e.entry);
+      } catch (err) {
+        // The entry left the trash meanwhile (an AI or another window
+        // restored or removed it): say that, not "the job is no longer in
+        // the folder" (HUNT-1805).
+        if (toAppError(err).code === "not_found") {
+          dropDeleteToast(e.entry);
+          notify({ kind: "info", title: t("home.restoreGone", { name: e.name }) });
+          onchanged();
+        } else notifyError(err, "restore");
+      }
+      if (!id) return loadTrash();
+      dropDeleteToast(e.entry);
+      trash = trash.filter((x) => x.entry !== e.entry);
+      notify({ kind: "info", title: t("home.restored", { name: e.name }) });
+      selectedId = id;
+      onchanged();
+      loadTrash();
+    });
 
   // First start: the example jobs were seeded with the core's built-in
   // names; give them the names of the UI language (UX-012). Once per app run.
@@ -240,6 +310,8 @@
   ];
 </script>
 
+<svelte:window onfocus={onwindowfocus} />
+
 <div class="page">
   <header>
     <div class="brand"><Logo size={30} /><span>Tectora</span></div>
@@ -269,6 +341,9 @@
       {/each}
       <button class:on={filter === "ai"} onclick={() => (filter = "ai")}>
         <Icon name="sparkle" size={16} />{t("lib.byAi")}<span>{counts.ai}</span>
+      </button>
+      <button class:on={filter === "review"} onclick={() => (filter = "review")} data-testid="lib-review">
+        <Icon name="eye" size={16} />{t("lib.waitsReview")}<span>{counts.review}</span>
       </button>
       {#if years.length > 1}
         <label class="year">
@@ -300,7 +375,7 @@
             {#each trash as e (e.entry)}
               <li>
                 <div class="trash-text"><strong>{e.name || e.id}</strong><small class="muted">{t("home.deletedWhen", { when: relativeTime(e.ts_ms) })}{#if isAi(e.actor)} · {actorName(e.actor)}{/if}</small></div>
-                <button class="btn sm" onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
+                <button class="btn sm" disabled={busy.has(`trash:${e.entry}`)} onclick={() => restore(e)}><Icon name="undo" size={15} />{t("home.restore")}</button>
               </li>
             {/each}
           </ul>
@@ -317,7 +392,7 @@
         </div>
       {:else}
         <div class="head">
-          <h2>{filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : t(`status.${filter}`)} <span class="count">{rows.length}</span></h2>
+          <h2>{filter === "all" ? t("lib.all") : filter === "ai" ? t("lib.byAi") : filter === "review" ? t("lib.waitsReview") : t(`status.${filter}`)} <span class="count">{rows.length}</span></h2>
           <div class="seg">
             <button class:on={prefs.libraryView === "list"} onclick={() => setView("list")} aria-label={t("lib.list")} title={t("lib.list")}><Icon name="list" size={16} /></button>
             <button class:on={prefs.libraryView === "grid"} onclick={() => setView("grid")} aria-label={t("lib.grid")} title={t("lib.grid")}><Icon name="grid" size={16} /></button>
@@ -333,12 +408,30 @@
               {#if showBroken}
                 <ul>
                   {#each broken as b (b.id)}
-                    <li><code>{b.id}.tectora</code> {t(`err.${b.code === "unreadable" || b.code === "newer_format" || b.code === "permission_denied" || b.code === "internal" ? b.code : "io"}`, { id: b.id })}{#if b.detail}<small>{b.detail}</small>{/if}</li>
+                    <li><code>{b.id}.tectora</code> {describeBroken(b)}{#if b.detail}<small>{b.detail}</small>{/if}</li>
                   {/each}
                 </ul>
               {/if}
             </div>
             <button class="btn sm" onclick={() => (showBroken = !showBroken)}>{showBroken ? t("err.hideDetails") : t("lib.brokenShow")}</button>
+          </div>
+        {/if}
+
+        {#if foreign.length}
+          <div class="broken" role="alert" data-testid="library-foreign">
+            <i class="dot"></i>
+            <div class="broken-text">
+              <strong>{t("lib.foreign", { n: foreign.length })}</strong>
+              {#each foreignSentences(foreign, jobName) as line (line)}<span data-testid="library-foreign-line">{line}</span>{/each}
+              {#if showForeign}
+                <ul>
+                  {#each foreign as f (f.id)}
+                    <li><code>{f.id}</code>{#if f.detail}<small>{f.detail}</small>{/if}</li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+            <button class="btn sm" onclick={() => (showForeign = !showForeign)}>{showForeign ? t("err.hideDetails") : t("lib.brokenShow")}</button>
           </div>
         {/if}
 
@@ -398,8 +491,11 @@
                   {/if}
                   <td class="mod c-mod">
                     {relativeTime(p.modified_ms)}
-                    {#if p.last_activity && isAi(p.last_activity.actor)}
-                      <span class="ai-tag" title={entrySummary(p.last_activity.summary)}><Icon name="sparkle" size={11} />{actorName(p.last_activity.actor)}</span>
+                    {#if p.changed_by_ai}
+                      <span class="ai-tag" data-testid="ai-tag" title={entryText(p.changed_by_ai)}><Icon name="sparkle" size={11} />{actorName(p.changed_by_ai.actor)}</span>
+                    {/if}
+                    {#if p.review_pending}
+                      <span class="waits" data-testid="review-mark" title={t("lib.waitsReviewHint", { n: p.review_pending })}><i></i>{t("lib.waitsReview")}</span>
                     {/if}
                   </td>
                 </tr>
@@ -436,19 +532,20 @@
           {/if}
           {#if selected.has_result}<dt>{t("lib.stored")}</dt><dd>{#if offerDiffers(selected)}<span class="differs" title={t("lib.differsHint")} data-testid="detail-differs"><i></i>{t("lib.differs")}</span>{:else}{t("lib.storedYes")}{/if}</dd>{/if}
           <dt>{t("lib.colModified")}</dt><dd>{relativeTime(selected.modified_ms)}</dd>
+          {#if selected.review_pending}<dt>{t("lib.review")}</dt><dd><span class="waits" data-testid="detail-review-mark" title={t("lib.waitsReviewHint", { n: selected.review_pending })}><i></i>{t("lib.waitsReview")}</span></dd>{/if}
         </dl>
         {#if selected.notes}<p class="notes">{selected.notes}</p>{/if}
         {#if selected.last_activity}
-          <div class="last" class:ai={isAi(selected.last_activity.actor)}>
-            <span>{isAi(selected.last_activity.actor) ? actorName(selected.last_activity.actor) : t("ai.you")} · {relativeTime(selected.last_activity.ts_ms)}</span>
-            {entrySummary(selected.last_activity.summary)}
+          <div class="last" class:ai={isAi(selected.last_activity.actor)} data-testid="detail-last">
+            <span>{actorLabel(selected.last_activity.actor)} · {relativeTime(selected.last_activity.ts_ms)}</span>
+            {entryText(selected.last_activity)}
           </div>
         {/if}
         <div class="detail-actions">
           <button class="btn primary" onclick={() => onopen(selected!.id)}><Icon name="open" size={16} />{t("card.open")}</button>
-          <button class="btn" disabled={!!busy[selected!.id]} onclick={() => duplicate(selected!)} title={t("card.duplicate")}><Icon name="copy" size={16} /><span class="label">{t("card.duplicate")}</span></button>
+          <button class="btn" disabled={busy.has(selected!.id)} onclick={() => duplicate(selected!)} title={t("card.duplicate")}><Icon name="copy" size={16} /><span class="label">{t("card.duplicate")}</span></button>
           <button class="btn reuse" onclick={() => (newJob = { example: null, from: selected!.id })} title={t("card.reuse")}><Icon name="plus" size={16} /><span class="label">{t("card.reuse")}</span></button>
-          <button class="btn ghost danger" disabled={!!busy[selected!.id]} onclick={() => remove(selected!)} title={t("card.delete")}><Icon name="trash" size={16} /><span class="label">{t("card.delete")}</span></button>
+          <button class="btn ghost danger" disabled={busy.has(selected!.id)} onclick={() => remove(selected!)} title={t("card.delete")}><Icon name="trash" size={16} /><span class="label">{t("card.delete")}</span></button>
         </div>
       </aside>
     {/if}
@@ -896,6 +993,26 @@
   .mod {
     white-space: nowrap;
     color: var(--text-2);
+  }
+  /* AI changes wait for the user's review (UX-2003): a status mark, not a panel. */
+  .waits {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ai-strong);
+    white-space: nowrap;
+  }
+  .waits i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ai);
+  }
+  dd .waits {
+    margin-left: 0;
   }
   .ai-tag {
     display: inline-flex;

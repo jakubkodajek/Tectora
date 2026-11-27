@@ -74,3 +74,111 @@ describe("tools that look alike", () => {
     }
   });
 });
+
+// Round-3 audit UX-204: one word per concept in the round-2 texts.
+describe("round-3 wording (UX-204)", () => {
+  it("calls a round dormer's segments by the field's word", () => {
+    // One word for field and message: "segment", as the refusal always said (HUNT-103).
+    for (const loc of ["cs", "sk"] as const) {
+      expect(DICTS[loc]["round.segments"], loc).toMatch(/segment/);
+      expect(DICTS[loc]["dormer.err.segments"], loc).toMatch(/segment/);
+      expect(DICTS[loc]["dormer.err.segments"], loc).not.toMatch(/úsek/);
+    }
+  });
+  it("says Verwerfen for the AI card's revert in German throughout", () => {
+    expect(DICTS.de["aiChange.state.nothing"]).toMatch(/verwerfen/);
+    expect(DICTS.de["aiChange.state.nothing"]).not.toMatch(/zurück/);
+  });
+  it("does not call the AI folder request a move", () => {
+    for (const [loc, d] of Object.entries(DICTS)) expect(d["folderReq.title"], loc).not.toMatch(/Přesun|Presun|Move|verschieben/i);
+  });
+});
+
+// Round-6 audit UX-504: the limit of a roof's stored figures has its units.
+describe("round-6 wording (UX-504)", () => {
+  it("names m² for the area and m for the length in err.figures_too_large", () => {
+    for (const [loc, d] of Object.entries(DICTS)) {
+      expect(d["err.figures_too_large"], loc).toMatch(/1[ .,]000[ .,]000[ .,]000 m²/);
+      expect(d["err.figures_too_large"], loc).toMatch(/1[ .,]000[ .,]000[ .,]000 m(?!²)/);
+    }
+  });
+});
+
+// Round 12 (UX-1101, UX-1102): one verb per action in every language, the
+// put-back's failure is titled as the put-back, and the export warning names
+// the job tab and button by their own keys.
+describe("round-12 wording (UX-1101, UX-1102)", () => {
+  it("German uses one verb for Revert (verwerfen) and one for the put-back (zurückholen)", () => {
+    const de = DICTS.de;
+    for (const k of ["ai.revert", "editor.reverting", "err.action.revert", "chg.revertedEntry", "review.revertAll"]) expect(de[k].toLowerCase(), k).toContain("verw");
+    for (const k of ["snap.revertRefresh", "editor.restoringOffer", "err.action.restoreOffer"]) expect(de[k], k).toMatch(/zurück(ge)?hol/);
+    expect(de["editor.reverting"]).not.toMatch(/zurück/);
+  });
+
+  it("the put-back and Accept have their own failure titles and status word", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["err.action.restoreOffer"], loc).not.toBe(dict["err.action.revert"]);
+      expect(dict["err.action.accept"], loc).not.toBe(dict["err.action.save"]);
+      expect(dict["editor.restoringOffer"], loc).not.toBe(dict["editor.reverting"]);
+      expect(placeholders(dict["err.ofJob"]), loc).toEqual(["name", "title"]);
+    }
+    expect(DICTS.cs["err.action.accept"]).toContain(DICTS.cs["review.accept"].toLowerCase());
+    expect(DICTS.sk["err.action.accept"]).toContain(DICTS.sk["review.accept"].toLowerCase());
+    expect(DICTS.en["err.action.accept"]).toContain(DICTS.en["review.accept"].toLowerCase());
+  });
+
+  it("the export warning says exported, not went out, and takes the tab and button from their keys", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(placeholders(dict["snap.exportRecalculated"]), loc).toEqual(["button", "tab"]);
+      expect(dict["snap.exportRecalculated"], loc).not.toMatch(/odešla|odišla|went out/);
+    }
+    expect(DICTS.cs["snap.exportRecalculated"]).toContain("exportována");
+    expect(DICTS.sk["snap.exportRecalculated"]).toContain("exportovaná");
+    expect(DICTS.en["snap.exportRecalculated"]).toContain("was exported");
+  });
+});
+
+describe("round-15 wording (UX-1402, UI-1402)", () => {
+  it("calls a menu menu in Czech and Slovak; nabídka / ponuka is only the offer", () => {
+    for (const loc of ["cs", "sk"] as const) {
+      expect(DICTS[loc]["err.busy_open"], loc).toMatch(/\bmenu\b/);
+      expect(DICTS[loc]["err.busy_open"], loc).not.toMatch(/nabídk|ponuk/i);
+    }
+    // Every text that says menu in English says menu, never the offer's word, in cs and sk.
+    for (const [key, text] of Object.entries(DICTS.en)) {
+      if (!/\bmenu/i.test(text)) continue;
+      for (const loc of ["cs", "sk"] as const) expect(DICTS[loc][key], `${loc} ${key}`).not.toMatch(/nabídk|ponuk/i);
+    }
+  });
+});
+
+describe("round-17 wording (SAVEHINT, UI-1602, UI-1603, UI-1604)", () => {
+  it("the damaged-file revert advice names a step the editor has (no Save command) and the backup", () => {
+    const old = { cs: /uložte zakázku/, sk: /uložte zákazku/, en: /save the job from/i, de: /Speichern Sie den Auftrag/ };
+    const editor = { cs: /editoru/, sk: /editore/, en: /editor/, de: /Editor/ };
+    const backup = { cs: /zálohy/, sk: /zálohy/, en: /backup/, de: /Sicherung/ };
+    for (const loc of ["cs", "sk", "en", "de"] as const) {
+      const s = DICTS[loc]["err.revert_out_of_limits_damaged"];
+      expect(s, loc).not.toMatch(old[loc]);
+      expect(s, loc).toMatch(editor[loc]);
+      expect(s, loc).toMatch(backup[loc]);
+    }
+  });
+
+  it("the German outside state fits the 960 px status bar (UI-1602)", () => {
+    expect(DICTS.de["editor.outsideState"].length).toBeLessThanOrEqual(DICTS.de["editor.saved"].length + 12);
+  });
+
+  it("a newer Tectora's outside write has its own notice and status, never the replace text (UI-1603)", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["editor.outsideNewer"], loc).toBeTruthy();
+      expect(dict["editor.outsideNewerState"], loc).toBeTruthy();
+      expect(dict["editor.outsideNewerState"], loc).not.toBe(dict["editor.saved"]);
+      expect(dict["editor.outsideNewer"], loc).not.toBe(dict["editor.outsideUnreadable"]);
+    }
+  });
+
+  it("the AI's reason has a lead naming the AI (UI-1604)", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) expect(dict["folderReq.reason"], loc).toContain("{by}");
+  });
+});

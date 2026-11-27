@@ -5,6 +5,7 @@
 // its value.
 
 import { tick } from "svelte";
+import { gatedKeys } from "./dragsession";
 
 /** The index `d` steps from `index` over `n` items, wrapping around; null when there are none. */
 export function stepIndex(index: number | null, n: number, d: number): number | null {
@@ -46,8 +47,9 @@ function isField(el: Element | null): el is HTMLInputElement | HTMLSelectElement
  */
 export function pageStep(node: HTMLElement, step: (d: number) => void) {
   let current = step;
-  async function onkey(e: KeyboardEvent) {
-    if (e.defaultPrevented) return;
+  // Not when the editor's refusal took the key, nor while a writer of the
+  // job is out (a drag, Revert, the offer put-back; round 12, fix design 1).
+  const onkey = gatedKeys(async (e: KeyboardEvent) => {
     const d = itemStepKey(e);
     if (!d) return;
     const target = e.target instanceof Element ? e.target : null;
@@ -67,7 +69,7 @@ export function pageStep(node: HTMLElement, step: (d: number) => void) {
       again.focus();
       if (again instanceof HTMLInputElement) again.select();
     }
-  }
+  });
   window.addEventListener("keydown", onkey);
   return {
     update(next: (d: number) => void) {

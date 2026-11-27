@@ -1,23 +1,13 @@
 <script lang="ts">
+  import { thumbBox } from "./thumbbox";
+
   let {
     outlines,
     lines = [],
     padding = 0.08,
   }: { outlines: [number, number][][]; lines?: [[number, number], [number, number]][]; padding?: number } = $props();
 
-  const box = $derived.by(() => {
-    const pts = outlines.flat();
-    if (pts.length === 0) return { x: 0, y: 0, w: 1, h: 1 };
-    const xs = pts.map((p) => p[0]);
-    const ys = pts.map((p) => p[1]);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    const size = Math.max(maxX - minX, maxY - minY) || 1;
-    const pad = size * padding;
-    return { x: minX - pad, y: minY - pad, w: maxX - minX + 2 * pad, h: maxY - minY + 2 * pad };
-  });
+  const box = $derived(thumbBox(outlines, padding));
 
   // Plan y points north (up); SVG y points down.
   const pathFor = (o: [number, number][]) => "M" + o.map((p) => `${p[0]},${-p[1]}`).join("L") + "Z";

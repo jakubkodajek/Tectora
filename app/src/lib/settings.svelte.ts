@@ -4,7 +4,7 @@
 // first paint is right; view state (layout, reviewed AI changes) stays local.
 
 import { api } from "./api";
-import { LOCALES, i18n, setLocale, type Locale } from "./i18n.svelte";
+import { LOCALES, i18n, setLocale, systemLocale, type Locale } from "./i18n.svelte";
 import { applyTheme } from "./theme.svelte";
 import type { AppSettingsView, Presets } from "./types";
 
@@ -48,16 +48,16 @@ export function savePrefs() {
   write("tectora.prefs", $state.snapshot(prefs));
 }
 
-/** Timestamp of the newest AI change the user accepted, per project. */
+/**
+ * Timestamp of the newest AI change the user accepted, per project, as an
+ * older Tectora kept it here: read once to move it into the core's review
+ * (Editor `migrateLocalReview`); nothing writes it any more (TEST-1404).
+ */
 const reviewed = $state<Record<string, number>>(read("tectora.reviewed", {}));
 
 export function reviewedAt(id: string): number {
-  return reviewed[id] ?? 0;
-}
-
-export function markReviewed(id: string, ts: number) {
-  reviewed[id] = ts;
-  write("tectora.reviewed", $state.snapshot(reviewed));
+  // Own keys only: an id such as "constructor" must not read Object.prototype's member (ARCH-1301).
+  return Object.hasOwn(reviewed, id) ? reviewed[id] : 0;
 }
 
 /** The app-wide settings as last read from / written to the settings file. */
@@ -65,9 +65,12 @@ export const app = $state<{ view: AppSettingsView | null }>({ view: null });
 
 /** Applies settings from the file to the running UI. */
 export function applySettings(view: AppSettingsView) {
+  const had = app.view?.settings.locale;
   app.view = view;
   const s = view.settings;
   if (s.locale && s.locale !== i18n.locale && LOCALES.some((l) => l.id === s.locale)) setLocale(s.locale as Locale);
+  // Back to the system language (a reverted AI change, UX-003).
+  else if (!s.locale && had && systemLocale() !== i18n.locale) setLocale(systemLocale());
   applyTheme(s.theme);
   Object.assign(presets, s.roof_defaults);
   write("tectora.presets", $state.snapshot(presets));
@@ -116,4 +119,15 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<Ap
   const view = await api.updateSettings(patch);
   applySettings(view);
   return view;
+}
+
+/**
+ * Changes one default for new roofs (the draw bar's presets): stored in
+ * the settings file first, and in `presets` only once the file took it, so
+ * a value the core refuses (a pitch under 2°, an eave below 0) never
+ * reaches the next building (UI-003, UX-004). Rejects with the settings
+ * error.
+ */
+export async function setPreset(key: keyof Presets, value: number): Promise<void> {
+  await updateSettings({ roof_defaults: { [key]: value } });
 }

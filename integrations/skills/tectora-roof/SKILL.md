@@ -14,7 +14,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    eave height, overhang, half-hip) and its six-step order.
 2. Find the drawing: attached by the user, or `list_drawings` (the drawings
    inbox). `get_settings` gives the user's usual `roof_defaults` (pitch, eave
-   height, overhang); say when you used one. `drawing_info` says per page whether it has a text layer, is a
+   height, overhang); say when you used one. Do not change them with
+   `update_settings` for one roof: the user sees every settings change and
+   may revert it. `drawing_info` says per page whether it has a text layer, is a
    vector plot with outlined text, or a scan.
 3. Read it with `view_drawing`: the whole page first (turn sideways sheets
    with `rotate` until the text is upright), then sharp crops (about 300 dpi)
@@ -43,7 +45,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    a text layer, `drawing_lines` with `limit: 0` and `text_contains`
    (`["+", "°"]`) lists every height and pitch label at once.
 5. Search with `list_projects` (customer, address, job number) so you edit the
-   existing job instead of creating a duplicate. A similar roof made before
+   existing job instead of creating a duplicate (`review_pending` on a job
+   says how many of an AI's changes still wait for the user's review;
+   `review_pending: true` lists those jobs). A similar roof made before
    can be the starting point: `duplicate_project` with the new `job` data and
    `with_files: false`. Jobs listed under `broken` cannot be read (damaged or
    from a newer Tectora): tell the user instead of starting a new one.
@@ -59,8 +63,57 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    from a roof edge, place it with `place_item` (`from_eave` along the
    slope, `from_left` or `from_right`) and check it against `placements`
    in `get_project`.
-   Each `summary` is one sentence in the user's language
-   naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
+   Each `summary` is one sentence (at most 500 characters, plain text) in
+   the user's language naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
+   A refused call saved nothing: a value of the wrong type or outside the
+   tool's `enum` (send a job number as text), a standard roof side under
+   0.1 m, a dormer below the roof or flatter than 2°, a `roof_helper`
+   result no wall takes. Fix the value (often m against cm or mm) and call
+   again. When a write answers with `stored_result`, the job's offer
+   figures no longer match the roof: tell the user. When the user wants
+   the figures the customer was offered back after Tectora recalculated
+   an offer's stored result (the entry by `tectora` that `get_history`
+   marks `stored_result_recalculation`, `get_project` gives it as
+   `result_recalculation`), call `restore_offer_result` with a
+   one-sentence `summary`: it changes the stored result only. When
+   `export_job` answers with a `note`, the bundle carries the recalculated
+   figures and the offer's own stay on this computer: tell the user, and
+   put them back first only if the user wants to send those. A revert
+   or put-back answered with `busy` did nothing (another program was
+   saving the job): try it again in a moment. A revert answered with
+   "revert_out_of_limits" did nothing either: that earlier version is
+   outside Tectora's limits, the job is fine; tell the user
+   ("revert_out_of_limits_damaged": the same, and the job file itself is
+   damaged; tell the user). A revert answer with
+   `replaced_unreadable_file` replaced a file another program had made
+   unreadable: tell the user. In `get_history` an entry with
+   `undone: true` is not in the design. Tectora keeps a copy of the design
+   as the user last settled it (Accept, their own change); a review is open
+   exactly while the design differs from that copy: putting the design
+   back exactly as the user left it leaves nothing to review, and a Ctrl+Z
+   of the user's Revert in the app makes your changes wait again. Putting
+   back a change the user reverted (`revert_to` with the user's revert)
+   waits for review like a new change; `took_out` and `put_back` in
+   `get_history` say what a revert did. `since_ts_ms` in `get_review` is
+   your first change of the review, where the user's Revert all (which
+   puts the settled copy back) is logged from; it may be older than the
+   history shows. A write answered
+   with "no design with id …" after the user deleted the job saved
+   nothing: do not create the job again unless the user asks. Word every
+   `summary` as what you did, in your own words: one that starts like
+   Tectora's own sentences ("Reverted: …", "Stored result recalculated …")
+   is still your change, shown in quotation marks and undone as a change.
+   When
+   `get_project` or a write answers with `load_warnings`
+   (`result_dropped`: a stored result with an impossible date was left
+   out), tell the user. When it answers with
+   `warnings` (the roof looks wrong) or `roof_trouble` (for example
+   `walls_overlap`: a point list that goes round twice), fix it first.
+   A job `calc` refuses as "too complex to calculate" (buildings stacked
+   on each other): `get_project` still lists its parts with
+   `too_complex: true`; remove the copies with `delete_items`
+   (`kind: part`) or `revert_last_change` your own last save, then `calc`
+   again.
 7. In the check step first look at the roof over the drawing:
    `view_drawing` with `overlay` {`id`, `scale`, `origin`} (the
    `origin_sheet_mm` from `trace_outline`) draws the calculated faces and
@@ -87,12 +140,22 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    that part, the plane is then split per wall, and `merged_materials`
    means that split could not be made); `doubled_line` means
    line lengths at a join of two buildings need a look; `far_from_origin`
-   means the plan should be moved to the origin; never bend the input to
+   means the plan should be moved to the origin; `manual_face_crosses`
+   means a hand-drawn face's corners are out of order (set it again with
+   `set_manual`, corners in order around the face, each once: an outline
+   that crosses, touches or folds back over itself is refused);
+   `manual_faces_overlap` means two hand-drawn faces lie on each other and
+   that plan is counted twice (ask whether one was drawn twice);
+   the notice `manual_face_over_roof` means a hand-drawn face lies over the
+   calculated roof and adds its area (right for a roof drawn over the main
+   roof); never bend the input to
    make a warning go away.
    `merged_planes`, `wing_joined` and `not_calculated_by_core` mean the
    roof is not the standard calculation's result (two planes joined, a low
-   wing as a lean-to, the fallback): say so and have the user check it;
-   `plane_over_wall` is a hint that a wing has no ridge of its own.
+   wing as a lean-to, the fallback): say so and have the user check it
+   (the first two are notices, `not_calculated_by_core` is a warning the
+   app marks the results for); `plane_over_wall` is a notice that a wing
+   has no ridge of its own.
 8. When the roof is approved and the user wants it for the offer,
    `export_plan` writes the roof sheet (PDF; pass `line_names` in the
    user's language for the legend of line codes; PDF or SVG, no PNG: the app's

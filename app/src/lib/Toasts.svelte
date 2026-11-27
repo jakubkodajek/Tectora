@@ -2,9 +2,37 @@
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import { dismiss, hold, toasts } from "./notify.svelte";
+  import { anyWriterOpen } from "./dragsession";
 
   let open = $state<number | null>(null);
   let copied = $state<number | null>(null);
+
+  /** Toasts whose action was pressed while a writer of the job was out: held open until it is over. */
+  const waiting = new Set<number>();
+
+  /**
+   * A toast's action, the one place they run. While a writer of the job is
+   * out (a drag, Revert, the offer put-back) the press does nothing and the
+   * toast stays, its timer held until the writer is done: the action's
+   * edit would land in the job the answer replaces (UI-1101, round 12 fix
+   * design 1).
+   */
+  function runAction(id: number, run: () => unknown) {
+    if (anyWriterOpen()) {
+      hold(id, true);
+      if (waiting.has(id)) return;
+      waiting.add(id);
+      const check = setInterval(() => {
+        if (anyWriterOpen()) return;
+        clearInterval(check);
+        waiting.delete(id);
+        hold(id, false);
+      }, 200);
+      return;
+    }
+    dismiss(id);
+    run();
+  }
 
   async function copy(id: number, text: string) {
     try {
@@ -23,7 +51,7 @@
       class="toast {toast.kind}"
       role={toast.kind === "error" ? "alert" : "status"}
       onmouseenter={() => hold(toast.id, true)}
-      onmouseleave={() => hold(toast.id, false)}
+      onmouseleave={() => !waiting.has(toast.id) && hold(toast.id, false)}
     >
       <div class="head">
         <i class="dot"></i>
@@ -35,7 +63,7 @@
       {#if toast.action}
         {@const action = toast.action}
         <div class="foot">
-          <button class="btn sm" onclick={() => { dismiss(toast.id); action.run(); }}>{action.label}</button>
+          <button class="btn sm" onclick={() => runAction(toast.id, action.run)}>{action.label}</button>
         </div>
       {/if}
       {#if toast.code || toast.detail}
@@ -67,6 +95,13 @@
     gap: 8px;
     z-index: 100;
     pointer-events: none;
+  }
+  /* Too narrow for the AI settings card (bottom left) and the toasts side by
+     side: the toasts stack above the card while it is shown (UX-201). */
+  @media (max-width: 807px) {
+    .stack {
+      bottom: calc(40px + var(--ai-card-space, 0px));
+    }
   }
   .toast {
     pointer-events: auto;
@@ -100,12 +135,15 @@
   .info .dot {
     background: var(--ok);
   }
+  /* A job's name without spaces wraps instead of running under the close button (UI-1003). */
   strong {
     flex: 1;
     min-width: 0;
     font-weight: 600;
+    overflow-wrap: anywhere;
   }
   p {
+    overflow-wrap: anywhere;
     margin: 4px 0 0 14px;
     color: var(--text-2);
     line-height: 1.45;

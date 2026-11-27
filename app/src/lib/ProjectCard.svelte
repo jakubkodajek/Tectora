@@ -65,14 +65,15 @@
 
 <svelte:window onclick={() => (menuOpen = false)} />
 
-<article class="card" ondblclick={onopen}>
+<!-- A double click on the card opens the job, but not one on its menu button or menu (UI-010). -->
+<article class="card" ondblclick={(e) => !(e.target as Element | null)?.closest?.(".menu-wrap") && onopen()}>
   <button class="thumb" onclick={onopen} aria-label="{t('card.open')} {project.name}">
     <PlanThumb outlines={project.outlines} lines={project.lines} />
   </button>
   <div class="meta">
     <div class="text">
       <h3 title={project.name}>{project.name}</h3>
-      <p class="muted">{relativeTime(project.modified_ms)} · {#if storedArea(project) !== null}<span class="area" title={storedAreaHint(cardArea(project))}>{m2(storedArea(project) ?? 0)}</span>{#if offerDiffers(project)} · <span class="differs" title={t("lib.differsHint")}><i></i>{t("lib.differs")}</span>{/if}{:else}<span class="area" title={cardAreaNote(project)} data-roof={cardRoof(project)}>{#if cardRoof(project) === "none" || cardRoof(project) === "partial"}<i class="roof-mark" role="img" aria-label={cardAreaNote(project)}></i>{/if}{cardArea(project)}</span>{/if}</p>
+      <p class="muted">{relativeTime(project.modified_ms)} · {#if storedArea(project) !== null}<span class="area" title={storedAreaHint(cardArea(project))}>{m2(storedArea(project) ?? 0)}</span>{#if offerDiffers(project)} · <span class="differs" title={t("lib.differsHint")}><i></i>{t("lib.differs")}</span>{/if}{:else}<span class="area" title={cardAreaNote(project)} data-roof={cardRoof(project)}>{#if cardRoof(project) === "none" || cardRoof(project) === "partial"}<i class="roof-mark" role="img" aria-label={cardAreaNote(project)}></i>{/if}{cardArea(project)}</span>{/if}{#if project.review_pending} · <span class="waits" data-testid="review-mark" title={t("lib.waitsReviewHint", { n: project.review_pending })}><i></i>{t("lib.waitsReview")}</span>{/if}</p>
     </div>
     <div class="menu-wrap">
       <button
@@ -83,7 +84,8 @@
         aria-expanded={menuOpen}
         onclick={(e) => {
           e.stopPropagation();
-          menuOpen = !menuOpen;
+          // The second click of a double click keeps the menu open.
+          menuOpen = e.detail > 1 ? true : !menuOpen;
         }}
       >
         <Icon name="more" />
@@ -103,6 +105,20 @@
 
 <style>
   /* A roof the core refused, or refused for some buildings (ERRU-005). */
+  /* AI changes wait for the user's review (UX-2003). */
+  .waits {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 600;
+    color: var(--ai-strong);
+  }
+  .waits i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ai);
+  }
   /* An offer whose roof changed since (UX-008). */
   .differs {
     display: inline-flex;

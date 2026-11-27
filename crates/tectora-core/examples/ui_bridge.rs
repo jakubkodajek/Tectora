@@ -28,7 +28,7 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::Settings;
-use tectora_core::store::{self, Store, USER_ACTOR, outlines};
+use tectora_core::store::{self, Store, USER_ACTOR, card_outlines};
 use tectora_core::{Project, assistants, bundle, examples};
 
 /// AI apps "connected" in the preview besides Claude Desktop, which always
@@ -159,6 +159,12 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
                 .map_err(err)
                 .map(|p| to_json(p).unwrap_or(Value::Null))
         }),
+        "check_dormer" => project().and_then(|p| {
+            let index = arg::<usize>(a, "index")
+                .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
+            commands::check_dormer(&p, index).map_err(err)?;
+            Ok(Value::Null)
+        }),
         "dormer_host" => project().and_then(|p| {
             let index = arg::<usize>(a, "index")
                 .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
@@ -172,13 +178,28 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
 fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fail>> {
     let id = arg::<String>(a, "id").ok()?;
     match cmd {
-        "load_project" => Some({
-            let _ = store.refresh_stored_result(&id);
+        "load_project" => Some(
             store
                 .load(&id)
                 .map(|p| to_json(p).unwrap_or(Value::Null))
-                .map_err(Fail::from)
-        }),
+                .map_err(Fail::from),
+        ),
+        // As the app: what reading the job left out of it; empty when it
+        // cannot be read (load_project says why).
+        "load_warnings" => Some(Ok(store
+            .load_warnings(&id)
+            .map(|ws| to_json(ws).unwrap_or(Value::Null))
+            .unwrap_or_else(|_| json!([])))),
+        // As the app: the change-log entry (time and summary) when the
+        // stored result was recalculated, else null; an error is logged,
+        // the job still opens.
+        "refresh_stored_result" => Some(Ok(match store.refresh_entry(&id) {
+            Ok(entry) => to_json(entry).unwrap_or(Value::Null),
+            Err(e) => {
+                eprintln!("ui_bridge: stored result of {id} not recalculated: {e}");
+                Value::Null
+            }
+        })),
         "save_project" => {
             let project = arg::<Project>(a, "project").ok()?;
             let before = store.load(&id).ok();
@@ -207,18 +228,55 @@ fn store_command(store: &Store, cmd: &str, a: &Value) -> Option<Result<Value, Fa
             )
         }
         // Reverts with their codes too (`revert_conflict`, ERR-001).
-        "revert_last_change" => Some(
-            store
-                .revert_last(&id, USER_ACTOR, None)
-                .map(|p| to_json(p).unwrap_or(Value::Null))
-                .map_err(Fail::from),
-        ),
-        "revert_changes" => {
-            let ts = arg::<u64>(a, "tsMs").ok()?;
+        // `expectTs`: the entry the button was drawn on (`revert_stale`
+        // when another change is the latest by now, ERR-801).
+        // As Revert all, with `repaired` (ERR-1502).
+        "revert_last_change" => {
+            let expect = arg::<Option<u64>>(a, "expectTs").ok()?;
             Some(
                 store
-                    .revert_to(&id, ts, USER_ACTOR, None)
+                    .revert_last_reported(&id, USER_ACTOR, None, expect)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
+        // The offer's own stored result back, by the engine's entry.
+        "restore_offer_result" => {
+            let ts = arg::<u64>(a, "entryTsMs").ok()?;
+            Some(
+                store
+                    .restore_offer_result(&id, ts, USER_ACTOR, None)
                     .map(|p| to_json(p).unwrap_or(Value::Null))
+                    .map_err(Fail::from),
+            )
+        }
+        // With the number of entries undone, as the app (ERR-1002).
+        // `seenTs`: the newest entry the editor has applied, for its Undo
+        // (`revert_stale` when a newer one is there, ERR-1704).
+        "revert_changes" => {
+            let ts = arg::<u64>(a, "tsMs").ok()?;
+            let seen = arg::<Option<u64>>(a, "seenTs").ok()?;
+            // `review`: the banner's Revert all of the review starting at
+            // `tsMs` (ADR 0007, ERR-1905), as the app.
+            let review = arg::<Option<bool>>(a, "review").ok().flatten() == Some(true);
+            Some(
+                if review {
+                    store.revert_review(&id, ts, USER_ACTOR, None)
+                } else {
+                    store.revert_to_counted_seen(&id, ts, seen, USER_ACTOR, None)
+                }
+                .map(|r| to_json(r).unwrap_or(Value::Null))
+                .map_err(Fail::from),
+            )
+        }
+        // The editor's Undo / Redo of a review revert, logged (UX-1601).
+        "take_back_revert" => {
+            let ts = arg::<u64>(a, "revertTs").ok()?;
+            let seen = arg::<u64>(a, "seenTs").ok()?;
+            Some(
+                store
+                    .take_back_revert(&id, ts, seen, USER_ACTOR)
+                    .map(|r| to_json(r).unwrap_or(Value::Null))
                     .map_err(Fail::from),
             )
         }
@@ -232,7 +290,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "projects_dir" => to_json(store.dir.display().to_string()),
         "list_projects" => {
             let (projects, broken) = store.scan()?;
-            Ok(json!({ "projects": projects, "broken": broken }))
+            let foreign = store.foreign_entries();
+            Ok(json!({ "projects": projects, "broken": broken, "foreign": foreign }))
         }
         // As the app: a damaged settings file is reported (ERR-005).
         "startup_warnings" => Ok(json!(
@@ -248,17 +307,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             |version| json!({ "version": version, "notes": "- Preview release notes" }),
         )),
         "update_install" => Err("updates are not installed in the preview".into()),
-        "project_activity" => {
-            let mut items: Vec<Value> = store
-                .activity(&id()?)
-                .into_iter()
-                .map(|e| {
-                    json!({ "ts_ms": e.ts_ms, "actor": e.actor, "summary": e.summary, "changes": e.changes })
-                })
-                .collect();
-            items.reverse();
-            Ok(Value::Array(items))
-        }
+        "project_activity" => to_json(store.activity_items(&id()?)),
+        "result_recalculation" => to_json(store.recalculation(&id()?)),
         "review_status" => to_json(store.review_status(&id()?)?),
         "accept_changes" => to_json(store.mark_reviewed(&id()?, arg(a, "tsMs")?)?),
         "live_status" => to_json(store.live()),
@@ -286,11 +336,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             }
             to_json(change)
         }
-        "load_project" => {
-            let id = id()?;
-            let _ = store.refresh_stored_result(&id);
-            to_json(store.load(&id)?)
-        }
+        "load_project" => to_json(store.load(&id()?)?),
         "save_project" => {
             let project: Project = arg(a, "project")?;
             to_json(store.save(arg(a, "id")?, &project)?)
@@ -310,11 +356,8 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let name: String = arg(a, "name")?;
             tectora_core::edit::check_job_name(&name).map_err(|d| coded("out_of_range", d))?;
             tectora_core::library::prepare_copy(&mut project, &name, arg(a, "job")?);
-            let new_id = store.save(None, &project)?;
-            if arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true) {
-                store.copy_attachments(&source, &new_id)?;
-            }
-            to_json(new_id)
+            let with_files = arg::<Option<bool>>(a, "withFiles")?.unwrap_or(true);
+            to_json(store.copy_job(&source, &project, with_files, None)?)
         }
         "list_attachments" => to_json(store.attachments(&id()?)),
         "attach_files" => {
@@ -337,22 +380,21 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "open_attachment" => Err("open_attachment is not available in the browser preview".into()),
         "export_job" => {
-            bundle::export(store, &id()?, &PathBuf::from(arg::<String>(a, "path")?))?;
+            let dest = bundle::with_extension(&PathBuf::from(arg::<String>(a, "path")?));
+            bundle::export(store, &id()?, &dest)?;
             Ok(Value::Null)
         }
         "export_preview" => {
-            let opts = tectora_core::export::ListOptions::new(
-                arg::<String>(a, "title")?,
-                arg::<String>(a, "stamp")?,
-            );
             let project = arg::<Project>(a, "project")?;
             let names =
                 arg::<Option<BTreeMap<String, String>>>(a, "lineNames")?.unwrap_or_default();
-            let (list, svg) = tectora_core::export::checked_named(&project, &opts, &names)
-                .map_err(|d| coded("out_of_range", d))?;
-            let summary = tectora_core::export::checked_summary(&project, &opts)
-                .map_err(|d| coded("out_of_range", d))?;
-            Ok(serde_json::json!({ "list": list, "svg": svg, "summary": summary }))
+            tectora_core::commands::export_preview(
+                &project,
+                arg::<String>(a, "title")?,
+                arg::<String>(a, "stamp")?,
+                &names,
+            )
+            .map_err(|e| coded(e.code, e.detail))
         }
         "export_plan_file" => {
             let path = PathBuf::from(arg::<String>(a, "path")?);
@@ -389,8 +431,10 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             let kind: StandardRoof = arg(a, "kind")?;
             let pitch: f64 = arg(a, "pitchDeg")?;
             let name = arg::<Option<String>>(a, "name")?;
-            tectora_core::commands::check_new_roof(
+            tectora_core::commands::check_standard_roof(
                 name.as_deref().filter(|_| cmd == "create_standard"),
+                arg(a, "length")?,
+                arg(a, "width")?,
                 pitch,
                 arg(a, "eaveHeight")?,
                 arg(a, "overhang")?,
@@ -419,7 +463,7 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                         "id": e.id,
                         "name": e.name,
                         "description": e.description,
-                        "outlines": outlines(&e.project()),
+                        "outlines": card_outlines(&e.project()),
                         "lines": store::roof_lines(&e.project()),
                     })
                 })
@@ -460,35 +504,32 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             .map_err(|d| coded("refused", d))?;
             to_json(project)
         }
+        // Bounded like `calc` (`tectora_core::commands`, HUNT-2001).
         "item_placement" => {
             let project = arg::<Project>(a, "project")?;
-            project
-                .check_input()
-                .map_err(|e| coded(e.code, e.message))?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
             };
-            to_json(tectora_core::edit::position::placement(&project, it))
+            let placed = tectora_core::commands::item_placement(&project, it)
+                .map_err(|e| coded(e.code, e.detail))?;
+            to_json(placed)
         }
         "place_item" => {
-            let mut project = arg::<Project>(a, "project")?;
-            project
-                .check_input()
-                .map_err(|e| coded(e.code, e.message))?;
+            let project = arg::<Project>(a, "project")?;
             let it = tectora_core::edit::transform::ItemRef {
                 kind: arg(a, "kind")?,
                 index: arg(a, "index")?,
             };
-            tectora_core::edit::position::place(
-                &mut project,
+            let moved = tectora_core::commands::place_item(
+                &project,
                 it,
                 arg::<Option<f64>>(a, "fromEave")?,
                 arg::<Option<f64>>(a, "fromLeft")?,
                 arg::<Option<f64>>(a, "fromRight")?,
             )
-            .map_err(|d| coded("refused", d))?;
-            to_json(project)
+            .map_err(|e| coded(e.code, e.detail))?;
+            to_json(moved)
         }
         "set_part_height" => {
             let mut project = arg::<Project>(a, "project")?;
@@ -509,10 +550,9 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         "get_settings" => Ok(Settings::load().describe()),
         "update_settings" => {
             let patch = a.get("patch").cloned().unwrap_or(Value::Null);
-            let next = Settings::load()
-                .patched(&patch)
-                .map_err(|e| e.code().to_string())?;
-            next.save().map_err(|e| e.code().to_string())?;
+            // Read, changed and written under the settings lock (TEST-307).
+            let (_, next) =
+                Settings::update(|s| s.patched(&patch)).map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_folder_request" => {
@@ -522,17 +562,23 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let next = Settings::load()
-                .answer_folder_request(&shown, allow)
+            let (_, next) = Settings::update(|s| s.answer_folder_request(&shown, allow))
                 .map_err(|e| e.code().to_string())?;
-            next.save().map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "answer_file_request" => {
             let allow = a.get("allow").and_then(Value::as_bool).unwrap_or(false);
             let shown = a.get("path").and_then(Value::as_str).unwrap_or_default();
-            let next = Settings::load().answer_file_request(std::path::Path::new(shown), allow);
-            next.save().map_err(|e| e.code().to_string())?;
+            let (_, next) =
+                Settings::update(|s| Ok(s.answer_file_request(std::path::Path::new(shown), allow)))
+                    .map_err(|e| e.code().to_string())?;
+            Ok(next.describe())
+        }
+        "answer_ai_change" => {
+            let id = a.get("id").and_then(Value::as_u64).ok_or("invalid_value")?;
+            let revert = a.get("revert").and_then(Value::as_bool).unwrap_or(false);
+            let (_, next) = Settings::update(|s| s.answer_ai_change(id, revert))
+                .map_err(|e| e.code().to_string())?;
             Ok(next.describe())
         }
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
@@ -703,7 +749,7 @@ fn serve(
         // Test harness: back to the library the bridge was started with
         // (a test may have switched the jobs folder), and drop pending events.
         if store.dir != home {
-            match Store::new(home.to_path_buf()) {
+            match open_store(home.to_path_buf()) {
                 Ok(next) => *store = next,
                 Err(e) => {
                     respond(
@@ -730,7 +776,7 @@ fn serve(
             if out.is_ok()
                 && after != before
                 && let Some(dir) = after.filter(|d| !d.is_empty())
-                && let Ok(next) = Store::new(PathBuf::from(dir))
+                && let Ok(next) = open_store(PathBuf::from(dir))
             {
                 *store = next;
                 // As the app's switch: the jobs of the new folder are not
@@ -773,6 +819,39 @@ fn serve(
     Ok(())
 }
 
+/// Most a short action (Revert, Revert all, the put-back, Accept) may be
+/// told to wait for a job's lock through `TECTORA_ACTION_WAIT_MS`: ten
+/// minutes.
+const MAX_ACTION_WAIT_MS: u64 = 600_000;
+
+/// How long the bridge's short actions wait for a job's lock, from
+/// `TECTORA_ACTION_WAIT_MS` (milliseconds): `None` keeps the app's own
+/// wait. The E2E harness sets a long one, so a test that holds the lock
+/// until its intruder was tried is not cut short by the app's 3 s on a
+/// loaded runner (audit 2026-11-23 TEST-1106).
+fn action_wait(var: Option<&str>) -> Result<Option<std::time::Duration>, String> {
+    let Some(text) = var.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    match text.parse::<u64>() {
+        Ok(ms @ 1..=MAX_ACTION_WAIT_MS) => Ok(Some(std::time::Duration::from_millis(ms))),
+        _ => Err(format!(
+            "TECTORA_ACTION_WAIT_MS must be a whole number of milliseconds from 1 to {MAX_ACTION_WAIT_MS}, not {text:?}"
+        )),
+    }
+}
+
+/// The library in `dir`, its short actions waiting as `TECTORA_ACTION_WAIT_MS`
+/// says (checked once in `main`).
+fn open_store(dir: PathBuf) -> std::io::Result<Store> {
+    let store = Store::new(dir)?;
+    let var = std::env::var("TECTORA_ACTION_WAIT_MS").ok();
+    Ok(match action_wait(var.as_deref()) {
+        Ok(Some(wait)) => store.with_action_wait(wait),
+        _ => store,
+    })
+}
+
 /// The jobs folder the settings name (`effective.projects_dir`).
 fn effective_projects_dir() -> Option<String> {
     Settings::load().describe()["effective"]["projects_dir"]
@@ -792,7 +871,19 @@ fn main() -> std::io::Result<()> {
         // SAFETY: set before any other thread exists.
         unsafe { std::env::set_var("TECTORA_CONFIG_DIR", "target/ui-preview-config") };
     }
-    let mut store = Store::new(dir.clone())?;
+    let wait = std::env::var("TECTORA_ACTION_WAIT_MS").ok();
+    match action_wait(wait.as_deref()) {
+        Ok(Some(w)) => eprintln!(
+            "[preview] short actions wait up to {} ms for a job's lock",
+            w.as_millis()
+        ),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("[preview] {e}");
+            std::process::exit(2);
+        }
+    }
+    let mut store = open_store(dir.clone())?;
     if store.list().is_empty() {
         // Same first-run seed as the app, plus a few more shapes to look at.
         for id in ["gable", "l-shape", "hip", "t-shape"] {
@@ -818,4 +909,27 @@ fn main() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit 2026-11-23 TEST-1106: the E2E harness's long lock wait is
+    /// read in milliseconds; nothing set keeps the app's wait, and a value
+    /// that is no wait is refused, never taken as zero or forever.
+    #[test]
+    fn the_action_wait_comes_from_the_environment() {
+        use std::time::Duration;
+        assert_eq!(action_wait(None), Ok(None));
+        assert_eq!(action_wait(Some(" ")), Ok(None));
+        assert_eq!(
+            action_wait(Some("30000")),
+            Ok(Some(Duration::from_secs(30)))
+        );
+        assert_eq!(action_wait(Some("3000")), Ok(Some(Duration::from_secs(3))));
+        for bad in ["0", "-5", "1.5", "30s", "600001", "99999999999999999999"] {
+            assert!(action_wait(Some(bad)).is_err(), "{bad}");
+        }
+    }
 }

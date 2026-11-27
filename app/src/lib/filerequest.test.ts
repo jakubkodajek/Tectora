@@ -10,6 +10,10 @@ describe("file request of an AI client (ARCH-002)", () => {
     expect(fileRequestPurpose("something new")).toBe("fileReq.read");
   });
 
+  it("reads a prototype name from a hand-edited settings file as plain read (TEST-1403)", () => {
+    for (const p of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) expect(fileRequestPurpose(p), p).toBe("fileReq.read");
+  });
+
   it("names the AI client in every language", () => {
     for (const [locale, dict] of Object.entries(DICTS)) {
       for (const p of ["read_drawing", "attach", "import", "x"]) {

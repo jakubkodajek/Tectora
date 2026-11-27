@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DICTS, i18n } from "./i18n.svelte";
-import { entrySummary, isRevert, liveText } from "./live.svelte";
+import { actorLabel, entryKind, entrySummary, entryText, historyText, liveText, receivedRecalculation, refreshedNotice } from "./live.svelte";
+import { RECEIVED_ENGINE_ACTOR, RECEIVED_USER_ACTOR, isAi } from "./types";
 
 // The codes the MCP server sends (crates/tectora-core/src/store.rs LIVE_KINDS).
 const KINDS = [
@@ -13,6 +14,7 @@ const KINDS = [
   "showing",
   "reverted",
   "reverted_changes",
+  "put_back",
   "copied",
   "deleted",
   "restored",
@@ -35,10 +37,27 @@ describe("liveText (UX-002)", () => {
   it("translates the code and keeps the agent's own summary for a change", () => {
     i18n.locale = "cs";
     expect(liveText(status("reading", "Reading “Sedlo”", "Sedlo"))).toBe("Čte „Sedlo“");
-    expect(liveText(status("changed", "Sklon 42° podle řezu"))).toBe("Sklon 42° podle řezu");
+    // The agent's own words, quoted (audit 2026-11-23 ARCH-1401, design A4).
+    expect(liveText(status("changed", "Sklon 42° podle řezu"))).toBe("„Sklon 42° podle řezu“");
     // An older server without a code, or a code this app does not know.
     expect(liveText(status(undefined, "Reading “Sedlo”"))).toBe("Reading “Sedlo”");
     expect(liveText(status("dancing", "Dancing"))).toBe("Dancing");
+  });
+});
+
+describe("refreshedNotice", () => {
+  // Audit UX-702c: the notice on open says what changed in every language.
+  it("names the engines and the old and new roof area in every language", () => {
+    const entry = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150 -> 129.24 m2";
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const text = refreshedNotice(entry);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).toContain("0.8.0 → 0.9.0");
+    }
+    i18n.locale = "cs";
+    expect(refreshedNotice(entry)).toContain("150,00 → 129,24 m²");
+    expect(refreshedNotice("Something else")).toBe("Something else");
   });
 });
 
@@ -56,36 +75,584 @@ describe("entrySummary", () => {
     expect(entrySummary(entry)).toContain("184,72 → 180,80 m²");
   });
 
+  // The summary of a real recalculation, written by the core test
+  // store::tests::the_recalculation_summary_is_the_one_the_app_translates
+  // (TEST-711): a change of the core's wording fails here.
+  it("translates the entry of a real recalculation the core wrote, in every language", () => {
+    const files = import.meta.glob("../../../tests/fixtures/parity/refreshed_entry.json", { eager: true, import: "default" }) as Record<string, unknown>;
+    const file = Object.values(files)[0] as { from: string; to: string; summary: string };
+    expect(file.summary).toMatch(/^Stored result recalculated/);
+    // The two areas: the last two numbers of the summary.
+    const [a, b] = (file.summary.match(/\d+\.\d+/g) ?? []).slice(-2).map(Number);
+    expect(Number.isFinite(a) && Number.isFinite(b)).toBe(true);
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const text = entrySummary(file.summary);
+      expect(text, locale).not.toBe(file.summary);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).toContain(`${file.from} → ${file.to}`);
+      const n = (x: number) => x.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      expect(text, locale).toContain(`${n(a)} → ${n(b)} m²`);
+    }
+    i18n.locale = "cs";
+  });
+
+  // Audit 2026-11-23 ARCH-1401 (design A3): these two tests passed bare
+  // strings, which the app no longer translates by their words. They now
+  // pass entries: a revert by its `undid_from` (or the user's revert of
+  // Tectora 0.8.0, told by its sentence), and the entry a revert quotes is
+  // translated only when the list has it with a kind of its own.
   it("translates the revert entries the core writes, nested too", () => {
     i18n.locale = "cs";
-    expect(entrySummary("Reverted: Sklon 45°")).toBe("Vráceno: Sklon 45°");
-    expect(entrySummary("Reverted 2 changes since: Sklon 45°")).toBe("Vráceno změn: 2, od: Sklon 45°");
-    expect(entrySummary("Reverted: Reverted: X")).toBe("Vráceno: Vráceno: X");
-    expect(entrySummary("Sklon 45°")).toBe("Sklon 45°");
-    expect(isRevert("Reverted 3 changes since: x") && isRevert("Reverted: x") && !isRevert("Revert the eave")).toBe(true);
+    const log = [
+      { ts_ms: 2, actor: "user", summary: "Reverted: X", undid_from: 1 },
+      { ts_ms: 1, actor: "claude", summary: "X" },
+    ];
+    // The quoted entry not in the list, or an AI's: its words in quotation
+    // marks (audit 2026-11-23 ARCH-1501; were shown bare).
+    expect(entryText({ actor: "user", summary: "Reverted: Sklon 45°", undid_from: 1 })).toBe("Vráceno: „Sklon 45°“");
+    expect(entryText({ actor: "user", summary: "Reverted 2 changes since: Sklon 45°", undid_from: 1 })).toBe("Vráceno změn: 2, od: „Sklon 45°“");
+    expect(entryText({ actor: "user", summary: "Reverted: Reverted: X", undid_from: 2 }, log)).toBe("Vráceno: Vráceno: „X“");
+    expect(entryText({ actor: "user", summary: "Reverted: Reverted: X", undid_from: 7 }, log)).toBe("Vráceno: „Reverted: X“");
+    expect(entryText({ actor: "user", summary: "Sklon 45°" })).toBe("Sklon 45°");
+    // The user's revert of Tectora 0.8.0 (no `undid_from`) is told by its sentence.
+    expect(entryText({ actor: "user", summary: "Reverted: Sklon 45°" })).toBe("Vráceno: „Sklon 45°“");
+    expect([entryKind({ actor: "user", summary: "Reverted 3 changes since: x" }), entryKind({ actor: "user", summary: "Reverted: x" }), entryKind({ actor: "user", summary: "Revert the eave" })]).toEqual(["revert", "revert", null]);
     i18n.locale = "de";
-    expect(entrySummary("Reverted: Pitch")).toBe("Verworfen: Pitch");
+    expect(entryText({ actor: "user", summary: "Reverted: Pitch", undid_from: 1 })).toBe("Verworfen: „Pitch“");
   });
 
   it("translates a revert with the AI's reason, in every language (UX-002)", () => {
     const want: Record<string, string> = {
-      cs: "Vráceno: na část (důvod: zpět)",
-      sk: "Vrátené: na část (dôvod: zpět)",
-      en: "Reverted: na část (reason: zpět)",
-      de: "Verworfen: na část (Grund: zpět)",
+      // The undone entry is not in the list: quoted (ARCH-1501).
+      cs: "Vráceno: „na část“ (důvod: zpět)",
+      sk: "Vrátené: „na část“ (dôvod: zpět)",
+      en: "Reverted: “na část” (reason: zpět)",
+      de: "Verworfen: „na část“ (Grund: zpět)",
     };
+    const revert = (summary: string, undid_from = 1) => ({ actor: "claude", summary, undid_from });
     for (const [loc, text] of Object.entries(want)) {
       i18n.locale = loc as typeof i18n.locale;
-      expect(entrySummary("Reverted: na část (reason: zpět)")).toBe(text);
+      expect(entryText(revert("Reverted: na část (reason: zpět)"))).toBe(text);
     }
     i18n.locale = "cs";
-    expect(entrySummary("Reverted 2 changes since: X (reason: back)")).toBe("Vráceno změn: 2, od: X (důvod: back)");
+    expect(entryText(revert("Reverted 2 changes since: X (reason: back)"))).toBe("Vráceno změn: 2, od: „X“ (důvod: back)");
     // A revert of a revert with reasons: the outer reason is the last one.
-    expect(entrySummary("Reverted: Reverted: X (reason: a) (reason: b)")).toBe("Vráceno: Vráceno: X (důvod: a) (důvod: b)");
+    const log = [{ ts_ms: 2, actor: "claude", summary: "Reverted: X (reason: a)", undid_from: 1 }];
+    expect(entryText(revert("Reverted: Reverted: X (reason: a) (reason: b)", 2), log)).toBe("Vráceno: Vráceno: „X“ (důvod: a) (důvod: b)");
     // Entries written before the fixed form: `reason (Reverted: …)`.
-    expect(entrySummary("undo (Reverted: to part)")).toBe("Vráceno: to part (důvod: undo)");
-    expect(isRevert("undo (Reverted: to part)")).toBe(true);
-    // An AI summary that only mentions a reason is left as it is.
-    expect(entrySummary("Pitch 45 (reason: drawing)")).toBe("Pitch 45 (reason: drawing)");
+    expect(entryText(revert("undo (Reverted: to part)"))).toBe("Vráceno: „to part“ (důvod: undo)");
+    expect(entryKind(revert("undo (Reverted: to part)"))).toBe("revert");
+    // An AI summary that only mentions a reason is left as it is (its own words, quoted).
+    expect(entryText({ actor: "claude", summary: "Pitch 45 (reason: drawing)" })).toBe("„Pitch 45 (reason: drawing)“");
+  });
+
+  // Audit 2026-11-23 ARCH-1401: an AI's summary that reads like Tectora's
+  // own sentence (a revert, a recalculation, a put-back) is the AI's
+  // words: shown as written, in quotation marks, never translated.
+  it("shows an AI's summary that reads like Tectora's sentence as the AI's quoted words, in every language", () => {
+    const spoofs = [
+      "Reverted: Customer",
+      "Reverted 2 changes since: Notes",
+      "Stored result recalculated (Tectora 0.9.0 -> 0.9.1): roof area 152.73 -> 152.73 m2",
+      "Offer result restored (Tectora 0.9.1 -> 0.9.0)",
+      "Offer result restored (Tectora 0.9.1 -> 0.9.0) (reason: signed)",
+    ];
+    const quote: Record<string, [string, string]> = { cs: ["„", "“"], sk: ["„", "“"], en: ["“", "”"], de: ["„", "“"] };
+    for (const [loc, [open, close]] of Object.entries(quote)) {
+      i18n.locale = loc as typeof i18n.locale;
+      for (const summary of spoofs) {
+        const a = { ts_ms: 9, actor: "claude", summary };
+        expect(entryKind(a), summary).toBeNull();
+        expect(entryText(a), `${loc} ${summary}`).toBe(`${open}${summary}${close}`);
+        expect(historyText(a, [], 9), `${loc} ${summary}`).toBe(`${open}${summary}${close}`);
+        // With the reason field the AI cannot set either.
+        expect(entryText({ ...a, reason: "signed" }), `${loc} ${summary}`).toBe(`${open}${summary}${close}`);
+      }
+      // The same words with the core's kind read as Tectora's sentence,
+      // the part it quotes (not in the list) as quoted words (ARCH-1501).
+      expect(entryText({ actor: "claude", summary: spoofs[0], kind: "revert" })).toBe(
+        DICTS[loc as keyof typeof DICTS]["chg.revertedEntry"].replace("{s}", `${open}Customer${close}`),
+      );
+      expect(entryText({ actor: "tectora", summary: spoofs[2], kind: "refresh" })).toContain("0.9.0 → 0.9.1");
+      expect(entryText({ actor: "user", summary: spoofs[3], kind: "restore" })).toContain("0.9.1 → 0.9.0");
+      // A revert by the AI of its own disguised entry translates only its
+      // own sentence, and quotes the AI's words (ARCH-1501).
+      const log = [{ ts_ms: 9, actor: "claude", summary: spoofs[2] }];
+      const real = entryText({ actor: "claude", summary: `Reverted: ${spoofs[2]}`, undid_from: 9, kind: "revert" }, log);
+      expect(real, loc).toBe(DICTS[loc as keyof typeof DICTS]["chg.revertedEntry"].replace("{s}", `${open}${spoofs[2]}${close}`));
+    }
+    i18n.locale = "cs";
+  });
+
+  // ARCH-1401 guard: no component translates a summary by its words.
+  it("is called by no component: they go by the entry's kind", () => {
+    const files = import.meta.glob("./**/*.svelte", { eager: true, query: "?raw", import: "default" }) as Record<string, string>;
+    expect(Object.keys(files).length).toBeGreaterThan(10);
+    for (const [path, text] of Object.entries(files)) expect(text, path).not.toMatch(/\bentrySummary\(/);
+  });
+
+  it("takes the AI's reason from the entry's own field, whatever its texts contain (HUNT-904)", () => {
+    const want: Record<string, [string, string]> = {
+      cs: ["Původní čísla nabídky vrácena (Tectora 0.9.0 → 0.0.1) (důvod: Signed (reason: contract) these)", "Vráceno: Note (reason: x) (důvod: Mistake (reason: typo) fixed)"],
+      sk: ["", "Vrátené: Note (reason: x) (dôvod: Mistake (reason: typo) fixed)"],
+      en: ["Offer figures put back (Tectora 0.9.0 → 0.0.1) (reason: Signed (reason: contract) these)", "Reverted: Note (reason: x) (reason: Mistake (reason: typo) fixed)"],
+      de: ["", "Verworfen: Note (reason: x) (Grund: Mistake (reason: typo) fixed)"],
+    };
+    const restored = "Offer result restored (Tectora 0.9.0 -> 0.0.1): roof area 152.73 -> 157.73 m2 (reason: Signed (reason: contract) these)";
+    const reverted = "Reverted: Note (reason: x) (reason: Mistake (reason: typo) fixed)";
+    for (const [loc, [r, v]] of Object.entries(want)) {
+      i18n.locale = loc as typeof i18n.locale;
+      const put = entrySummary(restored, "Signed (reason: contract) these");
+      if (r) expect(put).toBe(r);
+      expect(put, loc).not.toMatch(/^Offer result restored/);
+      expect(put, loc).toContain("Signed (reason: contract) these");
+      expect(entrySummary(reverted, "Mistake (reason: typo) fixed")).toBe(v);
+      // The history passes the item's field.
+      // ARCH-1401: an AI's revert is one by its `undid_from`, not by its words.
+      // The undone entry is not in the list: its words quoted (ARCH-1501).
+      const quoted = DICTS[loc as keyof typeof DICTS]["ai.quoted"].replace("{s}", "Note (reason: x)");
+      expect(historyText({ actor: "claude", summary: reverted, reason: "Mistake (reason: typo) fixed", undid_from: 1 }, [])).toBe(v.replace("Note (reason: x)", quoted));
+    }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-23 HUNT-1002, ERR-1003: entries written before the core
+// kept the reason whole had the whole summary capped at 500 characters, so
+// it ends inside the reason or inside the sentence before it ("…"). The
+// reason field holds it whole: the line shows the translated head and it.
+describe("an entry whose summary was cut by the cap (HUNT-1002, ERR-1003)", () => {
+  const cap = (s: string) => (s.length <= 500 ? s : `${s.slice(0, 499)}…`);
+  const reason = `The customer signed these figures. ${"y".repeat(415)}`;
+  const restored = cap(`Offer result restored (Tectora 0.9.0 -> 0.8.0): roof area 152.73 -> 154.73 m2 (reason: ${reason})`);
+  const what = `Note. ${"x".repeat(480)}`;
+  const reverted = cap(`Reverted: ${what} (reason: Customer asked)`);
+  const head: Record<string, [string, string, string]> = {
+    cs: ["Původní čísla nabídky vrácena (Tectora 0.9.0 → 0.8.0)", "Vráceno: Note. ", "důvod"],
+    sk: ["Pôvodné čísla ponuky vrátené (Tectora 0.9.0 → 0.8.0)", "Vrátené: Note. ", "dôvod"],
+    en: ["Offer figures put back (Tectora 0.9.0 → 0.8.0)", "Reverted: Note. ", "reason"],
+    de: ["Ursprüngliche Zahlen des Angebots zurückgeholt (Tectora 0.9.0 → 0.8.0)", "Verworfen: Note. ", "Grund"],
+  };
+  it("is cut as the store cut it", () => {
+    expect(restored).toHaveLength(500);
+    expect(restored.endsWith(`${reason})`)).toBe(false);
+    expect(reverted).toHaveLength(500);
+    expect(reverted).not.toContain(" (reason: ");
+  });
+  it("shows the translated sentence and the whole reason, in every language", () => {
+    for (const [loc, [put, rev, word]] of Object.entries(head)) {
+      i18n.locale = loc as typeof i18n.locale;
+      expect(entrySummary(restored, reason), loc).toBe(`${put} (${word}: ${reason})`);
+      // ARCH-1401: a put-back is one by its `restores`, not by its words.
+      expect(historyText({ actor: "claude", summary: restored, reason, restores: 1 }, []), loc).toBe(`${put} (${word}: ${reason})`);
+      const r = entrySummary(reverted, "Customer asked");
+      expect(r.startsWith(rev), `${loc}: ${r.slice(0, 40)}`).toBe(true);
+      expect(r.endsWith(`… (${word}: Customer asked)`), `${loc}: ${r.slice(-40)}`).toBe(true);
+      expect(r, loc).not.toContain(" (r…");
+    }
+    i18n.locale = "cs";
+  });
+  it("finds the cut reason after a reason-like text in the AI's own summary", () => {
+    i18n.locale = "en";
+    const long = `Mistake fixed ${"z".repeat(480)}`;
+    const s = cap(`Reverted: Note (reason: x) (reason: ${long})`);
+    expect(entrySummary(s, long)).toBe(`Reverted: Note (reason: x) (reason: ${long})`);
+    // The cut fell before the reason began: the AI's "(reason: x)" is not taken for it.
+    const s2 = cap(`Reverted: Note (reason: x) ${"w".repeat(480)} (reason: Customer asked)`);
+    expect(entrySummary(s2, "Customer asked")).toMatch(/^Reverted: Note \(reason: x\) w+… \(reason: Customer asked\)$/);
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-23 HUNT-902: the offer's figures no longer live in the
+// change log, so the entry no longer promises they "stay in this
+// history"; the recalculation the stored result still is says they can be
+// put back, an older or a received one says nothing about it.
+describe("the recalculation's entry in the history (HUNT-902)", () => {
+  const entry = "Stored result recalculated (Tectora 0.0.1 -> 0.9.0): roof area 157.73 -> 152.73 m2";
+  it("says the figures can be put back only on the current recalculation, in every language", () => {
+    const back: Record<string, string> = {
+      cs: "Původní čísla lze vrátit.",
+      sk: "Pôvodné čísla sa dajú vrátiť.",
+      en: "The original figures can be put back.",
+      de: "Die ursprünglichen Zahlen lassen sich zurückholen.",
+    };
+    for (const [loc, sentence] of Object.entries(back)) {
+      i18n.locale = loc as typeof i18n.locale;
+      const current = historyText({ actor: "tectora", summary: entry, ts_ms: 5 }, [], 5);
+      expect(current, loc).toMatch(new RegExp(`m²\\. ${sentence.replace(/[.]/g, "\\.")}$`));
+      for (const text of [
+        historyText({ actor: "tectora", summary: entry, ts_ms: 4 }, [], 5),
+        historyText({ actor: "tectora", summary: entry, ts_ms: 5 }, [], null),
+        historyText({ actor: "tectora (received)", summary: entry, ts_ms: 5 }, [], 5),
+        entrySummary(entry),
+      ]) {
+        expect(text, loc).not.toContain(sentence);
+        expect(text, loc).toMatch(/m²\.$/);
+      }
+      expect(current, loc).not.toMatch(/histor|Verlauf/i);
+    }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 UX-704: the library's job panel showed the engine's
+// recalculation of a stored result as the user's own change.
+describe("actorLabel", () => {
+  it("names the AI, the engine and the user apart, in every language", () => {
+    const you: Record<string, string> = {};
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      you[locale] = actorLabel("user");
+      expect(actorLabel("tectora"), locale).toBe("Tectora");
+      expect(actorLabel("claude-ai"), locale).toBe("Claude");
+      expect(actorLabel("tectora"), locale).not.toBe(you[locale]);
+    }
+    expect(you.cs).toBe("Vy");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 UX-807: a recalculation that leaves the roof area said
+// "roof area 142.83 -> 142.83 m2", which reads as "nothing changed".
+describe("a recalculation that changed no roof area (UX-807)", () => {
+  const LOCALES = Object.keys(DICTS) as (keyof typeof DICTS)[];
+  const files = import.meta.glob("../../../tests/fixtures/parity/refreshed_more_entries.json", { eager: true, import: "default" }) as Record<string, unknown>;
+  // Written by store::tests::a_recalculation_of_line_lengths_only_names_the_line_codes.
+  const file = Object.values(files)[0] as { from: string; to: string; codes: string; lines_summary: string; restored_summary: string };
+
+  it("names the line codes of a real recalculation the core wrote, in the notice and the entry, in every language", () => {
+    expect(file.lines_summary).toMatch(/^Stored result recalculated .*: line lengths /);
+    for (const locale of LOCALES) {
+      i18n.locale = locale;
+      for (const text of [refreshedNotice(file.lines_summary), entrySummary(file.lines_summary)]) {
+        expect(text, locale).not.toBe(file.lines_summary);
+        expect(text, locale).not.toContain("{");
+        expect(text, locale).not.toContain(" -> ");
+        expect(text, locale).toContain(`${file.from} → ${file.to}`);
+        expect(text, locale).toContain(`: ${file.codes}.`);
+        // No area pair that reads "a → a m²".
+        expect(text, locale).not.toContain(" m²");
+      }
+    }
+    i18n.locale = "en";
+    expect(refreshedNotice("Stored result recalculated (Tectora 0.8.0 -> 0.9.0): line lengths G, K")).toBe(
+      "The offer's stored result was recalculated with the corrected calculation (Tectora 0.8.0 → 0.9.0): the roof area is the same, line lengths changed: G, K.",
+    );
+    i18n.locale = "cs";
+  });
+
+  it("says that other figures changed when neither the area nor a line did", () => {
+    const entry = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): other figures";
+    for (const locale of LOCALES) {
+      i18n.locale = locale;
+      for (const text of [refreshedNotice(entry), entrySummary(entry)]) {
+        expect(text, locale).not.toBe(entry);
+        expect(text, locale).not.toContain("{");
+        expect(text, locale).toContain("0.8.0 → 0.9.0");
+      }
+    }
+    i18n.locale = "cs";
+  });
+
+  it("translates the entry of the offer's result put back, with an AI's reason too", () => {
+    expect(file.restored_summary).toMatch(/^Offer result restored \(Tectora /);
+    for (const locale of LOCALES) {
+      i18n.locale = locale;
+      const text = entrySummary(file.restored_summary);
+      expect(text, locale).not.toBe(file.restored_summary);
+      expect(text, locale).not.toContain("{");
+      expect(text, locale).toContain(`${file.to} → ${file.from}`);
+    }
+    i18n.locale = "en";
+    expect(entrySummary("Offer result restored (Tectora 0.9.0 -> 0.8.0): roof area 142.83 -> 150.00 m2")).toBe("Offer figures put back (Tectora 0.9.0 → 0.8.0)");
+    expect(entrySummary("Offer result restored (Tectora 0.9.0 -> 0.8.0) (reason: The customer signed these)")).toBe(
+      "Offer figures put back (Tectora 0.9.0 → 0.8.0) (reason: The customer signed these)",
+    );
+    // An AI summary that only starts like it is left as it is.
+    expect(entrySummary("Offer result restored by hand")).toBe("Offer result restored by hand");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 UI-803: the user's revert of Tectora's recalculation was
+// listed as "AI changes reverted".
+describe("historyText (UI-803)", () => {
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 142.83 m2";
+  const log = [
+    { ts_ms: 30, actor: "user" },
+    { ts_ms: 20, actor: "claude" },
+    { ts_ms: 10, actor: "tectora" },
+  ];
+
+  it("says 'AI changes reverted' only when the undone entry is an AI's, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const ai = DICTS[locale]["ai.revertedEntry"];
+      // The user's revert of the AI's one entry: named (UX-1603; was "AI changes reverted").
+      const one = DICTS[locale]["ai.revertedOne"].replace("{s}", DICTS[locale]["ai.quoted"].replace("{s}", "Notes"));
+      expect(historyText({ actor: "user", summary: "Reverted: Notes", undid_from: 20 }, log), locale).toBe(one);
+      // Several: the short sentence.
+      expect(historyText({ actor: "user", summary: "Reverted 2 changes since: Notes", undid_from: 20 }, log), locale).toBe(ai);
+      // Of Tectora's recalculation: the sentence itself, no AI in it.
+      const engine = historyText({ actor: "user", summary: `Reverted: ${RECALC}`, undid_from: 10 }, log);
+      expect(engine, locale).not.toBe(ai);
+      expect(engine, locale).toBe(entrySummary(`Reverted: ${RECALC}`));
+      expect(engine, locale).toContain("0.8.0 → 0.9.0");
+      // The undone entry is no longer in the list: told by the sentence.
+      expect(historyText({ actor: "user", summary: `Reverted: ${RECALC}`, undid_from: 5 }, log), locale).not.toBe(ai);
+      expect(historyText({ actor: "user", summary: `Reverted: ${RECALC}` }, log), locale).not.toBe(ai);
+      expect(historyText({ actor: "user", summary: "Reverted: Notes" }, log), locale).toBe(ai);
+      // The user's revert of the user's own logged change is no AI change either.
+      expect(historyText({ actor: "user", summary: "Reverted: Mine", undid_from: 30 }, log), locale).toBe(entrySummary("Reverted: Mine"));
+    }
+    i18n.locale = "cs";
+  });
+
+  it("shows a restore of the offer's figures and an AI's own revert as their sentences", () => {
+    i18n.locale = "en";
+    expect(historyText({ actor: "user", summary: "Offer result restored (Tectora 0.9.0 -> 0.8.0)", restores: 10 }, log)).toBe("Offer figures put back (Tectora 0.9.0 → 0.8.0)");
+    // The AI's words of the change it undid, quoted (ARCH-1501).
+    expect(historyText({ actor: "claude", summary: "Reverted: Notes (reason: wrong)", undid_from: 20 }, log)).toBe("Reverted: “Notes” (reason: wrong)");
+    // The AI's own words, quoted (ARCH-1401, design A4).
+    expect(historyText({ actor: "claude", summary: "Pitch 45" }, log)).toBe("“Pitch 45”");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-22 ARCH-802: an engine's entry that came with a bundle is
+// neither this Tectora's nor an AI's.
+describe("actorLabel of a received engine entry (ARCH-802)", () => {
+  it("is named as received, never as Tectora or as the user, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const label = actorLabel("tectora (received)");
+      expect(label, locale).toBe(DICTS[locale]["ai.receivedEngine"]);
+      expect(label, locale).not.toBe("Tectora");
+      expect(label, locale).not.toBe(actorLabel("user"));
+    }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-23 UX-1003 (owner decision: bundles carry no offer
+// figures): a job received after the sender's Tectora recalculated its
+// stored result says so on its card, from the received entry, without
+// the put-back (the offer's own figures stayed with the sender).
+describe("receivedRecalculation (UX-1003)", () => {
+  const entry = (ts_ms: number, actor: string, summary: string, fields: string[] = []) => ({
+    ts_ms,
+    actor,
+    summary,
+    changes: fields.map((field) => ({ kind: "modified" as const, field, before: null, after: null })),
+  });
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 152.73 m2";
+  const job = (engine_version = "0.9.0") => ({ result_snapshot: { engine_version } });
+  it("reads the received engine entry the stored result still is", () => {
+    const log = [entry(30, "claude", "Notes", ["notes"]), entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"]), entry(10, "user", "Status", ["result_snapshot", "status"])];
+    expect(receivedRecalculation(log, job())).toEqual({ at: 20, from: "0.8.0", to: "0.9.0", area: 150 });
+    const lines = entry(20, RECEIVED_ENGINE_ACTOR, "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): line lengths G, K", ["result_snapshot"]);
+    expect(receivedRecalculation([lines], job())).toEqual({ at: 20, from: "0.8.0", to: "0.9.0", area: null });
+  });
+  it("is null once a later entry stored another result, for this engine's own entry and for another engine", () => {
+    expect(receivedRecalculation([entry(30, "user", "Stored", ["result_snapshot"]), entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([entry(20, "tectora", RECALC, ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], job("0.8.0"))).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, RECALC, ["result_snapshot"])], { result_snapshot: null })).toBeNull();
+    expect(receivedRecalculation([entry(20, RECEIVED_ENGINE_ACTOR, "Something else", ["result_snapshot"])], job())).toBeNull();
+    expect(receivedRecalculation([], job())).toBeNull();
+  });
+});
+
+// Audit 2026-11-23 ARCH-1501 (design D): the words of the entry a revert
+// undid are shown as Tectora's only when that entry is found and is
+// Tectora's own; an AI's change, or one not in the list, stays quoted.
+describe("entryText of a revert's quoted part (ARCH-1501)", () => {
+  const RECALC = "Stored result recalculated (Tectora 0.8.0 -> 0.9.0): roof area 150.00 -> 142.83 m2";
+  it("quotes an AI's change inside the revert sentence, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const quoted = DICTS[locale]["ai.quoted"].replace("{s}", "X");
+      const revert = { actor: "claude", summary: "Reverted: X", undid_from: 1, kind: "revert" as const };
+      const found = entryText(revert, [{ ts_ms: 1, actor: "claude", summary: "X" }]);
+      expect(found, locale).toBe(DICTS[locale]["chg.revertedEntry"].replace("{s}", quoted));
+      // Not in the list (the library card, a trimmed log): quoted too.
+      expect(entryText(revert, []), locale).toBe(DICTS[locale]["chg.revertedEntry"].replace("{s}", quoted));
+      // The user's revert on the card, of a change not in the list.
+      expect(entryText({ actor: "user", summary: "Reverted: Reverted: Pitch 40°", undid_from: 7, kind: "revert" }), locale).toContain(
+        DICTS[locale]["ai.quoted"].replace("{s}", "Reverted: Pitch 40°"),
+      );
+      // A user's own change found in the list is shown as it is.
+      const mine = entryText({ actor: "claude", summary: "Reverted: Mine", undid_from: 2, kind: "revert" }, [{ ts_ms: 2, actor: "user", summary: "Mine" }]);
+      expect(mine, locale).toBe(DICTS[locale]["chg.revertedEntry"].replace("{s}", "Mine"));
+      // Tectora's recalculation found there: translated, not quoted.
+      const engine = entryText({ actor: "claude", summary: `Reverted: ${RECALC}`, undid_from: 3, kind: "revert" }, [
+        { ts_ms: 3, actor: "tectora", summary: RECALC, kind: "refresh" },
+      ]);
+      expect(engine, locale).toBe(entrySummary(`Reverted: ${RECALC}`));
+      expect(engine, locale).not.toContain(DICTS[locale]["ai.quoted"].replace("{s}", RECALC));
+    }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-24 UX-1603, design A4: the user's revert of one AI step is
+// named in the history as in its toast; the editor's Undo of a Revert (a
+// take-back) has its own sentence.
+describe("historyText of reverts of AI steps (UX-1603, UX-1601)", () => {
+  const log = [
+    { ts_ms: 40, actor: "user", summary: "Reverted: Reverted: Overhang 0.8.", undid_from: 30, kind: "revert" as const },
+    { ts_ms: 30, actor: "user", summary: "Reverted: Overhang 0.8.", undid_from: 20, kind: "revert" as const },
+    { ts_ms: 20, actor: "claude", summary: "Overhang 0.8.", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+  it("names the one step in every language and says a take-back", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const quoted = d["ai.quoted"].replace("{s}", "Overhang 0.8.");
+      expect(historyText(log[1], log), locale).toBe(d["ai.revertedOne"].replace("{s}", quoted));
+      expect(historyText(log[0], log), locale).toBe(d["ai.revertTakenBack"]);
+      expect(d["ai.revertTakenBack"], locale).not.toBe(d["ai.revertedEntry"]);
+    }
+    i18n.locale = "cs";
+  });
+  it("takes the core's kind when it is sent, null included (ARCH-1601)", () => {
+    expect(entryKind({ actor: "user", kind: null, summary: "Reverted 0 changes since: x" })).toBeNull();
+    expect(entryKind({ actor: "user", kind: null, summary: "Reverted: x" })).toBeNull();
+    // An item without the field (an older bridge): the rule from its fields.
+    expect(entryKind({ actor: "user", summary: "Reverted: x" })).toBe("revert");
+  });
+});
+
+// Audit 2026-11-24 UX-1701, UI-1703, ERR-1703, HUNT-1704 (design C): the
+// history says what the user's revert did to the AI's change, from the
+// core's `took_out` / `put_back`, never from the actors along a chain of
+// reverts; a revert of a revert quotes a change, never another revert.
+describe("historyText by what a revert did (UX-1701, ERR-1703)", () => {
+  const rev = "revert" as const;
+  // AI change B, the AI's own revert, the user's Undo (B back), the user's Redo (B out).
+  const own = [
+    { ts_ms: 50, actor: "user", summary: "Reverted: B", undid_from: 40, kind: rev, took_out: [20], put_back: [] },
+    { ts_ms: 40, actor: "user", summary: "Put back: B", undid_from: 30, kind: rev, took_out: [], put_back: [20] },
+    { ts_ms: 30, actor: "claude", summary: "Reverted: B (reason: AI takes it back)", reason: "AI takes it back", undid_from: 20, kind: rev, took_out: [20], put_back: [] },
+    { ts_ms: 20, actor: "claude", summary: "B", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+  // Revert all of A1 and A2, then the user's take-back three times.
+  const chain = [
+    { ts_ms: 80, actor: "user", summary: "Put back 2 changes since: A1", undid_from: 70, kind: rev, took_out: [], put_back: [20, 25] },
+    { ts_ms: 70, actor: "user", summary: "Reverted 2 changes since: A1", undid_from: 60, kind: rev, took_out: [20, 25], put_back: [] },
+    { ts_ms: 60, actor: "user", summary: "Put back 2 changes since: A1", undid_from: 50, kind: rev, took_out: [], put_back: [20, 25] },
+    { ts_ms: 50, actor: "user", summary: "Reverted 2 changes since: A1", undid_from: 20, kind: rev, took_out: [20, 25], put_back: [] },
+    { ts_ms: 25, actor: "claude", summary: "A2", kind: null },
+    { ts_ms: 20, actor: "claude", summary: "A1", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+
+  it("says put back and reverted by the effect, in every language", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const q = (s: string) => d["ai.quoted"].replace("{s}", s);
+      // The Undo of the AI's own revert put B back; the Redo took it out.
+      expect(historyText(own[1], own), locale).toBe(d["ai.putBackOne"].replace("{s}", q("B")));
+      expect(historyText(own[0], own), locale).toBe(d["ai.revertedOne"].replace("{s}", q("B")));
+      // Several AI changes: the short sentences, alternating down the chain.
+      expect(historyText(chain[3], chain), locale).toBe(d["ai.revertedEntry"]);
+      expect(historyText(chain[2], chain), locale).toBe(d["ai.revertTakenBack"]);
+      expect(historyText(chain[1], chain), locale).toBe(d["ai.revertedEntry"]);
+      expect(historyText(chain[0], chain), locale).toBe(d["ai.revertTakenBack"]);
+      // One out and one in.
+      const mixed = { ts_ms: 90, actor: "user", summary: "Reverted 1 and put back 1 changes since: A1", undid_from: 60, kind: rev, took_out: [25], put_back: [20] };
+      expect(historyText(mixed, chain), locale).toBe(d["ai.revertedMixed"].replace("{n}", "1").replace("{m}", "1"));
+      // The new keys are there and say different things.
+      for (const k of ["ai.putBackOne", "ai.revertedMixed", "chg.putBack", "chg.putBackMany", "chg.revertedMixed"]) {
+        expect(d[k], `${locale} ${k}`).toBeTruthy();
+      }
+      expect(d["ai.putBackOne"], locale).not.toBe(d["ai.revertedOne"]);
+    }
+    i18n.locale = "cs";
+  });
+
+  it("never stacks the revert sentence and quotes the change", () => {
+    i18n.locale = "en";
+    for (const a of [...own.slice(0, 2), ...chain.slice(0, 4)]) {
+      const text = entryText(a, a.ts_ms >= 50 && a.summary.includes("2 changes") ? chain : own);
+      expect(text.match(/Reverted|Put back/g)?.length ?? 0, text).toBeLessThanOrEqual(1);
+    }
+    expect(entryText(chain[0], chain)).toBe("Put back 2 changes since: “A1”");
+    expect(entryText(own[1], own)).toBe("Put back: “B”");
+    // An AI's revert_to of the user's revert: its own sentence, the AI's words quoted.
+    const ai = { ts_ms: 60, actor: "claude", summary: "Put back: B (reason: back in)", reason: "back in", undid_from: 50, kind: rev, took_out: [], put_back: [20] };
+    expect(historyText(ai, own)).toBe("Put back: “B” (reason: back in)");
+    // The user's revert that moved no AI change keeps its sentence.
+    const mine = [
+      { ts_ms: 30, actor: "user", summary: "Put back: Mine", undid_from: 25, kind: rev, took_out: [], put_back: [20] },
+      { ts_ms: 25, actor: "user", summary: "Reverted: Mine", undid_from: 20, kind: rev, took_out: [20], put_back: [] },
+      { ts_ms: 20, actor: "user", summary: "Mine", kind: null },
+    ];
+    expect(historyText(mine[0], mine)).toBe("Put back: Mine");
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-24 TEST-1803: the core's mixed sentence ("Reverted n and
+// put back m changes since: …", store.rs `revert_summary`) with n ≠ m is
+// read by the app in every language, and the history's mixed sentence
+// counts the AI changes on each side.
+describe("the mixed revert sentence with n ≠ m (TEST-1803)", () => {
+  const rev = "revert" as const;
+  const log = [
+    { ts_ms: 30, actor: "claude", summary: "A3", kind: null },
+    { ts_ms: 25, actor: "claude", summary: "A2", kind: null },
+    { ts_ms: 20, actor: "claude", summary: "A1", kind: null },
+    { ts_ms: 10, actor: "user", summary: "Created", kind: null },
+  ];
+
+  it("entryText translates the core's sentence with both counts", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const q = (s: string) => d["ai.quoted"].replace("{s}", s);
+      const text = entryText({ actor: "claude", summary: "Reverted 2 and put back 1 changes since: A1", undid_from: 85, kind: rev });
+      expect(text, locale).toBe(d["chg.revertedMixed"].replace("{n}", "2").replace("{m}", "1").replace("{s}", q("A1")));
+      // Not the raw core sentence (English reads the same).
+      if (locale !== "en") expect(text, locale).not.toContain("Reverted 2");
+      const other = entryText({ actor: "claude", summary: "Reverted 1 and put back 3 changes since: A1", undid_from: 85, kind: rev });
+      expect(other, locale).toBe(d["chg.revertedMixed"].replace("{n}", "1").replace("{m}", "3").replace("{s}", q("A1")));
+    }
+    i18n.locale = "cs";
+  });
+
+  it("historyText counts what was taken out and put back, not swapped", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const d = DICTS[locale];
+      const mixed = { ts_ms: 90, actor: "user", summary: "Reverted 2 and put back 1 changes since: A1", undid_from: 20, kind: rev, took_out: [20, 25], put_back: [30] };
+      expect(historyText(mixed, [mixed, ...log]), locale).toBe(d["ai.revertedMixed"].replace("{n}", "2").replace("{m}", "1"));
+    }
+    i18n.locale = "cs";
+  });
+});
+
+// Audit 2026-11-24 UX-1801: the sender's own entries of a received job are
+// shown as the sender's, never as "you", in every language.
+describe("actorLabel of a received user entry (UX-1801)", () => {
+  it("names the sender", () => {
+    for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
+      i18n.locale = locale;
+      const label = actorLabel(RECEIVED_USER_ACTOR);
+      expect(label, locale).toBe(DICTS[locale]["ai.receivedUser"]);
+      expect(label, locale).not.toBe(actorLabel("user"));
+      expect(label, locale).not.toBe(DICTS[locale]["ai.receivedEngine"]);
+    }
+    i18n.locale = "cs";
+  });
+
+  it("is no AI, and its reverts and put-backs keep their kinds", () => {
+    expect(isAi(RECEIVED_USER_ACTOR)).toBe(false);
+    expect(entryKind({ actor: RECEIVED_USER_ACTOR, summary: "Reverted: A1", undid_from: 3 })).toBe("revert");
   });
 });

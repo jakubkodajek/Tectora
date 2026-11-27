@@ -155,18 +155,77 @@ The library folder is `$TECTORA_PROJECTS_DIR` or `Documents/Tectora`;
 settings are in the per-user config folder (`TECTORA_CONFIG_DIR` overrides
 it). Details: `docs/ai-integration.md`, `crates/tectora-core/src/store.rs`.
 
+**Editor edits while the job reloads.** An edit that waits for the core (a
+typed building height, a dormer width the core checks, Duplicate, a status
+change that stores the result) may still be out when an AI save reloads the
+job. One rule covers all of them (`app/src/lib/jobedits.ts`): the edit
+holds the item it was made for from the moment of input; edits run one
+after another, each on the job as the one before left it; when the job is
+replaced from outside (reload, merge on a save conflict, Revert) the editor
+compares the file before and after that save (both in the core's form) and
+moves every hold with its item, or lets it go when the save changed or
+removed the item. An edit whose item was let go is refused with a warning
+that names the object (the field stays marked until the next input); an
+AI save of other things never refuses it, nor does the user's own earlier
+step, and an edit whose item the user deleted himself ends quietly. While
+the user drags an object, a building or a corner no answer is applied (a
+drag rebuilds the job from its start, or changes it, at every step); the
+edit is asked again on the dragged job once the drag ends.
+
+**A drag is one transaction** (`app/src/lib/dragsession.ts`, rule 7 of
+`jobedits.ts`): from the press on an object, the selected building or a
+corner until its result is in the history, the drag is the only writer of
+the job. The session has one state (idle, armed, moving, settling) and one
+way out, which ends the pause of the core's answers. While it is open the
+user's input is refused, not replayed: keys do nothing, the toolbar, bars,
+dock and header are `inert`, another pointer is ignored by the plan (every
+`onpointerdown` of the plan goes through one `press`); only Escape (cancel,
+the job goes back to the press) and F3 pass. What is not the user's waits
+for the end of the drag: answers of the core, an outside save of this job
+(the reload runs once, after the drop), follow mode (the editor counts as
+busy). While the drop is with the core (a building's move, a corner's merge)
+the editor stays closed and the status bar says saving; Undo and Redo
+pressed then run right after it, so one Undo undoes exactly the drop.
+Leaving the job ends the drag where it is. A write that slips past these
+guards throws in the dev build and ends the drag where the job is in a
+release. Undo and Redo also wait for edits still with the core. A number field reused for the next
+item (PageDown in a bar) forgets what it sent for the one before (its
+`key`). The bars' selection follows its item the same way.
+
+Revert, Revert all and the put-back of the offer's figures are the same kind
+of transaction (`CoreAction`, dragsession.ts), in two phases. The press first
+waits, input still open and at most 3 s, for the edits still with the core
+and for the save, then claims the call in the same tick; past 3 s it answers
+`busy` and changes nothing. While the call is out every writer path is
+refused: the editor's own DOM refusal, plus one module gate
+(`anyWriterOpen()`, `gatedKeys()`) asked by every window-level listener,
+the window presses that commit a field and toast actions;
+`gate.scan.test.ts` fails on a new entry point that does not ask it.
+`commit()` and the undo step refuse a write while the call is out (throw in
+the dev build, dropped with a notice in a release). Leaving waits for the
+answer, and a failure is told also after the editor is gone, naming the job.
+
+The settings file is changed only through `Settings::update` (read, change
+and write under one lock file), so the app and an MCP server writing at the
+same moment do not drop each other's change.
+
 ## Files
 
 | file | format | written by |
 | --- | --- | --- |
-| `*.tectora` | JSON, `docs/tectora.schema.json`, versioned with migrations on load, newer neither read nor overwritten | core `store` |
+| `*.tectora` | JSON, `docs/tectora.schema.json`, versioned with migrations on load, newer neither read nor overwritten; unknown top-level keys kept (at most 64 KB and 32 levels deep, a key named `__proto__` dropped) | core `store` |
 | `*.tectorajob` | ZIP: `manifest.json`, `project.tectora`, `history.jsonl`, `preview.svg`, `files/` | core `bundle` |
 | `.activity/<id>.jsonl`, `.activity/live.json` | change log with previous versions; current AI activity | core `store`, MCP |
 | `settings.json` | user settings, unknown keys kept | core `settings` |
 
 All of them are untrusted input: ids, sizes and coordinate ranges are checked
 before anything is calculated or written, and calculations run inside
-`model::guarded`. PDF drawings (MCP drawing tools) are read in a child
+`model::guarded`. A calculation of a whole job (the app's commands, the
+browser preview, `tectora calc`, the MCP calculating and export tools) also
+runs in `work::calculate`: the joins of several buildings count their work
+and stop at `work::LIMIT` with `too_complex`, so buildings stacked on top of
+each other, though inside the count limits, cannot keep a core busy for
+minutes. It is counted, not timed, and the same on every machine. PDF drawings (MCP drawing tools) are read in a child
 process of the same executable with a heap cap and a time limit
 (`tectora-mcp/src/worker.rs`), because the PDF reader itself has no limit
 on inflated streams or nested forms.

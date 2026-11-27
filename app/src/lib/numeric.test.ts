@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
-import { formatNumber, parseNumber, stepValue } from "./numeric.svelte";
+import { STEP_WAIT_MS, formatNumber, parseNumber, stepValue, toSend, waitingStep } from "./numeric.svelte";
 
 describe("parseNumber", () => {
   it("takes a comma or a dot as the decimal separator", () => {
@@ -126,5 +126,39 @@ describe("number fields", () => {
     }
     expect(n).toBeGreaterThan(40);
     expect(bad).toEqual([]);
+  });
+});
+
+describe("waitingStep (UI-002, UI-201)", () => {
+  const burst = { from: 2, to: 2.15, at: 1000 };
+  it("goes on from the last step while none came back", () => {
+    expect(waitingStep(burst, 2, 1100)).toBe(2.15);
+  });
+  it("still goes on from the last step when an earlier step of the burst came back", () => {
+    expect(waitingStep(burst, 2.05, 1100)).toBe(2.15);
+    expect(waitingStep(burst, 2.1, 1100)).toBe(2.15);
+  });
+  it("goes on from the stored value once the last step is there, after a while, or after an outside change", () => {
+    expect(waitingStep(burst, 2.15, 1100)).toBeNull();
+    expect(waitingStep(burst, 2, 1000 + STEP_WAIT_MS)).toBeNull();
+    expect(waitingStep(burst, 3, 1100)).toBeNull();
+    expect(waitingStep(null, 2, 1100)).toBeNull();
+  });
+});
+
+describe("toSend (UI-307)", () => {
+  it("sends a value that differs from the stored one, and not the stored one again", () => {
+    expect(toSend(3.05, 3, null)).toBe(true);
+    expect(toSend(3, 3, null)).toBe(false);
+  });
+  it("up then down while the first step is out sends the start value after it", () => {
+    // 3 stored, 3.05 with the core, the user steps back to 3.
+    expect(toSend(3, 3, 3.05)).toBe(true);
+  });
+  it("the old value typed back while the new one is out is sent", () => {
+    expect(toSend(2.05, 2.05, 2.6)).toBe(true);
+  });
+  it("the value already on its way is not sent twice", () => {
+    expect(toSend(3.05, 3, 3.05)).toBe(false);
   });
 });

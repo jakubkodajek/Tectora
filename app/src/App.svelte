@@ -1,5 +1,6 @@
 <script lang="ts">
   import { pendingRetryMs } from "./lib/format";
+  import { sequence } from "./lib/latest";
   import { onMount } from "svelte";
   import AiConnect from "./lib/AiConnect.svelte";
   import Editor from "./lib/Editor.svelte";
@@ -7,6 +8,8 @@
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
+  import { startOpening } from "./lib/startup";
+  import { anyWriterOpen } from "./lib/dragsession";
   import { t } from "./lib/i18n.svelte";
   import { actorName, live } from "./lib/live.svelte";
   import { info, notify, notifyError } from "./lib/notify.svelte";
@@ -14,12 +17,15 @@
   import { app as appSettings, applySettings, loadSettings, prefs } from "./lib/settings.svelte";
   import FolderRequest from "./lib/FolderRequest.svelte";
   import FileRequest from "./lib/FileRequest.svelte";
+  import AiSettingsChange from "./lib/AiSettingsChange.svelte";
+  import { openAiChange } from "./lib/settingschange";
   import { hasUnsaved, isBusy, mayLeave } from "./lib/leave";
   import type { BrokenFile, ExampleInfo, LiveStatus, ProjectSummary } from "./lib/types";
 
   let openId = $state<string | null>(null);
   let projects = $state<ProjectSummary[]>([]);
   let broken = $state<BrokenFile[]>([]);
+  let foreign = $state<BrokenFile[]>([]);
   let examples = $state<ExampleInfo[]>([]);
   let dir = $state("");
   let connect = $state(false);
@@ -28,11 +34,16 @@
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingTries = 0;
 
+  /** Only the newest listing is shown: two file events in a row can answer out of order (audit 2026-11-24 ERR-1904). */
+  const listings = sequence();
   async function refresh() {
+    const k = listings.next();
     try {
       const lib = await api.listProjects();
+      if (!listings.current(k)) return;
       projects = lib.projects;
       broken = lib.broken;
+      foreign = lib.foreign ?? [];
       // A roof over the listing's time budget comes without figures: ask
       // again until they are there (ARCH-001).
       clearTimeout(pendingTimer);
@@ -41,8 +52,16 @@
       pendingTries = pending ? pendingTries + 1 : 0;
       if (wait !== null) pendingTimer = setTimeout(refresh, wait);
     } catch (e) {
-      notifyError(e, "list");
+      if (listings.current(k)) notifyError(e, "list");
     }
+  }
+
+  /** Reads the settings again; an answer older than a newer read or a settings event is dropped. */
+  const settingsReads = sequence();
+  async function rereadSettings() {
+    const k = settingsReads.next();
+    const v = await api.getSettings();
+    if (settingsReads.current(k)) applySettings(v);
   }
 
   /**
@@ -151,8 +170,12 @@
     const un = onProjectsChanged(() => refresh());
     const unLive = onLiveStatus(onLive);
     // Settings changed outside this window (e.g. by an AI agent over MCP).
+    // The folder has switched already, so there is nothing to ask: the
+    // editor closes and says so (`err.library_changed`, ERR-1105). The ways
+    // out that can still ask go through `mayLeave` (HUNT-1201).
     const unSettings = onSettingsChanged((v) => {
       const moved = v.effective.projects_dir !== dir;
+      settingsReads.bump();
       applySettings(v);
       if (moved) libraryChanged();
     });
@@ -164,24 +187,23 @@
     // Closing the window: the open job is saved first, and edits that cannot
     // be saved are only dropped when the user says so.
     const unClose = closeGuard();
-    api.takePendingOpen().then((id) => id && openFile(id));
-    const unOpen = onOpenProject(openFile);
-    // A file opened from the system that did not open (damaged, newer, not
-    // a job): told like a failed import, at start-up and later (ERR-006).
-    const showOpenErrors = () =>
-      api.takeOpenErrors().then(
-        (es) => es.forEach((e) => notifyError(e, "import")),
-        () => {},
-      );
-    const unOpenFailed = onOpenFailed(showOpenErrors);
-    showOpenErrors();
+    // Listens for files opened from the system and takes the ones that came
+    // in before the window listened, in that order (startup.ts; a failure is
+    // told like a failed import, ERR-006).
+    const opening = startOpening({
+      onOpenProject,
+      onOpenFailed,
+      takePendingOpen: () => api.takePendingOpen(),
+      takeOpenErrors: () => api.takeOpenErrors(),
+      open: openFile,
+      failed: (e) => notifyError(e, "import"),
+    });
     const tick = setInterval(() => (live.now = Date.now()), 5000);
     return () => {
       un.then((f) => f());
       unLive.then((f) => f());
       unSettings.then((f) => f());
-      unOpen.then((f) => f());
-      unOpenFailed.then((f) => f());
+      opening.stop();
       unClose.then((f) => f());
       clearInterval(tick);
       window.removeEventListener("error", onError);
@@ -195,6 +217,10 @@
     // Cmd+, / Ctrl+, opens the settings, as in most desktop apps.
     if ((e.metaKey || e.ctrlKey) && e.key === ",") {
       e.preventDefault();
+      // Not while a writer of the job is out (a drag, Revert or the offer
+      // put-back): every key is refused then, this one too (HUNT-702,
+      // HUNT-1103; this listener runs before the editor's).
+      if (anyWriterOpen()) return;
       settingsOpen = true;
     }
   }}
@@ -216,6 +242,7 @@
     onopen={(id) => (openId = id)}
     onchanged={refresh}
     {broken}
+    {foreign}
     onconnect={() => (connect = true)}
     onsettings={() => (settingsOpen = true)}
   />
@@ -224,8 +251,9 @@
 {#if appSettings.view?.settings.folder_request}
   <FolderRequest
     request={appSettings.view.settings.folder_request}
+    jobOpen={!!openId}
     onanswered={async (moved) => {
-      applySettings(await api.getSettings());
+      await rereadSettings();
       if (moved) libraryChanged();
     }}
   />
@@ -233,8 +261,15 @@
 {#if appSettings.view?.settings.file_request && !appSettings.view.settings.folder_request}
   <FileRequest
     request={appSettings.view.settings.file_request}
-    onanswered={async () => applySettings(await api.getSettings())}
+    onanswered={rereadSettings}
   />
+{/if}
+<!-- The card waits while a folder or file request holds the screen: one AI decision at a time (UI-210). -->
+{#if openAiChange(appSettings.view?.settings) && !appSettings.view?.settings.folder_request && !appSettings.view?.settings.file_request}
+  {@const change = openAiChange(appSettings.view?.settings)!}
+  {#key change.id}
+    <AiSettingsChange {change} settings={appSettings.view?.settings ?? null} onanswered={applySettings} />
+  {/key}
 {/if}
 {#if settingsOpen}
   <SettingsDialog onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />

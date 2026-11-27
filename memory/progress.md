@@ -439,3 +439,24 @@ sessions that use it know where things stand.
   opening inside a dormer on swept roofs deducted from the host too (R3-5,
   same on main); chimney front side within 1 cm above a joined break and
   across the ridge not deducted (R3-4, same on main).
+
+## 2026-11-24 - repeated whole-app audit, rounds 1-21 (branch claude/project-thread-6i618l, PR #55)
+- Done: 21 audit rounds (six tectora-review reviewers + bug hunter, two
+  independent verifiers per round), every verified finding fixed with a guard
+  test. Boards and screenshots in the project files `audit-2026-11-21/`.
+  Round 7: plan drag as one transaction (`dragsession.ts`). Rounds 15-21: the
+  AI review moved from a log walk to the job's version (ADR 0006) and then to
+  an explicit baseline file `.activity/<id>.baseline.json` (ADR 0007, with
+  round-21 amendments R10 outside saves, older Tectora's Accept, R7 swap).
+  Round 21 also: library mark and filter "waits for review" (MCP
+  `list_projects` `review_pending`), banner = net change against the approved
+  state, overlapping hand-drawn faces warn, place_item inside the work bound,
+  no-corner Ctrl+Z / Backspace / Delete do nothing. Version 0.10.0.
+- State: make check exit 0, make sweeps exit 0, tectora-app clippy (fake
+  pkg-config) exit 0, make e2e 714 passed at the round-21 merge.
+- Next: Jakub accepts ADR 0006/0007 and merges PR #55, then tags v0.10.0
+  (notes in the project files `releases/release-0.10.0-notes.txt`).
+- Blockers / open questions: round 21 was declared the last review round by
+  Jakub; its known-open list (TEST-2012 has no deterministic E2E,
+  `folded_loop` not under the work bound, `merge::value_at` and keys with
+  `.` or `[`) is in the round-21 run folder `known-open.md`.

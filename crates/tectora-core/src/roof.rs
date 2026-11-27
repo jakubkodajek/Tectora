@@ -1345,7 +1345,7 @@ fn snap_markers(part: &RoofPart) -> RoofPart {
         let j = (i + 1) % n;
         let (a, b) = (out.edges[i].start, out.edges[j].start);
         let d = a.distance(b);
-        if out.edges[i].direction_rad.is_some() && d > 0.0 && d < 0.005 {
+        if out.edges[i].direction_rad.is_some() && d > 0.0 && d < crate::model::MARKER_SNAP {
             out.edges[j].start = a;
         }
     }
