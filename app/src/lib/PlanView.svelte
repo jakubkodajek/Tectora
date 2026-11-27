@@ -231,14 +231,6 @@
   const markedLines = $derived(
     lineMarks.map((m) => result?.parts[m.part]?.geometry.lines[m.index]).filter((l) => !!l),
   );
-  /**
-   * A press on a roof line pins its details and is otherwise a press on the
-   * building under it (UI-701): the first selects it, the next drags it.
-   */
-  function pressLine(e: PointerEvent, part: number, index: number) {
-    if (!placing && !drawing && !locked && !otherPointer(e) && button(e) === 0) onlinepick?.({ part, index });
-    press(e, { on: "part", part });
-  }
   const hovering = () => !drag && !objDrag && !pan && !placing && !drawing;
   // A face under another building's higher roof gets no label: it would be
   // written over the roof that covers it (UX-012).
@@ -524,7 +516,8 @@
   /** What a press landed on: the plan itself, or one of its shapes. */
   type PressOn =
     | { on: "plan" }
-    | { on: "part"; part: number }
+    /** `line`: the press landed on that roof line of the part (its details are pinned, UI-701). */
+    | { on: "part"; part: number; line?: number }
     | { on: "edge"; part: number; edge: number }
     | { on: "vertex"; part: number; vertex: number }
     | { on: "item"; item: ItemRef };
@@ -547,7 +540,12 @@
     longPress(e, at);
     if (at.on === "plan") pressPlan(e);
     else if (at.on === "item") pressItem(e, at.item);
-    else if (at.on === "part") pressPart(e, at.part);
+    else if (at.on === "part") {
+      // A press on a roof line pins its details and is otherwise a press on
+      // the building under it (UI-701): the first selects it, the next drags it.
+      if (at.line !== undefined && !placing && !drawing && button(e) === 0) onlinepick?.({ part: at.part, index: at.line });
+      pressPart(e, at.part);
+    }
     else if (at.on === "vertex") pressVertex(e, at.part, at.vertex);
     else pressEdge(e, at.part, at.edge);
   }
@@ -1053,7 +1051,7 @@
             data-line={`${pi}:${li}`} role="button" tabindex="-1" aria-label={t("lineinfo.title")}
             onpointerenter={() => { if (hovering()) onlinehover?.({ part: pi, index: li }); }}
             onpointerleave={() => onlinehover?.(null)}
-            onpointerdown={(ev) => pressLine(ev, pi, li)} />
+            onpointerdown={(ev) => press(ev, { on: "part", part: pi, line: li })} />
         {/each}
       {/each}
     {/if}

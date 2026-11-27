@@ -22,7 +22,7 @@ const ONE = new Set(["T", "F", "G", "K", "O", "P", "c", "S", "W"]);
 
 /** The name of one line of code `code` in the UI language. */
 export function lineTitle(code: string): string {
-  if (OWN[code]) return t(OWN[code]);
+  if (Object.hasOwn(OWN, code)) return t(OWN[code]);
   return ONE.has(code) ? t(`lineinfo.${code}`) : t("line.other");
 }
 
