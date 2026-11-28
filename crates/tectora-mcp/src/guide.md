@@ -305,6 +305,34 @@ The tools cover every operation of the Tectora editor:
   at the sheet's foot, as the app's sheet has.
 - `get_schema`: the JSON Schema of the `.tectora` file.
 
+## Towers, turrets and curved walls
+
+- A tower, turret or spire standing through the roof is one `set_tower`
+  call, not a part: a convex shaft (`rectangle`, regular `polygon` with
+  `sides`, or `circle`; `corner_radius` rounds a rectangle's or polygon's
+  corners) whose own roof starts at `base_height` and is a stack of `tiers`
+  from the bottom up. Each tier rises `rise` m and ends `top_width` wide (0
+  = a point); `bulge` curves its profile (+ outward: onion, − inward: bell).
+  A tier as wide at the top as at the bottom is a vertical wall (a lantern):
+  wall area, not roof area. Read the tiers off the section or elevation:
+  every change of slope or curvature is a new tier; a cornice that juts out
+  is a short tier wider at the top. The cross, ball and weathervane are no
+  tier. Start from a `preset` (pyramid, octagon, cone, helm, onion, baroque)
+  and give your own `tiers` when the drawing dimensions them.
+- The shaft is cut out of the roofs like a chimney (WV/WH/WS lines). Its
+  `base_height` must be above the roof around it: `calc` lists each tower
+  with `shaft.base_below_roof` when it is not. `calc` also lists every
+  tier's pitch, area and material, the roof area and the wall area
+  (lantern), and the shaft's cladding area above the roof.
+- A cone on a round building drawn as walls (DACAD's way) still works; a
+  tower is simpler and exact.
+- A rounded building corner is `edit_walls` `round_corner {index, radius}`
+  (the corner at the start of wall `index`; on an eave it gives a conical
+  hip); a wall bent into an arc is `bend_wall {index, bulge}` (+ outward);
+  a semicircular end (an apse) is `bend_wall` with `bulge` half the wall's
+  length. Both make short walls in 11.25° steps (`segments` 2-64 to choose)
+  that keep the wall's roof definition; wall indices after the arc shift.
+
 ## Stored result
 
 When a job leaves the draft status (`update_job` with `status`), its result

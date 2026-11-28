@@ -1944,6 +1944,37 @@ impl Server {
                     "engine_version": tectora_core::snapshot::ENGINE_VERSION,
                     "stored_result": tectora_core::snapshot::status_of(&geos, &p),
                 });
+                // Towers: each one's roof (already in the totals), walls,
+                // tiers and shaft, without the rings the editor draws.
+                if !p.towers.is_empty() {
+                    out["towers"] = p
+                        .towers
+                        .iter()
+                        .map(|t| {
+                            let r = t.calculate();
+                            let sh = tectora_core::tower::shaft(t, &geos);
+                            json!({
+                                "label": t.label,
+                                "roof_area_m2": r.as_ref().map(|r| round(r.roof_area(), 2)),
+                                "wall_area_m2": r.as_ref().map(|r| round(r.wall_area(), 2)),
+                                "top_height_m": r.as_ref().map(|r| round(r.top_height, 3)),
+                                "tiers": r.as_ref().map(|r| r.tiers.iter().map(|k| json!({
+                                    "kind": k.kind,
+                                    "pitch_deg": round(k.pitch_deg, 2),
+                                    "area_m2": round(k.area, 2),
+                                    "material": k.material,
+                                    "top_height_m": round(k.top_height, 3),
+                                })).collect::<Vec<_>>()),
+                                "flat_top_m2": r.as_ref().and_then(|r| r.cap.as_ref()).map(|c| round(c.area, 2)),
+                                "shaft": {
+                                    "wall_area_m2": round(sh.wall_area, 2),
+                                    "on_roof": sh.on_roof,
+                                    "base_below_roof": sh.base_below_roof,
+                                },
+                            })
+                        })
+                        .collect();
+                }
                 // Input the calculation left out (a building with a wall
                 // under 1 cm, …): its figures are missing from the totals.
                 let problems = p.problems();

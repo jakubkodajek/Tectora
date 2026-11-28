@@ -3718,6 +3718,95 @@ mod tests {
         assert_eq!(list["projects"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
+
+    #[test]
+    fn set_tower_adds_a_turret_from_a_preset_and_calc_counts_it() {
+        let (mut s, id) = setup();
+        let before = call(&mut s, "calc", json!({ "id": id }));
+        let r = call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "věž", "preset": "onion", "center": [5, 4],
+                    "width": 2, "base_height": 15 }),
+        );
+        assert_eq!(r["index"], 0);
+        let area = r["roof_area_m2"].as_f64().unwrap();
+        assert!(area > 1.0, "{r}");
+        let t = &s.store.load(&id).unwrap().towers[0];
+        assert_eq!(t.tiers.len(), 3);
+        // Change one in place: a cone instead, the rest kept.
+        let r = call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "kužel", "index": 0, "preset": "cone" }),
+        );
+        assert_eq!(r["index"], 0);
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.towers.len(), 1);
+        assert_eq!(p.towers[0].base_height, 15.0);
+        let after = call(&mut s, "calc", json!({ "id": id }));
+        let roof = |v: &Value| v["total"]["roof_area_m2"].as_f64().unwrap();
+        let cone = r["roof_area_m2"].as_f64().unwrap();
+        // The roof gained the cone and lost the shaft's hole (< 2 × 2 m / cos 40°).
+        let gained = roof(&after) - roof(&before);
+        let t = &after["towers"][0];
+        assert_eq!(t["tiers"].as_array().unwrap().len(), 1);
+        assert!(
+            (t["roof_area_m2"].as_f64().unwrap() - cone).abs() < 0.01,
+            "{t}"
+        );
+        assert_eq!(t["shaft"]["base_below_roof"], false);
+        assert!(
+            gained < cone && gained > cone - 4.0 / 40f64.to_radians().cos() - 0.01,
+            "{gained} {cone}"
+        );
+    }
+
+    #[test]
+    fn set_tower_refuses_a_bad_tower_and_saves_nothing() {
+        let (mut s, id) = setup();
+        let e = s
+            .call_tool(
+                "set_tower",
+                &json!({ "id": id, "summary": "x", "center": [5, 4], "width": 2, "base_height": 15,
+                         "tiers": [{ "rise": 1, "top_width": 1, "bulge": 5 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("tower_"), "{e}");
+        assert!(s.store.load(&id).unwrap().towers.is_empty());
+        let e = s
+            .call_tool(
+                "set_tower",
+                &json!({ "id": id, "summary": "x", "index": 2, "width": 3 }),
+            )
+            .unwrap_err();
+        assert!(e.contains("does not exist"), "{e}");
+    }
+
+    #[test]
+    fn edit_walls_rounds_a_corner_and_bends_a_wall_into_an_apse() {
+        let (mut s, id) = setup();
+        let n0 = s.store.load(&id).unwrap().parts[0].edges.len();
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "oblouk", "part": 0,
+                    "operations": [{ "op": "round_corner", "index": 1, "radius": 2 }] }),
+        );
+        let n1 = s.store.load(&id).unwrap().parts[0].edges.len();
+        assert!(n1 > n0, "{n0} -> {n1}");
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "apsida", "part": 0,
+                    "operations": [{ "op": "bend_wall", "index": 0, "bulge": 2, "segments": 8 }] }),
+        );
+        let n2 = s.store.load(&id).unwrap().parts[0].edges.len();
+        assert_eq!(n2, n1 + 7);
+        let c = call(&mut s, "calc", json!({ "id": id }));
+        assert!(c["total"]["roof_area_m2"].as_f64().unwrap() > 0.0, "{c}");
+        assert_eq!(c["towers"], Value::Null);
+    }
 }
 
 /// MCP tools no other test called, or called without looking at the result

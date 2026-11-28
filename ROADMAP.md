@@ -16,6 +16,12 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
   simple triangle, two parallels, point in space, merge faces; hip/valley
   pitches; build-up thickness; round roof (Runddach).
 - Flat roof, hand-drawn roof lines and new roof faces.
+- Towers and turrets beyond DACAD (ADR 0008): rectangular, polygonal or
+  round shafts, optionally with rounded corners, roofed with a stack of
+  straight, bell or onion tiers (pyramid, octagonal spire, cone, helm,
+  onion, Baroque presets), the shaft cut out of the roof like a chimney.
+  Rounded building corners, walls bent into an arc and semicircular ends
+  (apses) as DACAD-style polygons of short walls.
 - Move, rotate, mirror and copy parts; shift a wall in parallel.
 - Direct editing in the plan and the 3D view: drag dormers, chimneys,
   windows, openings, hand-drawn shapes and the selected part; right-click

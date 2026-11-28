@@ -59,6 +59,11 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    roofs are joined by those eave heights. The building height (`height`,
    top of the walls, from the sections) is a separate value: the eave at
    the overhang edge is usually lower.
+   A turret, spire or tower through the roof is one `set_tower` (shaft
+   shape and width from the plan, `base_height` and one tier per change of
+   slope or curvature from the section; see the guide, "Towers, turrets
+   and curved walls"). Rounded corners and apses are `edit_walls`
+   `round_corner` / `bend_wall` on the footprint, not hand-drawn faces.
    Where a drawing dimensions a dormer, chimney or window from the eave and
    from a roof edge, place it with `place_item` (`from_eave` along the
    slope, `from_left` or `from_right`) and check it against `placements`

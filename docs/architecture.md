@@ -71,6 +71,7 @@ remain.
 | `coresol/` | DACAD's intermediate files: RD2 reader, core SOL, INT and W3D writers |
 | `roof`, `raised`, `union`, `multiroof`, `gable_wall` | Tectora's own weighted straight-skeleton sweep engine, used only when the core path fails for a reason of ours |
 | `openings`, `dormer`, `flat` | windows, chimneys, openings, dormers and flat roofs applied as DACAD does; `openings::generate_project` is the entry point for every caller |
+| `tower` | towers and turrets (ADR 0008): a closed-form roof of tiers over a convex shaft, added to the totals, lines and list; the shaft is cut out of the roofs as a chimney (`openings::with_tower_shafts`) |
 | `check` | plausibility warnings for roofs that are DACAD-identical but geometrically odd; `check::sound`, the self-check every departure from the core's result must pass |
 | `coplanar`, `wing_split` | the two departures tried where the core stops: parallel planes joined into one face, a low wing calculated as a lean-to against the house wall |
 | `quantities`, `report` | quantities by DACAD line code and by material; `report::calc` builds what the UI, CLI and MCP show |
