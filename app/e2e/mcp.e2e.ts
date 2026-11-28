@@ -459,13 +459,15 @@ test.describe("MCP parity", () => {
       await tool(page, "tool.chimney").click();
       await clickPlan(page, 5, 3);
       const ob = bar(page, "opening.chimney");
+      // Position in plan sits in the bar's More row (object editor redesign).
+      await ob.getByTestId("object-more").click();
       await setField(ob.getByLabel(cs("opening.rotation")), 0);
       await setField(ob.getByLabel(cs("opening.top")), 8.5);
       await tool(page, "tool.window").click();
       await clickPlan(page, 3, 1.5);
       const wb = bar(page, "opening.window");
-      await setField(wb.getByRole("textbox", { name: /^X\b/ }), 3);
-      await setField(wb.getByRole("textbox", { name: /^Y\b/ }), 1.5);
+      await setField(wb.getByLabel(cs("place.cornerX")), 3);
+      await setField(wb.getByLabel(cs("place.cornerY")), 1.5);
     }, () =>
       mcp.call("set_openings", {
         id: ids[1],

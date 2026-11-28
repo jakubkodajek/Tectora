@@ -3691,7 +3691,8 @@
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} edit={barEdit}
             onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
         {:else if openSel}
-          <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} edit={barEdit}
+          <OpeningBar {project} {result} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} edit={barEdit}
+            onedit={() => openSel && openProperties({ kind: openSel.kind, index: openSel.index })}
             placement={openSel ? placementOf(result, openSel) : null}
             onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
         {:else if manualSel}
@@ -3777,11 +3778,13 @@
 {#if objDlg && openSel && project}
   <Modal title={itemTitle(openSel)} width={760} onclose={() => closeObjDlg(false)}>
     <div class="obj-dlg" data-testid="object-dialog">
-      <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }} edit={barEdit}
+      <OpeningBar {project} {result} dialog bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={() => { objDlg = false; deleteOpening(); }} edit={barEdit}
         placement={placementOf(result, openSel)}
         onplace={(e, l, r) => (openSel ? placeItem({ kind: openSel.kind, index: openSel.index }, e, l, r) : undefined)} />
     </div>
     {#snippet footer()}
+      {@const del = t(openSel?.kind === "chimney" ? "opening.deleteChimney" : openSel?.kind === "window" ? "opening.deleteWindow" : "opening.deleteHole")}
+      <button class="btn ghost danger dlg-del" data-testid="object-dialog-delete" onclick={() => { objDlg = false; deleteOpening(); }}><Icon name="trash" size={15} />{del}</button>
       <button class="btn" onclick={() => closeObjDlg(false)}>{t("common.cancel")}</button>
       <button class="btn primary" data-testid="object-dialog-ok" onclick={() => closeObjDlg(true)}>{t("common.ok")}</button>
     {/snippet}
@@ -4408,10 +4411,9 @@
 
   /* Edit bars below the views never take more than about half of a low window. */
   /* The object bar inside its dialog: no dock border, fields wrap. */
-  .obj-dlg :global(.bar) {
-    border-top: 0;
-    padding: 0;
-    min-height: 0;
+  .dlg-del {
+    margin-right: auto;
+    color: var(--danger);
   }
   .main > :global(.bar) {
     flex: none;

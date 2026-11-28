@@ -322,6 +322,62 @@ textarea:focus {
   color: var(--text-2);
 }
 
+/* Named groups of fields in an object editor (OpeningBar, DormerBar): a
+   caption in the results panel's heading style, the fields, then read-only
+   facts, a hint and status lines. Separated by space, never by boxes. */
+.obj-grp {
+  min-width: 0;
+  margin: 0;
+}
+.obj-grp .obj-cap {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.obj-fact {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.obj-fact b {
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.obj-hint {
+  margin: 6px 0 0;
+  max-width: 46ch;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+.obj-note {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.obj-note::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  transform: translateY(-1px);
+  background: var(--danger);
+}
+.obj-note.info::before {
+  background: var(--text-3);
+}
+
 .btn.sm {
   height: 30px;
   padding: 0 12px;
