@@ -20,6 +20,29 @@ fn server() -> Server {
     Server::new(Store::new(dir).unwrap())
 }
 
+/// A server whose reports stay in a scratch outbox beside its library (no
+/// relay configured: reports are `local`). Nothing touches the user's own
+/// configuration folder (plan-delivery D10).
+fn local_server() -> Server {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "tectora-mcp-outbox-{}-{}-{n}",
+        now_ms(),
+        std::process::id()
+    ));
+    Server::with_relay(
+        Store::new(dir.join("lib")).unwrap(),
+        &dir.join("reports"),
+        None,
+    )
+}
+
+/// The folder the queued ZIPs of `local_server` are in.
+fn outbox_dir(s: &Server) -> std::path::PathBuf {
+    s.store.dir.parent().unwrap().join("reports").join("outbox")
+}
+
 fn hip_job(s: &mut Server) -> String {
     let r = s
         .call_tool(
@@ -1056,8 +1079,8 @@ fn the_bug_report_tools_are_listed_with_their_inputs() {
 }
 
 #[test]
-fn a_bug_report_written_over_mcp_goes_to_the_library_reports_folder() {
-    let mut s = server();
+fn a_bug_report_written_over_mcp_is_queued_in_the_outbox() {
+    let mut s = local_server();
     s.client = "Claude".into();
     let id = {
         let r = s
@@ -1079,12 +1102,11 @@ fn a_bug_report_written_over_mcp_goes_to_the_library_reports_folder() {
             &json!({ "description": "Gable looks wrong", "id": id, "summary": "Report the gable problem" }),
         )
         .unwrap();
-    let path = r["path"].as_str().unwrap();
-    assert!(
-        std::path::Path::new(path).starts_with(s.store.dir.join("reports")),
-        "{path}"
-    );
+    assert_eq!(r["state"], "local", "{r}");
+    assert!(r.get("path").is_none(), "an AI never learns a path: {r}");
     let file_name = r["file_name"].as_str().unwrap();
+    let path_buf = outbox_dir(&s).join(file_name);
+    let path = path_buf.to_str().unwrap();
     assert!(
         file_name.starts_with("tectora-report-") && file_name.ends_with(".zip"),
         "{file_name}"
@@ -1131,7 +1153,12 @@ fn a_bug_report_written_over_mcp_goes_to_the_library_reports_folder() {
                      "include_history": false, "summary": "Report without the customer" }),
         )
         .unwrap();
-    let z = zip_names(r["path"].as_str().unwrap());
+    let z = zip_names(
+        outbox_dir(&s)
+            .join(r["file_name"].as_str().unwrap())
+            .to_str()
+            .unwrap(),
+    );
     let read = s
         .call_tool("read_bug_report", &json!({ "name": r["file_name"] }))
         .unwrap();
@@ -1147,14 +1174,19 @@ fn a_bug_report_written_over_mcp_goes_to_the_library_reports_folder() {
             &json!({ "description": "no job", "summary": "Report" }),
         )
         .unwrap();
-    let z = zip_names(r["path"].as_str().unwrap());
+    let z = zip_names(
+        outbox_dir(&s)
+            .join(r["file_name"].as_str().unwrap())
+            .to_str()
+            .unwrap(),
+    );
     assert!(!z.iter().any(|k| k.starts_with("job/")));
     let _ = std::fs::remove_dir_all(&s.store.dir);
 }
 
 #[test]
 fn a_bug_report_over_mcp_refuses_a_path_a_missing_summary_and_a_long_text() {
-    let mut s = server();
+    let mut s = local_server();
     let outside = s.store.dir.join("elsewhere");
     // The tool exists and a good call works (else every refusal below is vacuous).
     s.call_tool(
@@ -1162,10 +1194,11 @@ fn a_bug_report_over_mcp_refuses_a_path_a_missing_summary_and_a_long_text() {
         &json!({ "description": "ok", "summary": "s" }),
     )
     .unwrap();
-    let reports = s.store.dir.join("reports");
+    let reports = outbox_dir(&s);
+    // The queued ZIP and its sidecar.
     let count = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.count()).unwrap_or(0);
     let written = count(&reports);
-    assert_eq!(written, 1);
+    assert_eq!(written, 2);
     for args in [
         json!({ "description": "x", "summary": "s", "path": outside }),
         json!({ "description": "x", "summary": "s", "dir": outside }),
@@ -1186,7 +1219,7 @@ fn a_bug_report_over_mcp_refuses_a_path_a_missing_summary_and_a_long_text() {
 
 #[test]
 fn bug_reports_are_listed_and_read_back_but_only_real_ones_by_plain_name() {
-    let mut s = server();
+    let mut s = local_server();
     let id = gable_job(&mut s);
     let made = s
         .call_tool(
@@ -1208,7 +1241,7 @@ fn bug_reports_are_listed_and_read_back_but_only_real_ones_by_plain_name() {
     );
     assert!(
         keys.iter()
-            .all(|k| ["manifest", "report", "note", "warning"].contains(k)),
+            .all(|k| ["state", "manifest", "report", "note", "warning"].contains(k)),
         "only the manifest and the report (and a note) are returned: {keys:?}"
     );
     assert_eq!(
@@ -1217,7 +1250,7 @@ fn bug_reports_are_listed_and_read_back_but_only_real_ones_by_plain_name() {
     );
     assert_eq!(r["manifest"]["format"], "tectora-bug-report");
     // Not a report, not a plain name, not there, too big.
-    let reports = s.store.dir.join("reports");
+    let reports = outbox_dir(&s);
     std::fs::write(reports.join("notes.zip"), b"PK").unwrap();
     std::fs::write(reports.join("tectora-report-20260101-000000-x.txt"), b"x").unwrap();
     {
@@ -1261,7 +1294,7 @@ fn bug_reports_are_listed_and_read_back_but_only_real_ones_by_plain_name() {
 /// `load_error` (the same gather path as the app's), never refused.
 #[test]
 fn a_report_about_a_job_that_does_not_open_is_written_with_its_load_error() {
-    let mut s = server();
+    let mut s = local_server();
     let good = gable_job(&mut s);
     let text = std::fs::read_to_string(s.store.path(&good).unwrap()).unwrap();
     let mut far: Value = serde_json::from_str(&text).unwrap();

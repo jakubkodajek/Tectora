@@ -344,3 +344,73 @@ fn no_app_command_calculates_a_roof_outside_the_work_bound() {
         bad.join("\n")
     );
 }
+
+// ---- bug reports go through the relay (plan-delivery D11, ADR 0008) ----
+
+const REPORT_COMMANDS: [&str; 7] = [
+    "create_bug_report",
+    "bug_report_name",
+    "show_bug_report",
+    "bug_report_outbox",
+    "send_bug_reports",
+    "save_queued_bug_report",
+    "discard_bug_report",
+];
+
+#[test]
+fn the_report_commands_are_in_the_app_and_answered_by_the_bridge() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let bridge = read("crates/tectora-core/examples/ui_bridge.rs");
+    let commands = tauri_commands(&lib);
+    let arms = bridge_arms(&bridge);
+    for c in REPORT_COMMANDS {
+        assert!(
+            commands.iter().any(|x| x == c),
+            "{c} is not in generate_handler!"
+        );
+        assert!(arms.contains_key(c), "the bridge does not answer {c}");
+        assert!(lib.contains(&format!("fn {c}(")), "no fn {c}");
+    }
+}
+
+#[test]
+fn the_report_commands_that_use_the_network_or_the_disk_run_off_the_main_thread() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    for c in [
+        "create_bug_report",
+        "bug_report_outbox",
+        "send_bug_reports",
+        "save_queued_bug_report",
+        "discard_bug_report",
+    ] {
+        let at = lib
+            .find(&format!("fn {c}("))
+            .unwrap_or_else(|| panic!("no fn {c}"));
+        let before: Vec<&str> = lib[..at].lines().rev().take(3).collect();
+        assert!(
+            before
+                .iter()
+                .any(|l| l.contains("#[tauri::command(async)]")),
+            "{c} must be #[tauri::command(async)], saw {before:?}"
+        );
+    }
+}
+
+#[test]
+fn the_reports_folder_is_gone_from_the_app_and_the_bridge() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let bridge = read("crates/tectora-core/examples/ui_bridge.rs");
+    let at = lib.find("fn open_folder(").expect("fn open_folder");
+    let body = &lib[at..at + lib[at..].find("\n}\n").expect("end of open_folder")];
+    assert!(
+        !body.contains("\"reports\""),
+        "open_folder still accepts \"reports\""
+    );
+    for (name, src) in [("lib.rs", &lib), ("ui_bridge.rs", &bridge)] {
+        assert!(
+            !src.contains("reports_dir"),
+            "{name} still mentions reports_dir"
+        );
+        assert!(!src.contains("ensure_library_reports"), "{name}");
+    }
+}

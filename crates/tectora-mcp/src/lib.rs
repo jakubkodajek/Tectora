@@ -31,6 +31,8 @@ mod drawings;
 #[cfg(test)]
 mod input_tests;
 mod more;
+#[cfg(test)]
+mod relay_tests;
 mod worker;
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -3991,68 +3993,13 @@ mod tests {
     /// Tests that read or write the settings file (through
     /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
     /// other's half-written defaults.
-    static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Bug report folder (plan target/work/bug-report, criteria 9 and 10): an
-    /// AI client can only ask for it, and a report goes where the user set.
+    /// BUG-2 (fix round 1): the MCP log carries the reason of a failed tool
+    /// but no job name, also while a report about that job is queued. (The
+    /// reports-folder parts of this test went with `reports_dir`, ADR 0008.)
     #[test]
-    fn the_reports_folder_is_asked_for_and_a_report_goes_there() {
-        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
-        let base = std::env::temp_dir().join(format!("tectora-mcp-reports-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
-        let mut s = server();
-        let drive = base.join("drive");
-        let r = s
-            .call_tool(
-                "update_settings",
-                &json!({ "reports_dir": drive.to_string_lossy(), "summary": "Reports to the shared drive" }),
-            )
-            .unwrap();
-        assert_eq!(
-            r["settings"]["folder_request"]["changes"]["reports_dir"],
-            json!(drive.to_string_lossy())
-        );
-        assert!(!drive.exists(), "asking creates no folder");
-        // Until the user says yes the library folder is used.
-        let made = s
-            .call_tool(
-                "create_bug_report",
-                &json!({ "description": "d", "summary": "Report" }),
-            )
-            .unwrap();
-        assert!(
-            std::path::Path::new(made["path"].as_str().unwrap())
-                .starts_with(s.store.dir.join("reports")),
-            "{made}"
-        );
-        let shown = Settings::load().folder_request.unwrap().changes;
-        Settings::update(|s| s.answer_folder_request(&shown, true)).unwrap();
-        let r = s.call_tool("get_settings", &json!({})).unwrap();
-        assert_eq!(r["effective"]["reports_dir"], json!(drive));
-        let made = s
-            .call_tool(
-                "create_bug_report",
-                &json!({ "description": "d", "summary": "Report" }),
-            )
-            .unwrap();
-        let path = std::path::PathBuf::from(made["path"].as_str().unwrap());
-        assert_eq!(path.parent(), Some(drive.as_path()));
-        let listed = s.call_tool("list_bug_reports", &json!({})).unwrap();
-        assert!(
-            listed
-                .to_string()
-                .contains(made["file_name"].as_str().unwrap())
-        );
-        let _ = std::fs::remove_dir_all(&base);
-        let _ = std::fs::remove_dir_all(&s.store.dir);
-    }
-
-    /// ERR-007, ERR-006, BUG-2 (fix round 1): a reports folder that is gone
-    /// is an error, damaged reports are counted, and the MCP log carries the
-    /// reason of a failed tool but no job name.
-    #[test]
-    fn listing_says_when_the_folder_is_gone_and_the_log_has_codes_but_no_job_names() {
+    fn the_log_has_codes_but_no_job_names() {
         let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
         let base = std::env::temp_dir().join(format!("tectora-mcp-r1-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -4062,11 +4009,11 @@ mod tests {
             std::env::set_var("TECTORA_LOG_DIR", base.join("logs"));
         }
         tectora_core::applog::init("mcp");
-        let mut s = server();
-        let drive = base.join("drive");
-        std::fs::create_dir_all(&drive).unwrap();
-        Settings::update(|st| st.patched(&json!({ "reports_dir": drive.to_string_lossy() })))
-            .unwrap();
+        let mut s = Server::with_relay(
+            Store::new(base.join("lib")).unwrap(),
+            &base.join("reports"),
+            None,
+        );
         let id = {
             let r = s
                 .call_tool(
@@ -4083,23 +4030,7 @@ mod tests {
                 &json!({ "description": "d", "id": id, "summary": "Report" }),
             )
             .unwrap();
-        // A damaged report beside the good one.
-        std::fs::write(
-            drive.join("tectora-report-20260101-000000-fake.zip"),
-            b"junk",
-        )
-        .unwrap();
-        let list = s.call_tool("list_bug_reports", &json!({})).unwrap();
-        assert_eq!(list["reports"].as_array().unwrap().len(), 1, "{list}");
-        assert_eq!(list["skipped"], 1, "{list}");
-        // The folder goes away (an unplugged drive).
-        std::fs::remove_dir_all(&drive).unwrap();
-        let e = s.call_tool("list_bug_reports", &json!({})).unwrap_err();
-        assert!(!e.is_empty());
-        assert!(
-            s.call_tool("read_bug_report", &json!({ "name": made["file_name"] }))
-                .is_err()
-        );
+        assert!(made["file_name"].is_string(), "{made}");
         // A failed tool leaves its reason, no arguments, no job names.
         let line = s
             .respond_line(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_project","arguments":{"id":"gibt-es-nicht"}}}"#)

@@ -108,9 +108,8 @@ describe("texts", () => {
     const keys = [
       "report.button", "report.title", "report.what", "report.whatHint", "report.included", "report.inc.job",
       "report.inc.customer", "report.inc.customerHint", "report.inc.files", "report.inc.history", "report.inc.snapshot",
-      "report.inc.log", "report.noJob", "report.dest", "report.destNone", "report.send", "report.saveAs", "report.sending",
-      "report.done", "report.show", "report.leftOut", "settings.reportsDir", "settings.reportsDirHint",
-      "settings.reportsDirUnset", "err.ctx.report",
+      "report.inc.log", "report.noJob", "report.send", "report.saveAs", "report.sending",
+      "report.done", "report.show", "report.leftOut", "err.ctx.report",
     ];
     for (const [loc, dict] of Object.entries(DICTS)) {
       expect(keys.filter((k) => !(k in dict)), loc).toEqual([]);
@@ -169,11 +168,11 @@ describe("leftOutText (UX-005, ARCH-004, ERR-003)", () => {
 });
 
 describe("texts, fix round 1", () => {
-  it("has the keys of the reworked dialog in all four languages", () => {
-    const keys = ["report.save", "report.savedTo", "report.passOn", "report.destSettings", "report.libraryHint", "report.destMissing"];
+  it("has the keys the dialog still uses in all four languages", () => {
+    // The folder texts (report.save, savedTo, destSettings, destMissing, dest,
+    // destNone) went with the reports folder (ADR 0008); reportsend.test.ts
+    // checks that they are gone and the new ones are there.
+    const keys = ["report.passOn", "report.libraryHint"];
     for (const [loc, dict] of Object.entries(DICTS)) expect(keys.filter((k) => !(k in dict)), loc).toEqual([]);
-    // UX-001: the main button saves a report; "Send" promises more than it does.
-    expect(DICTS.cs["report.save"]).toBe("Uložit hlášení");
-    expect(DICTS.en["report.save"]).toMatch(/^Save report/);
   });
 });

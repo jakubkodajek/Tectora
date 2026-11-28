@@ -12,7 +12,6 @@ use std::sync::Once;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use tectora_core::bugreport::{self, Dest, Include, Request, Source};
-use tectora_core::settings::Settings;
 use tectora_core::store::{Store, now_ms};
 use tectora_core::{applog, store};
 
@@ -670,20 +669,6 @@ fn file_names_are_plain_ascii_whatever_the_job_is_called() {
 }
 
 // ------------------------------------------------------------ folder and list
-
-#[test]
-fn the_reports_folder_is_the_setting_else_a_folder_in_the_library() {
-    let dir = tmp("folder");
-    let store = Store::new(dir.join("lib")).unwrap();
-    assert_eq!(
-        bugreport::reports_dir(&Settings::default(), &store),
-        store.dir.join("reports")
-    );
-    let own = dir.join("drive");
-    let s: Settings = serde_json::from_value(json!({ "reports_dir": own })).unwrap();
-    assert_eq!(bugreport::reports_dir(&s, &store), own);
-    let _ = fs::remove_dir_all(dir);
-}
 
 #[test]
 fn reports_are_listed_newest_first_and_read_back_only_by_plain_name() {

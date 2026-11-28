@@ -1735,150 +1735,69 @@ mod tests {
         );
     }
 
-    // ---- bug report folder (plan target/work/bug-report, criterion 9) ----
-    // Written against the JSON of the settings so they compile before the
-    // `reports_dir` field exists and fail on its behaviour.
-
-    fn reports_value(s: &Settings) -> Value {
-        serde_json::to_value(s).unwrap()["reports_dir"].clone()
-    }
+    // ---- bug reports are sent, not written to a folder (plan-delivery D8) ----
+    // The `reports_dir` setting is gone (ADR 0008); these replace its tests.
 
     #[test]
-    fn reports_dir_round_trips_and_a_blank_or_null_resets_it() {
-        let d = tmp("reports-dir");
-        let own = d.join("drive").join("reports");
-        let s = Settings::default()
-            .patched(&serde_json::json!({ "reports_dir": own.to_string_lossy() }))
-            .unwrap();
-        assert_eq!(reports_value(&s), serde_json::json!(own.to_string_lossy()));
-        assert!(own.is_dir(), "the folder the user chose is created");
-        let text = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&text).unwrap();
-        assert_eq!(reports_value(&back), reports_value(&s));
-        for reset in [
-            serde_json::json!(null),
-            serde_json::json!(""),
-            serde_json::json!("  "),
-        ] {
-            let r = s
-                .patched(&serde_json::json!({ "reports_dir": reset }))
-                .unwrap();
-            assert_eq!(reports_value(&r), Value::Null);
-        }
-        let _ = fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn reports_dir_must_be_absolute_and_a_folder() {
-        let d = tmp("reports-dir-bad");
-        let base = Settings::default();
+    fn reports_dir_is_not_an_editable_or_folder_key_and_not_described() {
+        assert!(!EDITABLE_KEYS.contains(&"reports_dir"));
+        assert!(!FOLDER_KEYS.contains(&"reports_dir"));
+        assert_eq!(EDITABLE_KEYS.len(), 6);
+        assert_eq!(FOLDER_KEYS.len(), 2);
+        let described = Settings::default().describe();
         assert!(
-            base.patched(&serde_json::json!({ "reports_dir": "relative/reports" }))
-                .is_err()
-        );
-        assert!(
-            base.patched(&serde_json::json!({ "reports_dir": 5 }))
-                .is_err()
-        );
-        let file = d.join("file.txt");
-        fs::write(&file, "x").unwrap();
-        assert_eq!(
-            base.patched(&serde_json::json!({ "reports_dir": file.to_string_lossy() }))
-                .unwrap_err(),
-            SettingsError::NotAFolder
-        );
-        // A settings file that names a relative folder is refused on load too.
-        let loaded: Settings =
-            serde_json::from_value(serde_json::json!({ "reports_dir": "relative" })).unwrap();
-        assert!(loaded.validate().is_err());
-        let _ = fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn a_settings_file_from_before_reports_dir_loads_and_describes_it_unset() {
-        let d = tmp("reports-dir-old");
-        let path = d.join(SETTINGS_FILE);
-        fs::write(&path, r#"{ "locale": "de", "follow_ai": false }"#).unwrap();
-        let s = Settings::load_from(&path);
-        assert_eq!(s.locale.as_deref(), Some("de"));
-        assert_eq!(reports_value(&s), Value::Null);
-        let described = s.describe();
-        assert!(
-            described["effective"]
+            !described["effective"]
                 .as_object()
                 .unwrap()
                 .contains_key("reports_dir"),
             "{described}"
         );
-        assert_eq!(described["effective"]["reports_dir"], Value::Null);
-        let own = d.join("r");
-        let set = s
-            .patched(&serde_json::json!({ "reports_dir": own.to_string_lossy() }))
-            .unwrap();
-        assert_eq!(
-            set.describe()["effective"]["reports_dir"],
-            serde_json::json!(own.to_string_lossy())
+        assert!(
+            !serde_json::to_value(Settings::default())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("reports_dir")
         );
+    }
+
+    #[test]
+    fn a_settings_file_that_still_has_reports_dir_loads_and_saves_without_it() {
+        let d = tmp("reports-dir-gone");
+        let path = d.join(SETTINGS_FILE);
+        fs::write(
+            &path,
+            r#"{ "locale": "de", "reports_dir": "/x", "follow_ai": false }"#,
+        )
+        .unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(
+            s.locale.as_deref(),
+            Some("de"),
+            "the rest of the file loads"
+        );
+        assert!(!s.follow_ai);
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(!text.contains("reports_dir"), "{text}");
         let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
-    fn an_ai_asks_for_the_reports_folder_like_for_the_drawings_folder() {
-        let d = tmp("reports-dir-ai");
+    fn patching_reports_dir_is_refused_as_an_unknown_key() {
+        let d = tmp("reports-dir-patch");
         let own = d.join("drive");
         let base = Settings::default();
-        assert!(FOLDER_KEYS.contains(&"reports_dir"));
-        assert!(EDITABLE_KEYS.contains(&"reports_dir"));
-        let (next, asked) = base
-            .patched_by_ai(
-                &serde_json::json!({ "reports_dir": own.to_string_lossy() }),
-                "Claude",
-                "Reports go to the shared drive",
-            )
-            .unwrap();
-        assert!(asked, "a changed reports folder waits for the user");
-        assert_eq!(reports_value(&next), Value::Null, "nothing changed yet");
-        assert!(!own.exists(), "asking creates no folder");
-        let req = next.folder_request.clone().unwrap();
+        let patch = serde_json::json!({ "reports_dir": own.to_string_lossy() });
         assert_eq!(
-            req.changes["reports_dir"],
-            serde_json::json!(own.to_string_lossy())
+            base.patched(&patch).unwrap_err(),
+            SettingsError::InvalidValue("key")
         );
-        assert_eq!(req.by, "Claude");
-        // The user's yes applies it.
-        let yes = next.answer_folder_request(&req.changes, true).unwrap();
         assert_eq!(
-            reports_value(&yes),
-            serde_json::json!(own.to_string_lossy())
+            base.patched_by_ai(&patch, "Claude", "Reports to the drive")
+                .unwrap_err(),
+            SettingsError::InvalidValue("key")
         );
-        // Asking for what is already set asks nothing.
-        let (_, again) = yes
-            .patched_by_ai(
-                &serde_json::json!({ "reports_dir": own.to_string_lossy() }),
-                "Claude",
-                "same",
-            )
-            .unwrap();
-        assert!(!again);
-        let _ = fs::remove_dir_all(&d);
-    }
-
-    /// BUG-5 (fix round 1): a hand-edited relative or empty `reports_dir`
-    /// counts as unset instead of being used and reported.
-    #[test]
-    fn a_hand_edited_relative_or_empty_reports_dir_counts_as_unset() {
-        let d = tmp("reports-dir-hand");
-        for bad in ["relative/reports", "", "  ", "~/Reports"] {
-            let path = d.join(SETTINGS_FILE);
-            fs::write(&path, serde_json::json!({ "reports_dir": bad }).to_string()).unwrap();
-            let s = Settings::load_from(&path);
-            assert_eq!(reports_value(&s), Value::Null, "{bad:?} kept");
-            assert_eq!(
-                s.describe()["effective"]["reports_dir"],
-                Value::Null,
-                "{bad:?}"
-            );
-        }
+        assert!(!own.exists(), "refusing creates no folder");
         let _ = fs::remove_dir_all(&d);
     }
 }

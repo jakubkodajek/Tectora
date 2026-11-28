@@ -5047,6 +5047,15 @@ dependencies = [
  "serde_json",
  "tectora-core",
  "tectora-drawing",
+ "tectora-relay",
+]
+
+[[package]]
+name = "tectora-relay"
+version = "0.11.0"
+dependencies = [
+ "base64 0.23.1",
+ "serde_json",
 ]
 
 [[package]]
