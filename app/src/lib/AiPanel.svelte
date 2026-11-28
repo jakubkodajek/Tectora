@@ -3,7 +3,7 @@
   // and each saved change with its summary and the exact edits it made.
   import Icon from "./Icon.svelte";
   import { tick } from "svelte";
-  import { describeChange, describeFigure } from "./changes";
+  import { describeChange, describeFigure, towerDetails } from "./changes";
   import { relativeTime } from "./format";
   import { t } from "./i18n.svelte";
   import { actorLabel, actorName, entryKind, historyText, isFresh, live, liveText } from "./live.svelte";
@@ -140,6 +140,11 @@
               {#each a.changes as c}
                 <li onpointerenter={() => onfocus(c)} onpointerleave={() => onfocus(null)}>
                   {describeChange(c, project)}
+                  {#if towerDetails(c, project).length}
+                    <ul class="details" data-testid="ai-tower-details">
+                      {#each towerDetails(c, project) as d}<li>{d}</li>{/each}
+                    </ul>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -317,6 +322,11 @@
   }
   ul li:hover {
     color: var(--text);
+  }
+  ul.details {
+    padding-left: 12px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
   .state {
     font-size: 12px;

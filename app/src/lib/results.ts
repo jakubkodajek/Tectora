@@ -48,6 +48,10 @@ export function warningText(w: RoofWarning): string {
       return t("res.warn.far_from_origin", { v: num(w.value / 1000) });
     case "objects_overlap":
       return t("res.warn.objects_overlap", { n: Math.round(w.value) });
+    case "no_roof_area":
+      // A tower's shaft took the roof: name it, not a chimney (ERR-005).
+      if (w.towers?.length) return t("res.warn.no_roof_area_tower", { names: w.towers.map((i) => t("tower.n", { n: i + 1 })).join(", ") });
+      return t("res.warn.no_roof_area", { v: num(w.value) });
     default:
       return t(`res.warn.${w.kind}`, { v: num(w.value) });
   }
@@ -168,6 +172,8 @@ export interface TowerTierRow {
   pitch_deg: number;
   area: number;
   material: number;
+  /** A rectangle that is not square: the pitch and area of its sides along the depth (part of `area`). */
+  depth?: { pitch_deg: number; area: number };
 }
 
 /** One tower in Results: what its roof, its lantern and its shaft take (core `report::tower_report`). */
@@ -181,6 +187,8 @@ export interface TowerRow {
   top_height: number;
   cap: number | null;
   on_ground: boolean;
+  /** The building under the tower has no calculated roof: no cladding figure. */
+  roof_failed: boolean;
   base_below_roof: boolean;
   tiers: TowerTierRow[];
 }
@@ -201,9 +209,18 @@ export function towerRows(result: CalcResult | null): TowerRow[] {
       shaft_area: tw.shaft?.wall_area ?? 0,
       top_height: r?.top_height ?? 0,
       cap: r?.cap ? r.cap.area : null,
-      on_ground: !!tw.shaft && !tw.shaft.on_roof,
+      // A building without a roof under it is not "beside the roofs" (ERR-005).
+      on_ground: !!tw.shaft && !tw.shaft.on_roof && !tw.shaft.roof_failed,
+      roof_failed: !!tw.shaft?.roof_failed,
       base_below_roof: !!tw.shaft?.base_below_roof,
-      tiers: (r?.tiers ?? []).map((x) => ({ n: x.index + 1, wall: x.kind === "wall", pitch_deg: x.pitch_deg, area: x.area, material: x.material })),
+      tiers: (r?.tiers ?? []).map((x) => ({
+        n: x.index + 1,
+        wall: x.kind === "wall",
+        pitch_deg: x.pitch_deg,
+        area: x.area,
+        material: x.material,
+        ...(x.depth_sides ? { depth: { pitch_deg: x.depth_sides.pitch_deg, area: x.depth_sides.area } } : {}),
+      })),
     };
   });
 }

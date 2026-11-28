@@ -38,7 +38,7 @@
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
-  import { describeCalcError, describeError, describeProblem, refusalReason, toAppError, type AppError, type Described } from "./errors";
+  import { describeCalcError, describeError, describeProblem, dialogRefusal, toAppError, type AppError, type Described } from "./errors";
   import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning, toasts } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
@@ -216,8 +216,13 @@
   let towerDlg = $state<{ index: number | null; tower: Tower } | null>(null);
   /** Why the tower dialog's OK cannot store the tower (the dialog says it), else null. */
   let towerBlocked = $state<string | null>(null);
+  /** The core's code and text under `towerBlocked` when it is a refusal we have no reason for (audit ERR-004). */
+  let towerBlockedDetail = $state<string | null>(null);
+  /** A field of the tower dialog holds text it refuses: OK stops with this reason (audit ERR-003). */
+  let towerTyping = $state<string | null>(null);
+  let towerDialog = $state<ReturnType<typeof TowerDialog> | undefined>();
   /** The curved-wall dialog: wall `index` bent by `value` m, or corner `index` rounded with radius `value` m. */
-  let arcDlg = $state<{ part: number; index: number; mode: "bend" | "round"; value: number; segments: number | null; max: number | null; refused: string | null } | null>(null);
+  let arcDlg = $state<{ part: number; index: number; mode: "bend" | "round"; value: number; segments: number | null; max: number | null; refused: string | null; detail: string | null; typing: string | null } | null>(null);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
   /** Points picked so far for the line or face being added. */
@@ -2396,7 +2401,7 @@
     const base = defaultTowerBase((p) => roofHeightAt(result, p), { x, y }, NEW_TOWER_WIDTH, eaves.length ? maxOf(eaves) : presets.eave_height);
     try {
       const tower = await api.towerPreset("pyramid", { x: +x.toFixed(3), y: +y.toFixed(3) }, NEW_TOWER_WIDTH, base);
-      towerBlocked = null;
+      towerBlocked = towerBlockedDetail = towerTyping = null;
       towerDlg = { index: null, tower };
     } catch (e) {
       notifyError(e, "calc");
@@ -2405,7 +2410,7 @@
 
   function editTower(i: number) {
     if (!project?.towers?.[i]) return;
-    towerBlocked = null;
+    towerBlocked = towerBlockedDetail = towerTyping = null;
     dialogHolds.tower = jobEdits.hold("towers", i);
     towerDlg = { index: i, tower: JSON.parse(JSON.stringify($state.snapshot(project.towers[i]))) as Tower };
   }
@@ -2416,7 +2421,9 @@
   async function applyTowerDialogNow() {
     await tick();
     await pendingEdits.settled();
-    if (!project || !towerDlg || towerBlocked) return;
+    // A refused value or one a field refuses (its text never reached the
+    // tower): the dialog stays open with the reason next to OK (ERR-003).
+    if (!project || !towerDlg || towerBlocked || towerTyping) return;
     const tower = $state.snapshot(towerDlg.tower) as Tower;
     const done = (r: { project: Project; index: number }) => {
       if (!project) return;
@@ -2427,9 +2434,11 @@
     };
     try {
       if (towerDlg.index === null) {
-        const r = await pendingEdits.track(api.setTower(plain(project), null, tower));
-        if (!towerDlg) return;
-        done(r);
+        // Queued like the edit below: an answer worked out on the job before
+        // an outside save landed is dropped and asked again on the job as it
+        // is, so a tower the AI saved meanwhile stays (audit ERR-001).
+        const dlg = towerDlg;
+        await pendingEdits.track(jobEdits.run(null, (job) => api.setTower(plain(job), null, tower), (r) => towerDlg === dlg && done(r)));
         return;
       }
       if (dialogHolds.tower?.gone !== false) {
@@ -2440,10 +2449,19 @@
       const o = await pendingEdits.track(jobEdits.run(dialogHolds.tower, (job, i) => api.setTower(plain(job), i, tower), done));
       if (o === "gone") towerDlg = null;
     } catch (e) {
-      const err = toAppError(e);
-      if (err.code === "refused") towerBlocked = refusalReason(err.detail);
-      else notifyError(e, "calc");
+      const r = dialogRefusal(e);
+      if (r) {
+        towerBlocked = r.text;
+        towerBlockedDetail = r.detail;
+      } else notifyError(e, "calc");
     }
+  }
+
+  /** Escape, the close button or a press beside the tower dialog: asks first when tiers were changed (UX-004). */
+  async function closeTowerDialog() {
+    const d = towerDlg;
+    if (towerDialog && !(await towerDialog.mayClose())) return;
+    if (towerDlg === d) towerDlg = null;
   }
 
   // ---- Curved walls (core `edit::arcs`, MCP edit_walls) ------------------
@@ -2461,7 +2479,7 @@
     if (!project?.parts[part]) return;
     dialogHolds.arc = jobEdits.hold("parts", part);
     const half = Math.floor((wallLength(part, index) / 2) * 1000) / 1000;
-    arcDlg = { part, index, mode, value: mode === "bend" ? +Math.min(1, half).toFixed(3) : 1, segments: null, max: mode === "bend" ? half : null, refused: null };
+    arcDlg = { part, index, mode, value: mode === "bend" ? +Math.min(1, half).toFixed(3) : 1, segments: null, max: mode === "bend" ? half : null, refused: null, detail: null, typing: null };
   }
 
   /** A semicircular end on wall `edge` (an apse: the bulge is half the wall), made at once. */
@@ -2478,31 +2496,44 @@
     await pendingEdits.settled();
     if (!arcDlg || !dialogHolds.arc) return;
     const d = arcDlg;
+    // A field holds text it refuses: not the old value instead (ERR-003).
+    if (d.typing) {
+      d.refused = d.typing;
+      d.detail = null;
+      return;
+    }
     const segments = d.segments ?? undefined;
     const edit = d.mode === "bend" ? ({ op: "bend_wall", index: d.index, bulge: d.value, segments } as const) : ({ op: "round_corner", index: d.index, radius: d.value, segments } as const);
     const why = await pendingEdits.track(runArc(dialogHolds.arc, edit, d));
     if (why === null) arcDlg = null;
-    else if (arcDlg === d) arcDlg.refused = why;
+    else if (arcDlg === d) {
+      arcDlg.refused = why.text;
+      arcDlg.detail = why.detail;
+    }
   }
 
   /**
    * Bends a wall or rounds a corner of the held part with the core; null
-   * when made, else the reason (also shown as a toast when no dialog is open).
+   * when made, else the reason with the core's code and text when it is a
+   * general one (also shown as a toast when no dialog is open).
    */
-  async function runArc(hold: Hold, edit: import("./types").ArcEdit, dlg: unknown): Promise<string | null> {
+  async function runArc(hold: Hold, edit: import("./types").ArcEdit, dlg: unknown): Promise<{ text: string; detail: string | null } | null> {
     try {
       const o = await jobEdits.run(hold, (job, pi) => api.arcEdit(plain(job), pi, edit), (next) => {
         adoptProject(next);
         if (selection && !project?.parts[selection.part]?.edges[selection.edge]) selection = { part: selection.part, edge: 0 };
         commit();
       });
-      if (o === "gone") return dlg ? t("editor.dialogStale") : null;
+      if (o === "gone") return dlg ? { text: t("editor.dialogStale"), detail: null } : null;
       return null;
     } catch (e) {
-      const err = toAppError(e);
-      if (err.code === "refused" && dlg) return refusalReason(err.detail);
+      const r = dialogRefusal(e);
+      if (r && dlg) return r;
+      // Not a refusal: a failure of the core, as a notice with its details (ERR-004).
       if (!notifyRefusal(e, "arc")) notifyError(e, "calc");
-      return dlg ? t("refuse.other") : null;
+      if (!dlg) return null;
+      const err = toAppError(e);
+      return { text: t("refuse.other"), detail: `${err.code}: ${err.detail ?? ""}` };
     }
   }
 
@@ -3894,6 +3925,7 @@
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
             oncalc={() => selection && openCalc(selection.part, selection.edge)}
+            onarc={(op) => selection && (op === "apse" ? apseWall(selection.part, selection.edge) : openArc(selection.part, selection.edge, op))}
           />
         {/if}
       </div>
@@ -3983,19 +4015,20 @@
 {/if}
 
 {#if towerDlg && project}
-  <Modal title={towerDlg.index === null ? t("tower.dialogNew") : towerDlg.tower.label || t("tower.n", { n: towerDlg.index + 1 })} width={860} onclose={() => (towerDlg = null)}>
-    <TowerDialog {project} bind:tower={towerDlg.tower} bind:blocked={towerBlocked} />
+  <Modal title={towerDlg.index === null ? t("tower.dialogNew") : towerDlg.tower.label || t("tower.n", { n: towerDlg.index + 1 })} width={860} onclose={() => void closeTowerDialog()}>
+    <TowerDialog bind:this={towerDialog} {project} bind:tower={towerDlg.tower} bind:blocked={towerBlocked} bind:blockedDetail={towerBlockedDetail} bind:typing={towerTyping} />
     {#snippet footer()}
-      {#if towerBlocked}<p class="dlg-why" role="alert" data-testid="tower-ok-blocked">{towerBlocked}</p>{/if}
+      {@const why = towerTyping ?? towerBlocked}
+      {#if why}<p class="dlg-why" role="alert" data-testid="tower-ok-blocked"><span>{why}{#if !towerTyping && towerBlockedDetail}<code data-testid="tower-ok-detail">{towerBlockedDetail}</code>{/if}</span></p>{/if}
       <button class="btn" onclick={() => (towerDlg = null)}>{t("common.cancel")}</button>
-      <button class="btn primary" data-testid="tower-ok" disabled={!!towerBlocked} aria-disabled={acting.tower} aria-busy={acting.tower} title={towerBlocked ?? undefined} onclick={() => !acting.tower && applyTowerDialog()}>{t("common.ok")}</button>
+      <button class="btn primary" data-testid="tower-ok" disabled={!!why} aria-disabled={acting.tower} aria-busy={acting.tower} title={why ?? undefined} onclick={() => !acting.tower && applyTowerDialog()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
 
 {#if arcDlg && project?.parts[arcDlg.part]}
   <Modal title={arcDlg.mode === "bend" ? t("arc.bendTitle", { n: arcDlg.index + 1 }) : t("arc.roundTitle", { n: arcDlg.index + 1 })} width={420} onclose={() => (arcDlg = null)}>
-    <ArcForm mode={arcDlg.mode} bind:value={arcDlg.value} bind:segments={arcDlg.segments} max={arcDlg.max} refused={arcDlg.refused} />
+    <ArcForm mode={arcDlg.mode} bind:value={arcDlg.value} bind:segments={arcDlg.segments} max={arcDlg.max} bind:refused={arcDlg.refused} bind:detail={arcDlg.detail} bind:typing={arcDlg.typing} />
     {#snippet footer()}
       <button class="btn" onclick={() => (arcDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" data-testid="arc-ok" aria-disabled={acting.arc} aria-busy={acting.arc} onclick={() => !acting.arc && applyArcDialog()}>{t("common.ok")}</button>
@@ -4060,6 +4093,13 @@
     max-width: 60%;
     font-size: 12.5px;
     color: var(--text-2);
+  }
+  .dlg-why code {
+    display: block;
+    margin-top: 2px;
+    font: 11.5px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
   }
   .dlg-why::before {
     content: "";

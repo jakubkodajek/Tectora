@@ -166,6 +166,12 @@ export interface Tower {
   tiers: TowerTier[];
 }
 
+/** The pitch and area of some sides of a tier (core `tower::SidePitch`). */
+export interface SidePitch {
+  pitch_deg: number;
+  area: number;
+}
+
 /** One calculated tier (core `tower::TierResult`). */
 export interface TierResult {
   index: number;
@@ -173,6 +179,12 @@ export interface TierResult {
   material: number;
   pitch_deg: number;
   area: number;
+  /**
+   * A rectangle that is not square: the pitch and area of its sides along
+   * the depth (core `tower::SidePitch`); `pitch_deg` is then that of the
+   * other two sides, and `area` still the whole tier's.
+   */
+  depth_sides?: SidePitch | null;
   bottom_height: number;
   top_height: number;
   bottom_perimeter: number;
@@ -205,6 +217,8 @@ export interface TowerReport {
     wall_area: number;
     on_roof: boolean;
     base_below_roof: boolean;
+    /** The building under it has no calculated roof: not beside the roofs, and `wall_area` is 0. */
+    roof_failed?: boolean;
   };
 }
 
@@ -379,6 +393,8 @@ export interface CalcError {
   parts?: number[];
   /** The outer and inner wall (from 0) whose parallel planes never meet, where the core can tell. */
   edges?: number[];
+  /** non_convex_opening: the towers (from 0) whose shaft, cut out like a chimney, causes it. */
+  towers?: number[];
 }
 
 /** An input the roof engine cannot work with (that part is not calculated). */
@@ -457,6 +473,8 @@ export interface RoofWarning {
   face?: number;
   /** manual_faces_overlap: the second hand-drawn face of the pair. */
   other_face?: number;
+  /** no_roof_area: the towers (from 0) whose shaft took all of the roof. */
+  towers?: number[];
 }
 
 /**
@@ -900,6 +918,8 @@ export interface BreakdownTower {
     kind: "roof" | "wall";
     material: number;
     pitch_deg: number;
+    /** A rectangle that is not square: pitch and area of its sides along the depth. */
+    depth_sides?: SidePitch | null;
     bottom_height: number;
     top_height: number;
     bottom_perimeter: number;

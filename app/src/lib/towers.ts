@@ -56,8 +56,11 @@ export function roughFootprint(tower: Tower): Point2[] {
   if (shape === "rectangle") return [place(-w / 2, -d / 2), place(w / 2, -d / 2), place(w / 2, d / 2), place(-w / 2, d / 2)];
   const n = shape === "circle" ? 32 : Math.min(64, Math.max(3, Math.round(tower.sides ?? 8)));
   const r = shape === "circle" ? w / 2 : w / 2 / Math.cos(Math.PI / n);
+  // The core's angles (`tower::Tower::outline`): a circle from -90°, a
+  // polygon with a side parallel to the x axis at -y, whatever the side
+  // count (audit ARCH-006: 3- and 6-sided towers were drawn turned).
   return Array.from({ length: n }, (_, k) => {
-    const t = (2 * Math.PI * k) / n - (shape === "circle" ? 0 : Math.PI / n);
+    const t = shape === "circle" ? (2 * Math.PI * k) / n - Math.PI / 2 : -Math.PI / 2 + (Math.PI / n) * (2 * k - 1);
     return place(r * Math.cos(t), r * Math.sin(t));
   });
 }

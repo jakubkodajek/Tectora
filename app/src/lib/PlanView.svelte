@@ -1241,6 +1241,10 @@
               onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "tower", index: ti } })} />
           {/if}
         {/if}
+        {#if showDims && Number.isFinite(tw.center?.x) && Number.isFinite(tw.center?.y)}
+          <!-- Its name, so "Věž 1" and "Věž 3" of Results and of the AI's review can be told apart (UX-009). -->
+          <text class="manual-tag tower-tag" x={sx(tw.center.x)} y={sy(tw.center.y)}>{name.length > 24 ? `${name.slice(0, 23)}…` : name}</text>
+        {/if}
       </g>
     {/each}
     {#each project.roof_openings ?? [] as c, hi}
@@ -1603,7 +1607,10 @@
     cursor: move;
   }
   .tower-base.bad {
-    fill: none;
+    /* Picked anywhere inside, as a calculated tower is: the tower to fix
+       must be selectable to open, fix or delete it (UI-002). */
+    fill: transparent;
+    pointer-events: all;
     stroke-dasharray: 5 4;
   }
   .tower-ring,

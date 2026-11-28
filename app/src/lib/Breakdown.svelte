@@ -87,8 +87,14 @@
   /** Every code by its own name: WV, WS and WH are no longer all "wall abutment" (UX-013). */
   const lineLabel = lineName;
 
+  // A tower's shaft reaches the core as a chimney (`openings::with_tower_shafts`),
+  // and its deduction comes back as one: named after the shaft when the job
+  // has no chimney of its own, else as either (audit UX-007).
+  const chimneyLabel = $derived(
+    (project?.towers?.length ?? 0) === 0 ? "opening.chimney" : (project?.chimneys?.length ?? 0) === 0 ? "tower.shaftOpening" : "tower.chimneyOrShaft",
+  );
   const openingLabel = (k: string) =>
-    t(k === "window" ? "opening.window" : k === "chimney" ? "opening.chimney" : k === "hole" ? "opening.hole" : "bd.dormer");
+    t(k === "window" ? "opening.window" : k === "chimney" ? chimneyLabel : k === "hole" ? "opening.hole" : "bd.dormer");
 
   const plan2 = (p: [number, number, number][]) => p.map((v) => [v[0], v[1]] as [number, number]);
 
@@ -247,16 +253,24 @@
             {#if !tw.calculated}
               <p class="muted">{t("tower.notCalculated")}</p>
             {/if}
-            {#each tw.tiers as x}
-              <div class="calc tier">
-                <span><span class="no">{faceRef(null, x.no, tw.no - 1)}</span> {x.kind === "wall" ? t("tower.kind.wall") : deg(x.pitch_deg, 2)}{#if multiMaterial} · {materialName(project, x.material)}{/if}
-                  · {t("bd.towerTier", { a: fixed(x.bottom_height, 3), b: fixed(x.top_height, 3), p: fixed(x.bottom_perimeter, 3), q: fixed(x.top_perimeter, 3) })}</span>
-                <span>= {fixed(x.area, 3)} m²</span>
-              </div>
-            {/each}
+            <!-- Top tier first, as in the tower dialog and in Results (UX-010). -->
             {#if tw.cap !== undefined}
               <div class="calc tier"><span><span class="no">{faceRef(null, tw.tiers.length + 1, tw.no - 1)}</span> {t("tower.cap")}</span><span>= {fixed(tw.cap, 3)} m²</span></div>
             {/if}
+            {#each [...tw.tiers].reverse() as x}
+              {@const lean = x.kind === "roof" && (x.pitch_deg > 90 || (x.depth_sides?.pitch_deg ?? 0) > 90)}
+              <div class="calc tier">
+                <span title={lean ? t("tower.pitchHint") : undefined}><span class="no">{faceRef(null, x.no, tw.no - 1)}</span> {x.kind === "wall" ? t("tower.kind.wall") : deg(x.pitch_deg, 2)}{#if x.kind === "roof" && x.depth_sides}{` / ${deg(x.depth_sides.pitch_deg, 2)}`}{/if}{#if lean}{` (${t("tower.leaning")})`}{/if}{#if multiMaterial}{` · ${materialName(project, x.material)}`}{/if}
+                  · {t("bd.towerTier", { a: fixed(x.bottom_height, 3), b: fixed(x.top_height, 3), p: fixed(x.bottom_perimeter, 3), q: fixed(x.top_perimeter, 3) })}</span>
+                <span>= {fixed(x.area, 3)} m²</span>
+              </div>
+              {#if x.kind === "roof" && x.depth_sides}
+                <div class="calc tier sub" data-testid="bd-tower-depth">
+                  <span>{t("tower.depthSides")}: {deg(x.depth_sides.pitch_deg, 2)}</span>
+                  <span>{fixed(x.depth_sides.area, 3)} m²</span>
+                </div>
+              {/if}
+            {/each}
             {#if tw.calculated && roofTiers.length + (tw.cap !== undefined ? 1 : 0) > 1}
               <div class="sum">
                 Σ {terms(roofTiers.map((x) => x.area).concat(tw.cap !== undefined ? [tw.cap] : []), 3)} ≐ <b>{a2(tw.roof_area)}</b>
@@ -492,6 +506,10 @@
   }
   .mat {
     color: var(--text-3);
+  }
+  .calc.sub {
+    padding-left: 24px;
+    color: var(--text-2);
   }
   .calc {
     display: flex;

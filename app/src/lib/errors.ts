@@ -166,12 +166,20 @@ export function describeBroken(b: { id: string; code: string; detail?: string | 
  * hint says the others wait for them (one error stops every roof). Where
  * the core names two walls with parallel planes, the hint adds them.
  */
+/** Towers by their names, else their numbers ("Věž 1, Lucerna"). */
+export function towerNames(towers: number[], project?: Pick<Project, "towers"> | null): string {
+  return towers.map((i) => project?.towers?.[i]?.label || t("tower.n", { n: i + 1 })).join(", ");
+}
+
 export function describeCalcError(e: CalcError, project?: Project): { title: string; hint: string; code: string } {
-  const title = t(`calc.err.${e.kind}`);
+  // A tower's shaft reaches the core as a chimney: when the core names the
+  // towers to blame, say so instead of sending the user to a chimney (ERR-005).
+  const shafts = e.kind === "non_convex_opening" ? (e.towers ?? []) : [];
+  const title = shafts.length ? t("calc.err.tower_shaft", { names: towerNames(shafts, project) }) : t(`calc.err.${e.kind}`);
   // The kind's own hint always; the parallel walls the core names for this
   // error come on top of it, never instead of it.
   const [a, b] = e.edges ?? [];
-  const own = t(`calc.hint.${e.kind}`);
+  const own = shafts.length ? t("calc.hint.tower_shaft") : t(`calc.hint.${e.kind}`);
   const hint = a !== undefined && b !== undefined ? `${own} ${t("calc.hint.parallel", { a: a + 1, b: b + 1 })}` : own;
   const parts = e.parts ?? [];
   if (!project || project.parts.length < 2 || parts.length === 0) return { title, hint, code: e.kind };
@@ -234,7 +242,28 @@ export function refusalReason(detail: string | undefined): string {
   return t("refuse.other");
 }
 
-const TOWER_CODES = new Set(["tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge"]);
+/** A refusal as a dialog shows it: the reason, and the core's code and text under it when no reason of ours matched. */
+export interface DialogRefusal {
+  text: string;
+  /** `code: detail` of the core, for a reason we have no text for (else null). */
+  detail: string | null;
+}
+
+/**
+ * A dialog's view of a failed core call: for a refusal (`code: "refused"`)
+ * the reason in the user's language, with the core's code and detail when
+ * the reason is the general one, so the user has something to report
+ * (audit ERR-004). Null for any other error: that goes to `notifyError`.
+ */
+export function dialogRefusal(e: unknown): DialogRefusal | null {
+  const err = toAppError(e);
+  if (err.code !== "refused") return null;
+  const text = refusalReason(err.detail);
+  // A tower's reason is a fragment written to follow "Věž 1:"; in a dialog it starts the sentence.
+  return { text: text.charAt(0).toLocaleUpperCase() + text.slice(1), detail: text === t("refuse.other") ? `${err.code}: ${err.detail ?? ""}` : null };
+}
+
+const TOWER_CODES = new Set(["tower_limit", "tower_missing", "tower_not_calculated", "tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge"]);
 
 /**
  * Why the core refused a rounded corner or a bent wall (`edit::arcs`,
@@ -242,6 +271,9 @@ const TOWER_CODES = new Set(["tower_nan", "tower_size", "tower_sides", "tower_co
  */
 export function arcReason(detail: string): string | null {
   const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
+  // A wall, corner or building the outline does not have (any more): no value is wrong (ERR-004).
+  const gone = detail.match(/\((arc_no_wall|arc_no_corner|arc_no_part)\)\s*$/);
+  if (gone) return t(gone[1] === "arc_no_wall" ? "arc.err.noWall" : gone[1] === "arc_no_corner" ? "arc.err.noCorner" : "arc.err.noPart");
   let m = detail.match(/an arc has 2 to (\d+) walls/);
   if (m) return t("arc.err.segments", { max: m[1] });
   m = detail.match(/the bend must be at least [\d.]+ m and at most half the wall \(([\d.]+) m\)/);

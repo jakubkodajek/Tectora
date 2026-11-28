@@ -503,6 +503,9 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
       syncDisabled();
     },
     destroy() {
+      // The field and its refused text are gone: a dialog that counts
+      // refused fields must not keep counting this one (audit ERR-003).
+      if (invalid) opts.onvalidity?.(null);
       window.removeEventListener("pointerdown", onOutsidePress, true);
       clearTimeout(clearTimer);
       clearTimeout(stepTimer);

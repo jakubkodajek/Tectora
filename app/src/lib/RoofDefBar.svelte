@@ -31,6 +31,7 @@
     onround,
     oncalc,
     onheight,
+    onarc,
     result = null,
     ondraw,
     onstandard,
@@ -55,6 +56,8 @@
     oncalc?: () => void;
     /** Sets the eave height of every wall of the selected building at once. */
     onheight?: (h: number) => unknown;
+    /** Curved walls (UX-002): bend this wall, make it a semicircular end, or round the corner at its start. */
+    onarc?: (op: "bend" | "apse" | "round") => void;
   } = $props();
 
   const part = $derived(selection ? project.parts[selection.part] : null);
@@ -401,6 +404,13 @@
           <button class="btn sm" onclick={onmarker} title={t("edge.addMarkerHint")}>{t("edge.addMarker")}</button>
         {/if}
       </div>
+      {#if onarc && !marker}
+        <div class="actions" data-testid="def-arcs">
+          <button class="btn sm" onclick={() => onarc("bend")}>{t("arc.bend")}</button>
+          <button class="btn sm" onclick={() => onarc("apse")}>{t("arc.apse")}</button>
+          <button class="btn sm" onclick={() => onarc("round")} title={t("arc.roundBarHint")}>{t("arc.roundStart")}</button>
+        </div>
+      {/if}
       <div class="actions">
         <button class="btn sm ghost danger" disabled={!marker && realWalls <= 3} onclick={ondelete}
           title={marker ? t("edge.deleteMarker") : t("edge.deleteVertexHint")}><Icon name="trash" size={15} />{marker ? t("edge.deleteMarker") : t("edge.deleteVertex")}</button>

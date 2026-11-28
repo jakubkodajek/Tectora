@@ -65,8 +65,12 @@
       close();
       return;
     }
-    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
+    if (!ev.key.startsWith("Arrow")) return;
+    // The arrows walk the menu only: not also the editor's nudge of the
+    // selected object behind it (audit UI-001); left and right do nothing.
     ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.key !== "ArrowDown" && ev.key !== "ArrowUp") return;
     const items = [...el.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
     const i = items.indexOf(document.activeElement as HTMLButtonElement);
     const next = ev.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length;

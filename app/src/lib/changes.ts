@@ -51,6 +51,55 @@ export function shownText(v: unknown): string {
   return chars.length > MAX_SHOWN ? chars.slice(0, MAX_SHOWN - 1).join("") + "…" : kept;
 }
 
+/** Most field differences listed under one changed tower. */
+const MAX_TOWER_DETAILS = 6;
+
+/**
+ * What an outside save changed in a tower, field by field ("Pás 3:
+ * Převýšení 0,9 m → 1,4 m"), for the expanded review list (audit UX-008).
+ * Empty for any other change, or for values of the wrong type.
+ */
+export function towerDetails(c: Change, project: Project | null): string[] {
+  if (!isChange(c) || c.field !== "tower" || c.kind !== "modified") return [];
+  const a = c.before as Partial<Tower> | null;
+  const b = c.after as Partial<Tower> | null;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return [];
+  const out: string[] = [];
+  const fin = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  const diff = (label: string, x: unknown, y: unknown, fmt: (v: unknown) => string) => {
+    if (x === y || (x == null && y == null)) return;
+    if (x != null && !fin(x) && typeof x !== "string") return;
+    if (y != null && !fin(y) && typeof y !== "string") return;
+    out.push(`${label}: ${x == null ? "—" : fmt(x)} → ${y == null ? "—" : fmt(y)}`);
+  };
+  const shape = (v: unknown) => (v === "rectangle" || v === "polygon" || v === "circle" ? t(`tower.shape.${v}`) : "—");
+  diff(t("tower.label"), a.label ?? "", b.label ?? "", (v) => shownText(v) || "—");
+  diff(t("tower.shape"), a.shape ?? "rectangle", b.shape ?? "rectangle", shape);
+  diff(t("tower.width"), a.width, b.width, len);
+  diff(t("tower.depth"), a.depth, b.depth, len);
+  diff(t("tower.sides"), a.sides, b.sides, (v) => num(Number(v)));
+  diff(t("tower.cornerRadius"), a.corner_radius ?? 0, b.corner_radius ?? 0, len);
+  diff(t("tower.rotation"), a.rotation_deg ?? 0, b.rotation_deg ?? 0, deg);
+  diff(t("tower.baseHeight"), a.base_height, b.base_height, len);
+  if (isPt(a.center) && isPt(b.center) && (a.center.x !== b.center.x || a.center.y !== b.center.y)) {
+    out.push(t("chg.towerMoved", { x: num(b.center.x), y: num(b.center.y) }));
+  }
+  const ta = Array.isArray(a.tiers) ? a.tiers : [];
+  const tb = Array.isArray(b.tiers) ? b.tiers : [];
+  if (ta.length !== tb.length) out.push(`${t("tower.tiers")}: ${ta.length} → ${tb.length}`);
+  for (let i = 0; i < Math.min(ta.length, tb.length); i++) {
+    const x = ta[i];
+    const y = tb[i];
+    if (!x || !y || typeof x !== "object" || typeof y !== "object") continue;
+    const tier = t("tower.tierN", { n: i + 1 });
+    diff(`${tier}, ${t("tower.rise")}`, x.rise, y.rise, len);
+    diff(`${tier}, ${t("tower.topWidth")}`, x.top_width, y.top_width, len);
+    diff(`${tier}, ${t("tower.bulge")}`, x.bulge ?? 0, y.bulge ?? 0, len);
+    diff(`${tier}, ${t("edge.material")}`, x.material ?? 2, y.material ?? 2, (v) => materialName(project, Number(v)));
+  }
+  return out.length > MAX_TOWER_DETAILS ? [...out.slice(0, MAX_TOWER_DETAILS - 1), t("review.more", { n: out.length - MAX_TOWER_DETAILS + 1 })] : out;
+}
+
 export function describeChange(c: Change, project: Project | null): string {
   if (!isChange(c)) return t("chg.other");
   try {

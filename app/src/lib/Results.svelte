@@ -109,6 +109,8 @@
   /** Every tower's roof, lantern walls and shaft cladding (their roof areas are in the total already). */
   const towers = $derived(towerRows(result));
   const deg = (v: number) => `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 1 }).format(v)}°`;
+  /** A tier wider at its top than at its bottom leans outward (pitch over 90°, UX-006). */
+  const leans = (x: { wall: boolean; pitch_deg: number; depth?: { pitch_deg: number } }) => !x.wall && (x.pitch_deg > 90 || (x.depth?.pitch_deg ?? 0) > 90);
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -225,22 +227,30 @@
           <tr class="tower-head"><td colspan="2"><b>{tw.name}</b>
             {#if !tw.calculated}<small class="joined">{t("tower.notCalculated")}</small>{/if}
             {#if tw.calculated && tw.on_ground}<small class="joined">{t("tower.onGround")}</small>{/if}
+            {#if tw.calculated && tw.roof_failed}<small class="joined" data-testid="res-tower-roof-failed">{t("tower.roofFailed")}</small>{/if}
             {#if tw.calculated && tw.base_below_roof}<small class="joined">{t("tower.baseBelowRoof")}</small>{/if}
           </td></tr>
           {#if tw.calculated}
             <tr><td>{t("tower.roofArea")}</td><td class="v">{m2(tw.roof_area)}</td></tr>
             {#if tw.wall_area >= 0.005}<tr><td>{t("tower.wallArea")}</td><td class="v">{m2(tw.wall_area)}</td></tr>{/if}
-            {#if tw.shaft_area >= 0.005}<tr><td>{t("tower.shaftArea")}</td><td class="v">{m2(tw.shaft_area)}</td></tr>{/if}
+            {#if tw.shaft_area >= 0.005 && !tw.roof_failed}<tr><td>{t("tower.shaftArea")}</td><td class="v">{m2(tw.shaft_area)}</td></tr>{/if}
             <tr><td>{t("tower.topHeight")}</td><td class="v">{m(tw.top_height)}</td></tr>
-            {#each tw.tiers as x}
+            <!-- Top tier first, as in the tower dialog (UX-010). -->
+            {#if tw.cap !== null}<tr class="tier"><td>{t("tower.cap")}</td><td class="v">{m2(tw.cap)}</td></tr>{/if}
+            {#each [...tw.tiers].reverse() as x}
               <tr class="tier">
                 <td>{t("tower.tierN", { n: x.n })}
-                  <small class="joined"><i class="mat-sw" style:background={`var(${materialToken(x.material)})`}></i>{x.wall ? t("tower.kind.wall") : `${t("tower.pitch")} ${deg(x.pitch_deg)}`} · {materialName(project, x.material)}</small>
+                  <small class="joined" title={leans(x) ? t("tower.pitchHint") : undefined}><i class="mat-sw" style:background={`var(${materialToken(x.material)})`}></i>{x.wall ? t("tower.kind.wall") : `${t("tower.pitch")} ${deg(x.pitch_deg)}${x.depth ? ` / ${deg(x.depth.pitch_deg)}` : ""}`}{leans(x) ? ` (${t("tower.leaning")})` : ""} · {materialName(project, x.material)}</small>
                 </td>
                 <td class="v">{m2(x.area)}</td>
               </tr>
+              {#if x.depth && !x.wall}
+                <tr class="tier sub" data-testid="res-tower-depth">
+                  <td><small class="joined">{t("tower.depthSides")}: {t("tower.pitch")} {deg(x.depth.pitch_deg)}</small></td>
+                  <td class="v"><small class="joined">{m2(x.depth.area)}</small></td>
+                </tr>
+              {/if}
             {/each}
-            {#if tw.cap !== null}<tr class="tier"><td>{t("tower.cap")}</td><td class="v">{m2(tw.cap)}</td></tr>{/if}
           {/if}
         </tbody>
       </table>
@@ -548,6 +558,9 @@
   }
   .tower .tier td:first-child {
     padding-left: 12px;
+  }
+  .tower .tier.sub td:first-child {
+    padding-left: 28px;
   }
   .mat-sw {
     display: inline-block;
