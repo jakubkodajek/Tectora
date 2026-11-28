@@ -330,7 +330,8 @@ The tools cover every operation of the Tectora editor:
   (the corner at the start of wall `index`; on an eave it gives a conical
   hip); a wall bent into an arc is `bend_wall {index, bulge}` (+ outward);
   a semicircular end (an apse) is `bend_wall` with `bulge` half the wall's
-  length. Both make short walls in 11.25° steps (`segments` 2-64 to choose)
+  length; a bent gable becomes eaves with its neighbour's roof (a conical
+  half hip). Both make short walls in 11.25° steps (`segments` 2-64 to choose)
   that keep the wall's roof definition; wall indices after the arc shift.
 
 ## Stored result

@@ -74,8 +74,9 @@ fn p3(p: Point2) -> Point2 {
 /// Replaces wall `i` of `part` (counter-clockwise outline) by an arc whose
 /// middle stands `bulge` m off the straight wall, outward for a positive
 /// bulge, inward for a negative one; at most half the wall's length (a
-/// semicircle). The new walls carry wall `i`'s roof definition. Returns how
-/// many walls the arc has.
+/// semicircle). The new walls carry wall `i`'s roof definition; a gable
+/// takes a neighbouring eave's instead (an apse). Returns how many walls
+/// the arc has.
 pub fn bend_wall(
     part: &mut RoofPart,
     i: usize,
@@ -121,7 +122,21 @@ pub fn bend_wall(
     } else {
         -1.0
     };
-    let template = part.edges[i].clone();
+    // A gable bent into an arc is an apse: its walls are eaves with the
+    // roof of a neighbouring eave wall, a conical half hip, as a curved
+    // gable (a verge along an arc) is not built (audit UX-001).
+    let mut template = part.edges[i].clone();
+    if template.is_gable() {
+        let prev = part.edges[(i + n - 1) % n].clone();
+        let next = part.edges[(i + 1) % n].clone();
+        if let Some(eave) = [prev, next].into_iter().find(|e| !e.is_gable()) {
+            template = EdgeDef {
+                start: template.start,
+                ..eave
+            };
+            part.edges[i] = template.clone();
+        }
+    }
     let new: Vec<EdgeDef> = (1..segs)
         .map(|k| {
             let t = a0 + dir * sweep * k as f64 / segs as f64;
@@ -374,5 +389,19 @@ mod tests {
         assert!(round_corner(&mut part, 1, 0.012, None).is_err());
         assert!(round_corner(&mut part, 1, 1.0, Some(64)).is_err());
         assert!(bend_wall(&mut square(0.12), 0, 0.06, None).is_err());
+    }
+
+    #[test]
+    fn a_gable_bent_into_an_arc_is_an_apse_of_eaves() {
+        // Audit UX-001: a saddle roof's gable end made semicircular.
+        let mut part = square(10.0);
+        part.edges[1].pitch_deg = 90.0;
+        part.edges[3].pitch_deg = 90.0;
+        let n = bend_wall(&mut part, 1, 5.0, None).unwrap();
+        for e in &part.edges[1..1 + n] {
+            assert!(!e.is_gable());
+            assert_eq!(e.pitch_deg, 30.0);
+        }
+        assert!(part.edges[2 + n].is_gable());
     }
 }
