@@ -1,3 +1,7 @@
+<script lang="ts" module>
+  export type PlaceKey = "eave" | "left" | "right";
+</script>
+
 <script lang="ts">
   // Where the selected dormer, chimney, roof window or opening sits on its
   // roof face: from the eave along the slope and from both side edges. The
@@ -12,6 +16,8 @@
     onplace,
     width = 108,
     item = "",
+    onactive,
+    grouped = true,
   }: {
     placement: Placement | null;
     /** One distance typed: the others are null (kept). */
@@ -20,20 +26,26 @@
     width?: number;
     /** The object the distances are of: a field reused for the next one forgets the one before (UI-403). */
     item?: string;
+    /** The distance whose field has the focus, or null: the sketch draws that line solid. */
+    onactive?: (key: PlaceKey | null) => void;
+    /** Its own named group; false where a captioned group around it already names it. */
+    grouped?: boolean;
   } = $props();
+
+  const focus = (key: PlaceKey) => ({ onfocusin: () => onactive?.(key), onfocusout: () => onactive?.(null) });
 </script>
 
 {#if placement}
-  <div class="place" role="group" aria-label={t("place.title")} data-testid="place-fields" style="--fw: {width}px">
-    <label title={t("place.fromEaveHint")}>
+  <div class="place" role={grouped ? "group" : undefined} aria-label={grouped ? t("place.title") : undefined} data-testid="place-fields" style="--fw: {width}px">
+    <label title={t("place.fromEaveHint")} {...focus("eave")}>
       <span>{t("place.fromEave")}</span>
       <div class="unit"><input type="text" data-testid="place-eave" use:numeric={{ key: item, value: placement.from_eave, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(v, null, null) }} /><em>m</em></div>
     </label>
-    <label title={t("place.fromLeftHint")}>
+    <label title={t("place.fromLeftHint")} {...focus("left")}>
       <span>{t("place.fromLeft")}</span>
       <div class="unit"><input type="text" data-testid="place-left" use:numeric={{ key: item, value: placement.from_left, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, v, null) }} /><em>m</em></div>
     </label>
-    <label title={t("place.fromRightHint")}>
+    <label title={t("place.fromRightHint")} {...focus("right")}>
       <span>{t("place.fromRight")}</span>
       <div class="unit"><input type="text" data-testid="place-right" use:numeric={{ key: item, value: placement.from_right, digits: 3, step: 0.05, min: 0, max: 500, onchange: (v) => onplace(null, null, v) }} /><em>m</em></div>
     </label>

@@ -213,39 +213,55 @@
 
   {#if params && kind && kind !== "general" && moreOpen}
     <div class="row more" id="dormer-more-row" use:hscroll>
-      {#if onplace}<PlaceFields {placement} {onplace} item={itemKey} />{/if}
-      <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
-        <span>{t("edge.eaveHeight")}</span>
-        <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ key: itemKey, value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
-      </label>
-      <label>
-        <span>{t("dormer.frontOverhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
-      </label>
-      <label>
-        <span>{t("dormer.sideOverhang")}</span>
-        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
-      </label>
-      <label>
-        <span>X</span>
-        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
-      </label>
-      <label>
-        <span>Y</span>
-        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
-      </label>
-      <label>
-        <span>{t("edge.direction")}</span>
-        <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
-      </label>
-      <label title={t("edge.materialHint")}>
-        <span>{t("edge.material")}</span>
-        <select value={params.material} onchange={(e) => set({ material: +(e.target as HTMLSelectElement).value })}>
-          {#each materialIds(project) as m}
-            <option value={m}>{materialName(project, m)}</option>
-          {/each}
-        </select>
-      </label>
+      {#if onplace}
+        <section class="obj-grp" role="group" aria-labelledby="dormer-roof-cap" title={t("place.how")}>
+          <span class="obj-cap" id="dormer-roof-cap">{t("place.title")}</span>
+          {#if placement}<PlaceFields {placement} {onplace} item={itemKey} grouped={false} />{:else}<p class="obj-note" role="status">{t("place.offRoof")}</p>{/if}
+        </section>
+      {/if}
+      <section class="obj-grp" role="group" aria-labelledby="dormer-eave-cap">
+        <span class="obj-cap" id="dormer-eave-cap">{t("dormer.moreGroup")}</span>
+        <div class="fields">
+          <label title={host !== null ? t("dormer.hostHint", { h: formatNumber(host, numberLocale(), 2) }) : undefined}>
+            <span>{t("edge.eaveHeight")}</span>
+            <div class="unit"><input type="text" disabled={kind === "pointed"} use:numeric={{ key: itemKey, value: params.eave_height, step: 0.05, onchange: (v) => set({ eave_height: v }) }} /><em>m</em></div>
+          </label>
+          <label>
+            <span>{t("dormer.frontOverhang")}</span>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.overhang, step: 0.05, min: 0, onchange: (v) => set({ overhang: v }) }} /><em>m</em></div>
+          </label>
+          <label>
+            <span>{t("dormer.sideOverhang")}</span>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.side_overhang, step: 0.05, min: 0, onchange: (v) => set({ side_overhang: v }) }} /><em>m</em></div>
+          </label>
+          <label title={t("edge.materialHint")}>
+            <span>{t("edge.material")}</span>
+            <select value={params.material} onchange={(e) => set({ material: +(e.target as HTMLSelectElement).value })}>
+              {#each materialIds(project) as m}
+                <option value={m}>{materialName(project, m)}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      </section>
+      <section class="obj-grp" role="group" aria-labelledby="dormer-plan-cap">
+        <span class="obj-cap" id="dormer-plan-cap">{t("place.plan")}</span>
+        <div class="fields">
+          <!-- X and Y are where the dormer's front starts (its first corner), not a box corner. -->
+          <label>
+            <span>X</span>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.x, step: 0.05, onchange: (v) => set({ start: { ...params.start, x: v } }) }} /><em>m</em></div>
+          </label>
+          <label>
+            <span>Y</span>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: params.start.y, step: 0.05, onchange: (v) => set({ start: { ...params.start, y: v } }) }} /><em>m</em></div>
+          </label>
+          <label>
+            <span>{t("edge.direction")}</span>
+            <div class="unit"><input type="text" use:numeric={{ key: itemKey, value: angleDeg, step: 1, onchange: (v) => set({ angle: (v * Math.PI) / 180 }) }} /><em>°</em></div>
+          </label>
+        </div>
+      </section>
     </div>
   {/if}
 </div>
@@ -379,6 +395,15 @@
   }
   .unit {
     position: relative;
+  }
+  .obj-grp .obj-cap {
+    margin-bottom: 3px;
+    font-size: 11px;
+  }
+  .obj-grp .fields {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px 14px;
   }
   .unit input {
     width: 84px;

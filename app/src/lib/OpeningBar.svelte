@@ -1,39 +1,57 @@
 <script lang="ts">
-  // The selected chimney, roof window or roof opening, docked like the wall bar.
+  // The selected chimney, roof window or roof opening: docked like the wall
+  // bar, or as the body of its Properties dialog (`dialog`). Its fields sit in
+  // three named groups, always in this order: the object's size, its position
+  // on the roof face (distances from the eave and both edges) and its
+  // position in plan (a corner and the rotation). Read-only facts say what
+  // the numbers refer to; the dialog adds a sketch of the roof face.
   import Icon from "./Icon.svelte";
   import { freshBar } from "./dblclick";
-  import { t } from "./i18n.svelte";
-  import type { Chimney, Placement, Project, RoofWindow } from "./types";
-  import { isConvex, openingBox, openingList, type OpeningBox, type OpeningSel } from "./openings";
+  import { numberLocale, t } from "./i18n.svelte";
+  import type { CalcResult, Chimney, Placement, Point2, Project, RoofWindow } from "./types";
+  import { isConvex, openingBox, openingList, windowOutline, type OpeningBox, type OpeningSel } from "./openings";
   import { api } from "./api";
   import { notifyError } from "./notify.svelte";
   import type { BarEdit } from "./jobedits";
-  import { numeric } from "./numeric.svelte";
-  import PlaceFields from "./PlaceFields.svelte";
+  import { formatNumber, numeric } from "./numeric.svelte";
+  import PlaceFields, { type PlaceKey } from "./PlaceFields.svelte";
+  import PlaceSketch from "./PlaceSketch.svelte";
   import { pageStep, stepIndex } from "./itemstep";
+  import { aboveRoof, planArea, planLength, slopeArea } from "./objectfacts";
+  import { tick } from "svelte";
+  import { prefs, savePrefs } from "./settings.svelte";
 
   let {
     project,
+    result = null,
     sel = $bindable(),
     onchimney,
     onwindow,
     ondelete,
+    onedit,
     placement = null,
     onplace,
     edit,
+    dialog = false,
   }: {
     project: Project;
+    /** The calculated roof: the facts (height above the roof) and the sketch. */
+    result?: CalcResult | null;
     sel: OpeningSel;
     /** Stores `c` as the chimney or opening `at` (the one the value was typed for). */
     onchimney: (c: Chimney, at: NonNullable<OpeningSel>) => void;
     /** A field of roof window `at` typed; resolves to the reason when it was not stored. */
     onwindow: (patch: Partial<RoofWindow>, at: number) => unknown;
     ondelete: () => void;
+    /** Opens the Properties dialog (docked bar only). */
+    onedit?: () => void;
     /** Where the object sits on its face (dimension fields). */
     placement?: Placement | null;
     onplace?: (fromEave: number | null, fromLeft: number | null, fromRight: number | null) => unknown;
     /** Queues a core-backed edit of item `index` of `list`, held now (the editor's `barEdit`, jobedits.ts). */
     edit: BarEdit;
+    /** The body of the Properties dialog: every group open, the sketch, no delete (it is in the footer). */
+    dialog?: boolean;
   } = $props();
 
   const list = $derived(sel ? openingList(project, sel.kind) : []);
@@ -43,7 +61,8 @@
   const win = $derived(sel?.kind === "window" ? (project.windows ?? [])[sel.index] : null);
   /** The item the fields edit now: a field reused for the next one forgets the one before (UI-403). */
   const itemKey = $derived(sel ? `${sel.kind}:${sel.index}` : "");
-
+  /** The distance field with the focus, for the sketch. */
+  let active = $state<PlaceKey | null>(null);
 
   /**
    * A field of the box typed: the core reshapes the corners; a box it
@@ -81,70 +100,327 @@
     const next = sel ? stepIndex(sel.index, list.length, d) : null;
     if (sel && next !== null) sel = { kind: sel.kind, index: next };
   }
+
+  /** Position in plan and the facts sit in the bar's "More" row, opened per user (like the dormer bar). */
+  const moreOpen = $derived(dialog || !!prefs.objectMore);
+  let barEl = $state<HTMLDivElement | undefined>();
+  async function toggleMore() {
+    prefs.objectMore = !prefs.objectMore;
+    savePrefs();
+    // In a low window the row opens below the bar's scroll edge: bring it into view.
+    if (prefs.objectMore) {
+      await tick();
+      barEl?.querySelector("#object-more-row")?.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  const fmt = (v: number, digits: number) => formatNumber(v, numberLocale(), digits);
+
+  /** How far the chimney's top stands above the roof (upper and lower side); null off the roof. */
+  const above = $derived(chimney && sel?.kind === "chimney" ? aboveRoof(result, chimney.corners, chimney.height) : null);
+  // A distance field that goes away (the object left the roof) leaves no line highlighted.
+  $effect(() => {
+    if (!placement) active = null;
+  });
+
+  /** The sketch's outline of the object. */
+  const outline = $derived(chimney ? chimney.corners : win ? windowOutline(result, win) : []);
+
+  /** Facts about where the object sits. */
+  const faceFact = $derived(
+    placement
+      ? t("place.face", { part: t("editor.partN", { n: placement.part + 1 }), n: placement.edge + 1, p: fmt(placement.pitch_deg, 1).replace(/[.,]0$/, "") })
+      : null,
+  );
+
+  const del = $derived(t(sel?.kind === "chimney" ? "opening.deleteChimney" : sel?.kind === "window" ? "opening.deleteWindow" : "opening.deleteHole"));
 </script>
 
-{#snippet field(label: string, value: number, unit: string, set: (v: number) => unknown, min: number | null = null)}
-  <label>
+{#snippet field(label: string, value: number, unit: string, set: (v: number) => unknown, opts: { min?: number; title?: string; testid?: string } = {})}
+  <label title={opts.title}>
     <span>{label}</span>
-    <div class="unit"><input type="text" use:numeric={{ key: itemKey, value, step: 0.05, min: min ?? undefined, onchange: set }} /><em>{unit}</em></div>
+    <div class="unit"><input type="text" data-testid={opts.testid} use:numeric={{ key: itemKey, value, step: 0.05, min: opts.min, onchange: set }} /><em>{unit}</em></div>
   </label>
 {/snippet}
 
-<div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)} use:pageStep={step} use:freshBar>
-  {#if sel}
-    <div class="nav">
-      <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
-      <div class="which">
-        <strong>{t(`opening.${sel.kind}N`, { n: sel.index + 1 })}</strong>
-        <span>{t("def.of", { n: list.length })}</span>
-      </div>
-      <button class="icon-btn" onclick={() => step(1)} title="{t('opening.next')} (PageDown)" aria-label={t("opening.next")}><Icon name="right" /></button>
+{#snippet factsOfSize()}
+  {#if chimney && sel?.kind === "chimney" && above}
+    <p class="obj-fact" data-testid="object-above">{t("opening.aboveRoof", { up: fmt(above.up, 2), down: fmt(above.down, 2) })}</p>
+  {/if}
+  {#if chimney && box}
+    {@const plan = planArea(chimney.corners)}
+    {#if placement}
+      <p class="obj-fact" data-testid="object-area">{t("opening.slopeArea", { a: fmt(slopeArea(plan, placement.pitch_deg), 2), p: fmt(plan, 2) })}</p>
+    {:else}
+      <p class="obj-fact" data-testid="object-area">{t("opening.planArea", { a: fmt(plan, 2) })}</p>
+    {/if}
+  {/if}
+  {#if win}
+    <p class="obj-fact" data-testid="object-area">{t("opening.windowArea", { a: fmt(win.width * win.height, 2) })}</p>
+    {#if placement}<p class="obj-fact">{t("opening.windowPlan", { h: fmt(planLength(win.height, placement.pitch_deg), 3) })}</p>{/if}
+  {/if}
+  {#if sel?.kind === "hole"}<p class="obj-fact">{t("opening.holeHint")}</p>{/if}
+{/snippet}
+
+{#snippet factsOfPlace()}
+  {#if placement && faceFact}
+    <p class="obj-fact" data-testid="object-face">{faceFact}</p>
+    <p class="obj-fact">{t("place.eavePlan", { v: fmt(placement.from_eave_plan, 3) })}</p>
+  {/if}
+{/snippet}
+
+{#snippet sizeGroup()}
+  <section class="obj-grp grp-size" role="group" aria-labelledby="obj-size-{dialog ? 'd' : 'b'}">
+    <svelte:element this={dialog ? "h4" : "span"} class="obj-cap" id="obj-size-{dialog ? 'd' : 'b'}">{t("opening.size")}</svelte:element>
+    <div class="fields">
+      {#if chimney}
+        {#if box}
+          {@render field(t("opening.width"), box.width, "m", (v) => setBox({ width: v }), { min: 0.05 })}
+          {@render field(t("opening.depth"), box.depth, "m", (v) => setBox({ depth: v }), { min: 0.05 })}
+        {/if}
+        {#if sel?.kind === "chimney"}
+          {@render field(t("opening.top"), chimney.height, "m", setTop, { title: t("opening.topHint") })}
+        {/if}
+      {:else if win}
+        {@render field(t("opening.width"), win.width, "m", (v) => sel && onwindow({ width: v }, sel.index), { min: 0.05 })}
+        {@render field(t("opening.height"), win.height, "m", (v) => sel && onwindow({ height: v }, sel.index), { min: 0.05, title: t("opening.windowHint") })}
+      {/if}
     </div>
     {#if chimney}
-      {#if box}
-        {@render field("X", box.x, "m", (v) => setBox({ x: v }))}
-        {@render field("Y", box.y, "m", (v) => setBox({ y: v }))}
-        {@render field(t("opening.width"), box.width, "m", (v) => setBox({ width: v }), 0.05)}
-        {@render field(t("opening.depth"), box.depth, "m", (v) => setBox({ depth: v }), 0.05)}
-        {@render field(t("opening.rotation"), +box.rotation.toFixed(1), "°", (v) => setBox({ rotation: v }))}
-        {#if chimney.corners.length !== 4}
-          <p class="tip">{t("opening.polygon", { n: chimney.corners.length })}</p>
-        {/if}
-      {:else}
-        <p class="tip warn">{t("opening.noArea")}</p>
-      {/if}
-      {#if !isConvex(chimney.corners)}
-        <p class="tip warn">{t("opening.nonConvex")}</p>
-      {/if}
-      {#if sel.kind === "chimney"}
-        {@render field(t("opening.top"), chimney.height, "m", setTop)}
-      {:else}
-        <p class="tip">{t("opening.holeHint")}</p>
-      {/if}
-    {:else if win}
-      {@render field("X", win.x, "m", (v) => sel && onwindow({ x: v }, sel.index))}
-      {@render field("Y", win.y, "m", (v) => sel && onwindow({ y: v }, sel.index))}
-      {@render field(t("opening.width"), win.width, "m", (v) => sel && onwindow({ width: v }, sel.index), 0.05)}
-      {@render field(t("opening.height"), win.height, "m", (v) => sel && onwindow({ height: v }, sel.index), 0.05)}
-      <p class="tip">{t("opening.windowHint")}</p>
+      {#if !box}<p class="obj-note" role="status">{t("opening.noArea")}</p>
+      {:else if chimney.corners.length !== 4}<p class="obj-note info" role="status">{t("opening.polygon", { n: chimney.corners.length })}</p>{/if}
+      {#if !isConvex(chimney.corners)}<p class="obj-note" role="status">{t("opening.nonConvex")}</p>{/if}
+      {#if above && above.up < 0}<p class="obj-note" role="status" data-testid="object-top-below">{t("opening.topBelow")}</p>{/if}
     {/if}
-    {#if onplace}<PlaceFields {placement} {onplace} item={itemKey} />{/if}
-    <div class="spacer"></div>
-    {@const del = t(sel.kind === "chimney" ? "opening.deleteChimney" : sel.kind === "window" ? "opening.deleteWindow" : "opening.deleteHole")}
-    <button class="btn sm ghost danger" onclick={ondelete} title={del}><Icon name="trash" size={15} />{del}</button>
-  {/if}
-</div>
+    {#if dialog}
+      {@render factsOfSize()}
+      {#if sel?.kind === "chimney"}<p class="obj-hint">{t("opening.topHint")}</p>{/if}
+    {/if}
+  </section>
+{/snippet}
+
+{#snippet roofGroup()}
+  <section class="obj-grp grp-roof" role="group" aria-labelledby="obj-roof-{dialog ? 'd' : 'b'}" title={dialog ? undefined : t("place.how")}>
+    <svelte:element this={dialog ? "h4" : "span"} class="obj-cap" id="obj-roof-{dialog ? 'd' : 'b'}">{t("place.title")}</svelte:element>
+    {#if placement && onplace}
+      <div class="fields"><PlaceFields {placement} {onplace} item={itemKey} width={dialog ? 108 : 92} grouped={false} onactive={(k) => (active = k)} /></div>
+      {#if dialog}
+        {@render factsOfPlace()}
+        <p class="obj-hint">{t("place.how")}</p>
+      {/if}
+    {:else}
+      <p class="obj-note" role="status" data-testid="object-off-roof">{t("place.offRoof")}</p>
+    {/if}
+  </section>
+{/snippet}
+
+{#snippet planGroup()}
+  <section class="obj-grp grp-plan" role="group" aria-labelledby="obj-plan-{dialog ? 'd' : 'b'}">
+    <svelte:element this={dialog ? "h4" : "span"} class="obj-cap" id="obj-plan-{dialog ? 'd' : 'b'}">{t("place.plan")}</svelte:element>
+    <div class="fields">
+      {#if chimney && box}
+        {@render field(t("place.cornerX"), box.x, "m", (v) => setBox({ x: v }), { title: t("opening.cornerHint") })}
+        {@render field(t("place.cornerY"), box.y, "m", (v) => setBox({ y: v }), { title: t("opening.cornerHint") })}
+        {@render field(t("opening.rotation"), +box.rotation.toFixed(1), "°", (v) => setBox({ rotation: v }), { title: t("opening.rotationHint") })}
+      {:else if win}
+        {@render field(t("place.cornerX"), win.x, "m", (v) => sel && onwindow({ x: v }, sel.index), { title: t("opening.windowCornerHint") })}
+        {@render field(t("place.cornerY"), win.y, "m", (v) => sel && onwindow({ y: v }, sel.index), { title: t("opening.windowCornerHint") })}
+      {/if}
+    </div>
+    {#if dialog}<p class="obj-hint">{t(win ? "opening.windowCornerHint" : "opening.cornerHint")}</p>{/if}
+  </section>
+{/snippet}
+
+{#snippet stepper(compact: boolean)}
+  <div class="nav" class:compact>
+    <button class="icon-btn" onclick={() => step(-1)} title="{t('opening.prev')} (PageUp)" aria-label={t("opening.prev")}><Icon name="left" /></button>
+    <div class="which">
+      {#if sel}
+        {#if compact}
+          <span>{sel.index + 1} {t("def.of", { n: list.length })}</span>
+        {:else}
+          <strong>{t(`opening.${sel.kind}N`, { n: sel.index + 1 })}</strong>
+          <span>{t("def.of", { n: list.length })}</span>
+        {/if}
+      {/if}
+    </div>
+    <button class="icon-btn" onclick={() => step(1)} title="{t('opening.next')} (PageDown)" aria-label={t("opening.next")}><Icon name="right" /></button>
+  </div>
+{/snippet}
+
+{#if dialog}
+  <div class="dlg" role="group" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)} use:pageStep={step} data-testid="object-editor">
+    {#if sel}
+      {#if list.length > 1}{@render stepper(true)}{/if}
+      <div class="dlg-grid">
+        <div class="groups">
+          {@render sizeGroup()}
+          {@render roofGroup()}
+          {@render planGroup()}
+        </div>
+        <PlaceSketch {result} {placement} {outline} kind={sel.kind} {active} />
+      </div>
+    {/if}
+  </div>
+{:else}
+  <div class="bar" role="toolbar" aria-label={t(`opening.${sel?.kind ?? "chimney"}`)} use:pageStep={step} use:freshBar bind:this={barEl}>
+    {#if sel}
+      <div class="line">
+        <div class="groups">
+          {@render stepper(false)}
+          {@render sizeGroup()}
+          {@render roofGroup()}
+        </div>
+        <div class="end">
+          {#if onedit}
+            <button class="btn sm edit" onclick={onedit} title={t("opening.propertiesHint")} aria-label={t("menu.properties")} data-testid="object-properties"><Icon name="draw" size={15} /><span class="label">{t("menu.properties")}</span></button>
+          {/if}
+          <button class="btn sm more-btn" class:on={moreOpen} data-testid="object-more" aria-expanded={moreOpen} aria-controls="object-more-row" title={t("opening.moreHint")} onclick={toggleMore}>{t("bar.more")}</button>
+          <button class="btn sm ghost danger del" onclick={ondelete} title={del} aria-label={del}><Icon name="trash" size={15} /><span class="label">{del}</span></button>
+        </div>
+      </div>
+      {#if moreOpen}
+        <div class="more" id="object-more-row">
+          {@render planGroup()}
+          <div class="facts">
+            {@render factsOfSize()}
+            {@render factsOfPlace()}
+          </div>
+        </div>
+      {/if}
+    {/if}
+  </div>
+{/if}
 
 <style>
   .bar {
     display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 10px 14px;
-    padding: 10px 14px 12px;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px 12px;
     background: var(--surface);
     border-top: 1px solid var(--border);
     min-height: 70px;
+    container-type: inline-size;
+  }
+  .line {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .bar .groups {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px 18px;
+  }
+  .bar :global(.place .unit input) {
+    padding-left: 8px;
+  }
+  .bar .obj-grp .obj-cap {
+    margin-bottom: 3px;
+    font-size: 11px;
+  }
+  .fields {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px 10px;
+  }
+  .bar .fields {
+    flex-wrap: nowrap;
+  }
+  .dlg .fields {
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+  .end {
+    flex-shrink: 0;
+    display: flex;
+    gap: 6px;
+    margin-top: 18px;
+  }
+  .edit,
+  .del {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .more-btn.on {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  /* Narrow (the 600 px window): the stepper is one short line beside the
+     buttons, and both groups share the next line with slimmer fields. */
+  @container (max-width: 700px) {
+    .bar {
+      gap: 4px;
+      padding: 6px 12px;
+    }
+    .line {
+      flex-wrap: wrap;
+      gap: 4px 12px;
+    }
+    .bar .groups {
+      display: contents;
+    }
+    .bar .nav {
+      order: 0;
+      border-right: 0;
+      padding-right: 0;
+    }
+    .bar .grp-size {
+      order: 1;
+    }
+    .end {
+      order: 2;
+      margin: 0 0 0 auto;
+      align-self: flex-end;
+    }
+    .bar .grp-roof {
+      order: 3;
+    }
+    .bar .which {
+      flex-direction: row;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+    }
+    .bar .unit input {
+      width: 70px;
+    }
+    .bar :global(.place .unit input) {
+      width: 88px;
+    }
+    .bar .which span {
+      display: none;
+    }
+    .bar :global(.place) {
+      gap: 10px;
+    }
+  }
+  /* Where the bar is short, Properties and Delete keep their tooltip and name but show only their icon. */
+  @container (max-width: 1180px) {
+    .del .label,
+    .edit .label {
+      display: none;
+    }
+  }
+  .more {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px 28px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .more .facts {
+    max-width: 440px;
+    padding-top: 12px;
+  }
+  .more .facts :global(.obj-fact:first-child) {
+    margin-top: 0;
   }
   .nav {
     display: flex;
@@ -154,11 +430,22 @@
     border-right: 1px solid var(--border);
     align-self: stretch;
   }
+  .nav.compact {
+    border-right: 0;
+    padding: 0;
+    margin: -4px 0 12px -6px;
+  }
   .which {
     display: flex;
     flex-direction: column;
-    min-width: 92px;
+    min-width: 64px;
     line-height: 1.25;
+  }
+  .compact .which {
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 13px;
+    color: var(--text-2);
   }
   .which strong {
     font-size: 14px;
@@ -167,6 +454,10 @@
     font-size: 12px;
     color: var(--text-3);
     white-space: nowrap;
+  }
+  .compact .which span {
+    font-size: 13px;
+    color: var(--text-2);
   }
   label span {
     display: block;
@@ -179,8 +470,13 @@
     position: relative;
   }
   .unit input {
-    width: 92px;
+    width: 76px;
     padding-right: 24px;
+    padding-left: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .dlg .unit input {
+    width: 108px;
   }
   .unit em {
     position: absolute;
@@ -189,21 +485,54 @@
     font-style: normal;
     color: var(--text-3);
     font-size: 13px;
-  }
-  .spacer {
-    flex: 1;
+    pointer-events: none;
   }
   .danger {
     color: var(--danger);
   }
-  .tip.warn {
-    color: var(--danger);
-    font-weight: 600;
+  .dlg {
+    container-type: inline-size;
   }
-  .tip {
-    align-self: center;
-    margin: 0;
-    font-size: 13px;
-    color: var(--text-2);
+  .dlg-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+    gap: 24px;
+    align-items: start;
+  }
+  .dlg .groups {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .dlg-grid > :global(.sketch) {
+    position: sticky;
+    top: 0;
+  }
+  /* Narrow: one column, the sketch right under the distances it explains. */
+  @container (max-width: 620px) {
+    .dlg-grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+    }
+    .dlg .groups {
+      display: contents;
+    }
+    .dlg .grp-size {
+      order: 1;
+    }
+    .dlg .grp-roof {
+      order: 2;
+    }
+    .dlg-grid > :global(.sketch) {
+      position: relative;
+      order: 3;
+      max-width: 360px;
+    }
+    .dlg-grid > :global(.sketch svg) {
+      max-height: 150px;
+    }
+    .dlg .grp-plan {
+      order: 4;
+    }
   }
 </style>

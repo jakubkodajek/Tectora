@@ -460,3 +460,18 @@ sessions that use it know where things stand.
   Jakub; its known-open list (TEST-2012 has no deterministic E2E,
   `folded_loop` not under the work bound, `merge::value_at` and keys with
   `.` or `[`) is in the round-21 run folder `known-open.md`.
+
+## 2026-11-28 - object editor redesign (branch claude/project-thread-1c8ssz)
+- Done: the chimney / roof window / roof opening editor (docked bar and its
+  Properties dialog) shows three named groups: size, position on the roof
+  (from eave / left / right), position in plan (corner X / Y, rotation; in
+  the bar under More, `prefs.objectMore`). Facts: face and pitch, height of a
+  chimney top above the roof, area on the slope (= what the results deduct),
+  window height in plan. The dialog has a sketch of the host face turned eave
+  down (`PlaceSketch.svelte`, above a pitch break it marks the break), and
+  delete moved to its footer. Presentation helpers in `objectfacts.ts` with
+  unit tests; E2E `object-editor.e2e.ts`. Designed and reviewed by Fable
+  (spec and review in the project files `object-editor-2026-11-28/`).
+- Open: "height above the roof" and the below-roof warning are UI-only; an
+  MCP client cannot read them yet (core `Placement` follow-up). The dormer
+  bar's More row got the same group captions; the dormer dialog is unchanged.
