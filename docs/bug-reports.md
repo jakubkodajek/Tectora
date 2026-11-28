@@ -129,8 +129,10 @@ values are compiled into the app and are never printed in a log.
 From the repository root (replace the two values):
 
 ```sh
-cargo run -p tectora-relay --example probe -- "https://script.google.com/macros/s/AKfycb.../exec" "3f9a..." --mb 1
+TECTORA_REPORT_KEY="3f9a..." cargo run -p tectora-relay --example probe -- "https://script.google.com/macros/s/AKfycb.../exec" --mb 1
 ```
+
+(The key goes in the environment, not on the command line, so the shell history and the process list do not keep it.) The release workflow runs `cargo run -p tectora-relay --example check-config` with the two secrets first and stops the release when either would be refused by the app.
 
 Expected output, after a few seconds:
 
@@ -179,6 +181,15 @@ passed; the app then leaves drawings out of larger reports and says so.
 - **Updating the script.** See the end of step 5.
 
 ## 9. Privacy and trust
+
+- **Test installers carry the production key.** The "Run workflow" installers of
+  `build.yml` are built on any branch with the repository secrets, so anyone
+  who can run that workflow on a branch gets an installer with the production
+  address and key. The key can only submit reports (see below). Keep the number
+  of people with write access small, and rotate the key (step 8) if one
+  of those installers ends up where it should not. The installer job also keeps
+  its own build cache (rust-cache), which can hold the compiled key; do not
+  share that cache outside the repository.
 
 - **In the issue** (only these): the description, versions, system, language,
   screen, whether the calculation worked and its error code, which parts the

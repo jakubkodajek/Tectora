@@ -2,8 +2,11 @@
 //! the answer. Usage:
 //!
 //! ```text
-//! cargo run -p tectora-relay --example probe -- <url> <key> [--mb N]
+//! TECTORA_REPORT_KEY=<key> cargo run -p tectora-relay --example probe -- <url> [--mb N]
 //! ```
+//!
+//! The key is read from the environment (not the command line, where the
+//! shell history and the process list would keep it).
 //!
 //! The report is marked `test`, so the relay's issue gets a `[test]` title.
 //! Delete the file and the issue afterwards (docs/bug-reports.md).
@@ -27,15 +30,16 @@ fn main() {
             i += 1;
         }
     }
-    let (Some(url), Some(key)) = (plain.first(), plain.get(1)) else {
-        eprintln!("usage: probe <url> <key> [--mb N]");
+    let key = std::env::var("TECTORA_REPORT_KEY").unwrap_or_default();
+    let Some(url) = plain.first() else {
+        eprintln!("usage: TECTORA_REPORT_KEY=<key> probe <url> [--mb N]");
         std::process::exit(2);
     };
     if mb == 0 || mb * 1024 * 1024 > MAX_UPLOAD {
         eprintln!("--mb must be between 1 and {}", MAX_UPLOAD / 1024 / 1024);
         std::process::exit(2);
     }
-    let Some(cfg) = Config::checked(url, key, true) else {
+    let Some(cfg) = Config::checked(url, &key, true) else {
         eprintln!("the address or the key does not have the expected shape");
         std::process::exit(2);
     };

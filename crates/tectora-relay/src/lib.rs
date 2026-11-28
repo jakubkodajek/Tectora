@@ -9,7 +9,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde_json::{Value, json};
@@ -25,10 +25,20 @@ const MAX_HOPS: usize = 5;
 /// Longest wait the relay may ask for, seconds.
 const MAX_WAIT_S: u64 = 86_400;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     pub url: String,
     pub key: String,
+}
+
+/// The key and the address never show in a Debug print (logs, panics).
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("url", &"<hidden>")
+            .field("key", &"<hidden>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +122,11 @@ impl Config {
     /// `None` means sending is disabled.
     pub fn checked(url: &str, key: &str, allow_loopback_http: bool) -> Option<Config> {
         if !valid_key(key) {
+            return None;
+        }
+        // `Url::parse` drops tabs and line breaks; a stored address must be
+        // exactly what was checked.
+        if url.bytes().any(|b| b <= 0x20 || b == 0x7f) {
             return None;
         }
         let u = Url::parse(url).ok()?;
@@ -259,19 +274,31 @@ fn redirect_allowed(start: &Url, next: &Url) -> bool {
     if next.scheme() != "https" || next.port().is_some() {
         return false;
     }
-    match next.host_str() {
-        Some("script.google.com") | Some("googleusercontent.com") => true,
-        Some(h) => h.ends_with(".googleusercontent.com"),
-        None => false,
-    }
+    // Apps Script's own two hosts, nothing else.
+    matches!(
+        next.host_str(),
+        Some("script.google.com") | Some("script.googleusercontent.com")
+    )
+}
+
+fn timed_out() -> SendError {
+    SendError::Offline("timeout".into())
 }
 
 fn exchange(url: &str, body: String, t: Timeouts) -> Result<Receipt, SendError> {
     ensure_crypto_provider();
+    // One deadline for the whole exchange: the POST, every redirect and the
+    // reading of the answer share it.
+    let deadline = Instant::now() + t.total;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(timed_out)
+    };
     let start = Url::parse(url).map_err(|_| SendError::Io("url".into()))?;
     let mut builder = reqwest::blocking::Client::builder()
         .connect_timeout(t.connect)
-        .timeout(t.total)
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("tectora");
     if is_loopback_host(&start) {
@@ -286,6 +313,7 @@ fn exchange(url: &str, body: String, t: Timeouts) -> Result<Receipt, SendError> 
         .post(current.clone())
         .header("Content-Type", "application/json")
         .body(body)
+        .timeout(remaining()?)
         .send()
         .map_err(net_error)?;
     let mut hops = 0;
@@ -308,7 +336,11 @@ fn exchange(url: &str, body: String, t: Timeouts) -> Result<Receipt, SendError> 
             return Err(SendError::BadAnswer("too many redirects".into()));
         }
         hops += 1;
-        resp = client.get(next.clone()).send().map_err(net_error)?;
+        resp = client
+            .get(next.clone())
+            .timeout(remaining()?)
+            .send()
+            .map_err(net_error)?;
         current = next;
     }
     let status = resp.status().as_u16();
@@ -321,12 +353,22 @@ fn exchange(url: &str, body: String, t: Timeouts) -> Result<Receipt, SendError> 
     if !(200..300).contains(&status) {
         return Err(SendError::BadAnswer(format!("http {status}")));
     }
+    // Read in pieces and look at the clock between them: an answer that
+    // dribbles in ends at the deadline.
     let mut text = Vec::new();
-    resp.take(MAX_ANSWER + 1)
-        .read_to_end(&mut text)
-        .map_err(|_| SendError::Offline("read".into()))?;
-    if text.len() as u64 > MAX_ANSWER {
-        return Err(SendError::BadAnswer("answer too long".into()));
+    let mut buf = [0u8; 4096];
+    loop {
+        remaining()?;
+        let n = resp
+            .read(&mut buf)
+            .map_err(|_| SendError::Offline("read".into()))?;
+        if n == 0 {
+            break;
+        }
+        text.extend_from_slice(&buf[..n]);
+        if text.len() as u64 > MAX_ANSWER {
+            return Err(SendError::BadAnswer("answer too long".into()));
+        }
     }
     parse_answer(&text)
 }

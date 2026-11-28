@@ -201,6 +201,17 @@ jobs:
           node --version
           npm ci --ignore-scripts --engine-strict
 
+      # The two report secrets are compiled in: a pair the app would refuse
+      # (a pasted newline, the /dev address, a short key) must stop the release
+      # here, not ship an app that cannot send. Uses the app's own rules and
+      # prints no value.
+      - name: Check the report relay secrets
+        working-directory: source
+        env:
+          TECTORA_REPORT_URL: ${{ secrets.TECTORA_REPORT_URL }}
+          TECTORA_REPORT_KEY: ${{ secrets.TECTORA_REPORT_KEY }}
+        run: cargo run --locked -q -p tectora-relay --example check-config
+
       - name: Build and sign
         working-directory: source/app
         env:
