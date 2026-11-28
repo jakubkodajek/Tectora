@@ -7,6 +7,7 @@ pub mod applog;
 pub mod assistants;
 pub mod breakdown;
 mod budget;
+pub mod bugreport;
 pub mod bundle;
 pub mod check;
 pub mod commands;
