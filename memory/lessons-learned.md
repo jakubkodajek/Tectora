@@ -4,6 +4,7 @@ Short imperative rules learned the hard way. Add one when the same mistake
 happens twice or a review finding would have been prevented by a rule.
 Newest first. Format: `- YYYY-MM-DD: <rule> (why: <one line, with the commit or PR>)`
 
+- 2026-11-28: Register new code in the scan tests and never rename it to dodge them; a scan that fails is a finding to fix (why: two review rounds of the bug report, an implementer renamed code past `app_commands` and `gate.scan`; aad380c and fix-r2).
 - 2026-11-24: In E2E wait for a gate (a held route, an answer, an event), never a fixed hold or sleep; and click covered or inert controls with the real mouse (why: fixed holds flaked in audit-r7-drag, r19-b and r20-b; `inert` and overlays were missed by `.click()` until real-mouse tests, PR #55 rounds 18-21).
 - 2026-11-24: A rule that must survive a trimmed log keeps its own state file, not a walk over the log (why: four rounds of log-walk review fixes broke on the 50-entry trim; ADR 0007 baseline file, PR #55).
 - 2026-11-14: Draw 3D walls up to the roof over the wall line, never to the eave or building height; the eave is measured at the overhang line (why: gaps under every roof with an overhang and stacked walls, f5d9531).

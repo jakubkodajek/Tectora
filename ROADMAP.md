@@ -38,6 +38,13 @@ The list below is DACAD's menu (DACAD.exe string table) against the app.
 - File format: JSON Schema (`docs/tectora.schema.json`), format versions with
   migrations on load; newer files are refused.
 - `.tectora` and `.tectorajob` open by double-click on macOS and Windows.
+- "Report a bug" button next to the AI pill: a ZIP with the job bundle,
+  report.json, plan and 3D pictures and redacted logs, with privacy
+  checkboxes and an optional name; queued in an outbox and sent through the
+  owner's relay (Apps Script, Drive, GitHub issue); five MCP tools
+  (`create_bug_report`, `send_bug_reports`, `discard_bug_report`,
+  `list_bug_reports`, `read_bug_report`). Live once the owner runs the relay
+  setup in `docs/bug-reports.md` (ADR-0008, Proposed).
 
 ## Next
 

@@ -842,3 +842,28 @@ vitest `keys.test.ts` (draftKey at 0 corners, Delete), `results.test.ts`
 `app/e2e/audit-r21-b.e2e.ts`, `editor-ux.e2e.ts` "one press more",
 `audit-r20-review.e2e.ts` (TEST-2001), `audit-r20-b.e2e.ts` (ERR-1906,
 ERR-1905, UI-1901), `audit-r19-b.e2e.ts` (HUNT-1805).
+
+## 23. A bug report leaves the computer (@arch, @errors, @test)
+
+Guards: `crates/tectora-core/tests/bugreport_cases.rs` (`leaving_the_customer_out_blanks_name_and_address_everywhere`,
+`control_and_bidi_characters_never_reach_the_report`, `each_include_flag_leaves_its_entries_out_and_the_report_says_so`),
+`crates/tectora-core/tests/outbox.rs` (drain stops at the first offline error, a `local` entry is never uploaded without
+force, a sidecar `next_try_ms` far ahead is due, two drains keep every `sent.jsonl` line),
+`crates/tectora-relay/tests/relay.rs` (one deadline for POST, redirects and body; a dripping answer ends `offline`; the key
+is hidden in `Debug`), `crates/tectora-core/tests/app_commands.rs` (report commands use `try_lock`, the drain survives a
+poisoned lock and a panic), `app/tests/relayscript.test.mjs` (refused GitHub calls are recorded as `error:<status>`; a
+failing first write leaves one Drive file and at most one issue).
+
+For every report made from the app and from MCP, check the ZIP and the send:
+
+- Unticking "customer data" blanks the customer and address in the job, the change log and the issue; the job name
+  reaches the issue only when customer data is ticked (`meta.job_name`).
+- Unticking the technical record drops steps and notices from `report.json`, not only from the UI.
+- A ticked part that could not be packed (refused attachment, unreadable history, oversize snapshot) is listed in
+  `left_out` with a reason code, and `included.<part>` is false.
+- Absolute paths in every string and in the log tails become `<library>`, `<reports>` or `<home>`; control and
+  bidi characters never reach `report.json`.
+- A report made without a relay key stays `local`; only an explicit Send now uploads it.
+- A permanently refused report is `failed` with its code and "Save as", never announced as waiting.
+- A send that hangs or dribbles its answer ends at the single deadline, and a drain never blocks create or send-now.
+- A second send of the same id creates no second Drive file and no second issue.

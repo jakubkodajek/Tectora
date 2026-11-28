@@ -460,3 +460,11 @@ sessions that use it know where things stand.
   Jakub; its known-open list (TEST-2012 has no deterministic E2E,
   `folded_loop` not under the work bound, `merge::value_at` and keys with
   `.` or `[`) is in the round-21 run folder `known-open.md`.
+
+## 2026-11-28 - bug-report (branch claude/project-thread-sbfbp5, HEAD aad380c)
+- Done: "Report a bug" button next to the AI pill; ZIP with job bundle, report.json, plan SVG and 3D PNG, redacted logs, privacy checkboxes, optional "Your name"; outbox in the config folder, sent by `crates/tectora-relay` to the owner's Apps Script relay (`integrations/report-relay/Code.gs`: Drive file plus GitHub issue); five MCP tools; `reports_dir` setting removed. Two review rounds (fix-r1, fix-r2) with guard tests. Docs: ROADMAP (Done), architecture (outbox and relay flow), README, AGENTS command row, `docs/bug-reports.md`, edge-cases section 23, decisions and one lesson.
+- Decided by Jakub 2026-11-28: first a shared folder, then the zero-setup relay (ADR-0008, still Proposed); job name in the issue only with customer data ticked; optional "Your name".
+- No `features.json` item matches, so none set to passing.
+- State: `make check` exit 2 once: `tectora-cli --test drawing_limits` failed with "cannot start the worker: No such file or directory"; the same test passed 9/9 when run alone. Final gate result in the commit report. Docs-only commit.
+- Open: owner runs the relay setup (`docs/bug-reports.md`), probes the upload size (the 20 MB cap is unconfirmed), and accepts ADR-0008; the two repository secrets are needed before releases send.
+- Next: owner accepts ADR-0008 and runs the probe; the drawing_limits worker race (test or harness) is looked at separately.
