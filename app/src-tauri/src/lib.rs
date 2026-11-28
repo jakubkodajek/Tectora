@@ -958,6 +958,19 @@ struct ReportResult {
     issue_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
+    /// The code of the refusal when `state` is `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+}
+
+/// The state the UI is told: `sent`, `local`, `failed`, else `waiting`.
+fn result_state(state: &str) -> &'static str {
+    match state {
+        "sent" => "sent",
+        "local" => "local",
+        "failed" => "failed",
+        _ => "waiting",
+    }
 }
 
 /// The queue's counts for the indicator; also pushed as `report-outbox`.
@@ -993,6 +1006,7 @@ fn create_bug_report(
                 left_out: made.manifest.left_out,
                 issue_url: None,
                 path: Some(made.path.display().to_string()),
+                last_error: None,
             });
         }
         // The library is only read while the report is built, not while it
@@ -1001,29 +1015,39 @@ fn create_bug_report(
             .outbox
             .enqueue(&state.store(), &request, state.relay.is_none())?;
         let mut issue_url = None;
-        let mut result_state = queued.state.clone();
+        let mut state_now = queued.state.clone();
         if let Some(cfg) = &state.relay {
-            let _one_at_a_time = state.drain_lock.lock().unwrap_or_else(|e| e.into_inner());
-            issue_url = tectora_mcp::reports::send_one(
-                &state.outbox,
-                cfg,
-                &queued.file_name,
-                tectora_mcp::reports::APP_TIMEOUTS,
-            );
-            result_state = state.outbox.status(&queued.file_name).to_string();
+            // Never wait behind the background drain: when it is busy the
+            // report stays queued as waiting and is sent by the next pass.
+            let one = match state.drain_lock.try_lock() {
+                Ok(g) => Some(g),
+                Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => None,
+            };
+            if let Some(_one_at_a_time) = one {
+                issue_url = tectora_mcp::reports::send_one(
+                    &state.outbox,
+                    cfg,
+                    &queued.file_name,
+                    tectora_mcp::reports::APP_TIMEOUTS,
+                );
+                state_now = state.outbox.status(&queued.file_name).to_string();
+            }
         }
+        let last_error = if state_now == "failed" {
+            state.outbox.last_error(&queued.file_name)
+        } else {
+            None
+        };
         push_outbox(&app);
         Ok(ReportResult {
-            state: match result_state.as_str() {
-                "sent" => "sent",
-                "local" => "local",
-                _ => "waiting",
-            },
+            state: result_state(&state_now),
             file_name: queued.file_name,
             size: queued.size,
             left_out: queued.left_out,
             issue_url,
             path: None,
+            last_error,
         })
     })
 }
@@ -1074,18 +1098,28 @@ fn bug_report_outbox(state: State<AppState>) -> CmdResult<Value> {
     })
 }
 
+/// What one Send now or background pass may take in all.
+const SEND_NOW_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Sends what waits, now ("Send now"). Without a relay nothing is sent.
 #[tauri::command(async)]
 fn send_bug_reports(app: tauri::AppHandle, state: State<AppState>) -> CmdResult<Value> {
     guard(|| {
         let result = match &state.relay {
             Some(cfg) => {
-                let _one_at_a_time = state.drain_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let _one_at_a_time = match state.drain_lock.try_lock() {
+                    Ok(g) => g,
+                    Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        return Err(AppError::new("busy"));
+                    }
+                };
                 tectora_mcp::reports::drain(
                     &state.outbox,
                     cfg,
                     true,
                     tectora_mcp::reports::APP_TIMEOUTS,
+                    Some(SEND_NOW_BUDGET),
                 )
             }
             None => {
@@ -1094,13 +1128,18 @@ fn send_bug_reports(app: tauri::AppHandle, state: State<AppState>) -> CmdResult<
                     sent: 0,
                     waiting: c.waiting,
                     failed: c.failed,
+                    last_error: None,
                 }
             }
         };
         push_outbox(&app);
-        Ok(serde_json::json!({
+        let mut out = serde_json::json!({
             "sent": result.sent, "waiting": result.waiting, "failed": result.failed,
-        }))
+        });
+        if let Some(code) = result.last_error {
+            out["last_error"] = serde_json::json!(code);
+        }
+        Ok(out)
     })
 }
 
@@ -1147,33 +1186,52 @@ fn discard_bug_report(
 /// which are due). Never on the main thread, never a notice when the
 /// network is off.
 fn start_report_drain(app: tauri::AppHandle) {
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("tectora-report-drain".into())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(10));
             let mut last = None;
             loop {
-                let state = app.state::<AppState>();
-                if let Some(cfg) = &state.relay
-                    && state.outbox.counts().waiting + state.outbox.counts().local > 0
-                    && let Ok(_one) = state.drain_lock.try_lock()
-                {
-                    tectora_mcp::reports::drain(
-                        &state.outbox,
-                        cfg,
-                        false,
-                        tectora_mcp::reports::APP_TIMEOUTS,
-                    );
+                // One pass; a panic in it is logged and the thread goes on.
+                let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let state = app.state::<AppState>();
+                    let counts = state.outbox.counts();
+                    if let Some(cfg) = &state.relay
+                        && counts.waiting > 0
+                    {
+                        let one = match state.drain_lock.try_lock() {
+                            Ok(g) => Some(g),
+                            Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+                            Err(std::sync::TryLockError::WouldBlock) => None,
+                        };
+                        if let Some(_one) = one {
+                            tectora_mcp::reports::drain(
+                                &state.outbox,
+                                cfg,
+                                false,
+                                tectora_mcp::reports::APP_TIMEOUTS,
+                                Some(SEND_NOW_BUDGET),
+                            );
+                        }
+                    }
+                    let counts = state.outbox.counts();
+                    if last != Some(counts) {
+                        last = Some(counts);
+                        let _ = app.emit("report-outbox", counts);
+                    }
+                }));
+                if pass.is_err() {
+                    tectora_core::applog::line("ERROR", "the report drain pass panicked");
                 }
-                let counts = state.outbox.counts();
-                if last != Some(counts) {
-                    last = Some(counts);
-                    let _ = app.emit("report-outbox", counts);
-                }
-                drop(state);
                 std::thread::sleep(std::time::Duration::from_secs(60));
             }
         });
+    if let Err(e) = spawned {
+        tectora_core::applog::line(
+            "ERROR",
+            &format!("the report drain thread did not start: {e}"),
+        );
+    }
 }
 
 /// Opens one of the configured folders in Finder / Explorer.

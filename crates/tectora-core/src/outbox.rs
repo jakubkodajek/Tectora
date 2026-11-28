@@ -679,7 +679,12 @@ impl Outbox {
         for l in lines {
             let mut name = l["file_name"].as_str().unwrap_or("").to_string();
             if !used.insert(name.clone()) {
-                let id8 = l["id"].as_str().unwrap_or("").get(..8).unwrap_or("").to_string();
+                let id8 = l["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .get(..8)
+                    .unwrap_or("")
+                    .to_string();
                 let stem = name.strip_suffix(".zip").unwrap_or(&name).to_string();
                 name = format!("{stem}-{id8}.zip");
                 used.insert(name.clone());

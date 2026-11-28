@@ -618,6 +618,11 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                 }
             }
             out["state"] = json!(report_state(&state));
+            if state == "failed"
+                && let Some(code) = outbox.last_error(&queued.file_name)
+            {
+                out["last_error"] = json!(code);
+            }
             Ok(out)
         }
         "bug_report_outbox" => {
@@ -644,10 +649,15 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
                         sent: 0,
                         waiting: c.waiting,
                         failed: c.failed,
+                        last_error: None,
                     }
                 }
             };
-            Ok(json!({ "sent": r.sent, "waiting": r.waiting, "failed": r.failed }))
+            let mut out = json!({ "sent": r.sent, "waiting": r.waiting, "failed": r.failed });
+            if let Some(code) = r.last_error {
+                out["last_error"] = json!(code);
+            }
+            Ok(out)
         }
         "save_queued_bug_report" => {
             let name = arg::<String>(a, "name")?;
@@ -721,7 +731,6 @@ fn send_reports(
     force: bool,
 ) -> (tectora_core::outbox::DrainResult, Option<String>) {
     use tectora_core::outbox::{Receipt, SendFailure};
-    outbox.promote_local();
     let mut issue = None;
     let result = outbox.drain_only(only, store::now_ms(), force, &mut |job, zip| {
         let id = job["id"].as_str().unwrap_or("");
@@ -750,12 +759,14 @@ fn send_reports(
     (result, issue)
 }
 
-/// The state the UI is told: `sent`, `local`, else `waiting`.
+/// The state the UI is told: `sent`, `local`, `failed`, else `waiting`.
 fn report_state(state: &str) -> &'static str {
     if state == "sent" {
         "sent"
     } else if state == "local" {
         "local"
+    } else if state == "failed" {
+        "failed"
     } else {
         "waiting"
     }

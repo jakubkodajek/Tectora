@@ -13,7 +13,9 @@ fn main() {
     }
     let url_ok = Config::checked(&url, "k".repeat(16).as_str(), false).is_some();
     if url_ok {
-        eprintln!("report relay configuration: the key is not valid (16 to 128 letters, digits, - and _)");
+        eprintln!(
+            "report relay configuration: the key is not valid (16 to 128 letters, digits, - and _)"
+        );
     } else {
         eprintln!("report relay configuration: the address is not a Web app /exec address");
     }
