@@ -466,7 +466,12 @@ impl Project {
             over("chimneys", self.chimneys.len(), MAX_OBJECTS),
             over("roof windows", self.windows.len(), MAX_OBJECTS),
             over("roof openings", self.roof_openings.len(), MAX_OBJECTS),
-            over("towers", self.towers.len(), crate::tower::MAX_TOWERS),
+            // The towers' two limits end with their own codes, as a save's
+            // check does (`edit::towers::check_tower_counts`): the app then
+            // says "at most 50 towers", not that the roof failed (audit r3
+            // ERR-003).
+            over("towers", self.towers.len(), crate::tower::MAX_TOWERS)
+                .map(|m| format!("{m} ({})", crate::edit::towers::TOWER_LIMIT)),
             over(
                 "tiers of one tower",
                 self.towers.iter().map(|t| t.tiers.len()).max().unwrap_or(0),
@@ -476,7 +481,8 @@ impl Project {
                 "tiers of all towers",
                 self.towers.iter().map(|t| t.tiers.len()).sum(),
                 crate::tower::MAX_TIERS_TOTAL,
-            ),
+            )
+            .map(|m| format!("{m} ({})", crate::edit::towers::TOWER_TIERS_LIMIT)),
             over("hand-drawn lines", self.manual_lines.len(), MAX_OBJECTS),
             over("hand-drawn faces", self.manual_faces.len(), MAX_OBJECTS),
         ];

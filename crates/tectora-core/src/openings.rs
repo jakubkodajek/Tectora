@@ -58,11 +58,24 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     if project.flat_roof {
         return crate::flat::generate_project(&with_tower_shafts(project));
     }
+    generate_project_by(project, |p| generate_valid(&with_tower_shafts(p)))
+}
+
+/// [`generate_project`] of a pitched job with `calc` as the calculation of
+/// a cleaned project with its towers' shafts (in production
+/// `generate_valid(&with_tower_shafts(p))`): a test hands in a calculation
+/// that fails with a shaft, which no real job was found to do (audit r3
+/// TEST-004: 30 000 layouts of towers on a gable and an L), so the naming
+/// of the tower stays wired in.
+fn generate_project_by(
+    project: &Project,
+    calc: impl Fn(&Project) -> Vec<RoofGeometry>,
+) -> Vec<RoofGeometry> {
     let (clean, slots, ids) = cleaned(project);
     // The towers' shafts are cut out of the roofs like chimneys; the
     // checks below see the project's own objects only.
     let shafted = with_tower_shafts(&clean);
-    let mut geos = generate_valid(&shafted);
+    let mut geos = calc(&clean);
     // What is cut out on purpose is no plan without a roof (audit r2
     // MATH-008).
     let cuts: Vec<Vec<Point2>> = shafted
@@ -89,7 +102,7 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     // also where the core's error says nothing of an opening (audit r2
     // ERR-002): decided by calculating again without the shafts.
     blame_tower_shafts(&clean, &mut geos);
-    blame_by_result(&clean, &mut geos, |p| generate_valid(&with_tower_shafts(p)));
+    blame_by_result(&clean, &mut geos, &calc);
     // Windows, chimneys and openings the calculation left out: said, the
     // result unchanged.
     for (part, mut w) in crate::check::off_roof(&clean, &geos) {
@@ -3023,6 +3036,49 @@ mod tests {
     /// calculates without it names that tower, whatever the error's kind
     /// and whether or not the convexity test finds anything; a failure the
     /// building has without the shafts too names none.
+    #[test]
+    fn the_whole_calculation_names_the_tower_a_failure_goes_with() {
+        // Audit r3 TEST-004: through `generate_project`'s own steps, with a
+        // calculation that fails while the culprit's shaft is cut.
+        use crate::roof::{CalcError, CalcErrorKind};
+        use crate::tower::Tower;
+        let culprit = Tower::pyramid(Point2::new(3.0, 2.0), 1.0, 16.0, 1.0);
+        let other = Tower::pyramid(Point2::new(7.0, 6.0), 1.0, 16.0, 1.0);
+        let mut p = gable();
+        p.towers = vec![other, culprit.clone()];
+        let culprit_fp = culprit.footprint();
+        let calc = |q: &Project| -> Vec<RoofGeometry> {
+            let shafted = with_tower_shafts(q);
+            if shafted.chimneys.iter().any(|c| c.corners == culprit_fp) {
+                vec![RoofGeometry {
+                    error: Some(CalcError {
+                        kind: CalcErrorKind::OpenFaces,
+                        code: None,
+                        message_id: None,
+                        message: String::new(),
+                        parts: Vec::new(),
+                        edges: Vec::new(),
+                        towers: Vec::new(),
+                    }),
+                    ..RoofGeometry::default()
+                }]
+            } else {
+                generate_valid(&shafted)
+            }
+        };
+        let geos = generate_project_by(&p, calc);
+        assert_eq!(geos[0].error.as_ref().unwrap().towers, vec![1]);
+        // Moved off, the tower is named no more and the roof calculates.
+        p.towers[1].center = Point2::new(500.0, 500.0);
+        let geos = generate_project_by(&p, calc);
+        assert!(geos[0].error.is_none());
+        // And the production path is this one.
+        assert_eq!(
+            generate_project(&p),
+            generate_project_by(&p, |q| generate_valid(&with_tower_shafts(q)))
+        );
+    }
+
     #[test]
     fn a_failure_that_goes_with_a_shaft_names_its_tower() {
         use crate::roof::{CalcError, CalcErrorKind};

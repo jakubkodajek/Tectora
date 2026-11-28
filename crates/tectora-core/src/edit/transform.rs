@@ -226,11 +226,35 @@ fn unique_name(project: &Project, base: &str) -> String {
 /// MCP `delete_items` both go through it. Returns the indices the removed
 /// towers had.
 pub fn delete_part(project: &mut Project, part: usize) -> Result<Vec<usize>, String> {
-    if part >= project.parts.len() {
-        return Err(format!("part {part} does not exist"));
+    let gone = towers_removed_by_delete(project, part)?;
+    project.parts.remove(part);
+    for &k in gone.iter().rev() {
+        project.towers.remove(k);
     }
-    let old = project.parts.remove(part);
-    Ok(drop_towers_left(project, &old))
+    Ok(gone)
+}
+
+/// The indices of the towers [`delete_part`] would remove with `part`,
+/// the project unchanged: one rule for the question and the edit (audit
+/// r3 ARCH-003).
+pub fn towers_removed_by_delete(project: &Project, part: usize) -> Result<Vec<usize>, String> {
+    let Some(old) = project.parts.get(part) else {
+        return Err(format!("part {part} does not exist"));
+    };
+    Ok(project
+        .towers
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            inside_outline(old, t.center)
+                && !project
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .any(|(j, q)| j != part && inside_outline(q, t.center))
+        })
+        .map(|(k, _)| k)
+        .collect())
 }
 
 /// Replaces building `part` by `new`; the towers that stood on the old

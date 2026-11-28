@@ -219,6 +219,8 @@ export interface TowerReport {
     wall_area: number;
     on_roof: boolean;
     base_below_roof: boolean;
+    /** The eave of its overhang lies under the roof around it (warning tower_eave_below_roof). */
+    eave_below_roof?: boolean;
     /** The building under it has no calculated roof: not beside the roofs, and `wall_area` is 0. */
     roof_failed?: boolean;
   };
@@ -239,7 +241,8 @@ export type ArcEdit =
   | { op: "round_corner"; index: number; radius: number; segments?: number | null }
   | { op: "bend_wall"; index: number; bulge: number; segments?: number | null }
   | { op: "straighten_arc"; index: number }
-  | { op: "reshape_arc"; index: number; bulge: number; segments?: number | null };
+  | { op: "reshape_arc"; index: number; bulge: number; segments?: number | null }
+  | { op: "change_corner_radius"; index: number; radius: number; segments?: number | null };
 
 /** The arc a wall belongs to (core `edit::arcs::ArcRun`): `walls` walls from `start`, its bulge (+ outward) and chord, m. */
 export interface ArcRun {
@@ -474,7 +477,8 @@ export interface RoofWarning {
     | "manual_face_crosses"
     | "manual_faces_overlap"
     | "manual_face_over_roof"
-    | "tower_base_below_roof";
+    | "tower_base_below_roof"
+    | "tower_eave_below_roof";
   /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), m² of plan shared (manual_faces_overlap) or over the roof (manual_face_over_roof), else 0. */
   value: number;
   /** merged_materials: the edge whose material the plane has, then the edge whose material is not used; merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; plane_over_wall, merged_planes: the outer wall, then the inner wall; wing_joined: the wing's walls; cut_exceeds_face: the walls of the faces. */
@@ -487,7 +491,7 @@ export interface RoofWarning {
   face?: number;
   /** manual_faces_overlap: the second hand-drawn face of the pair. */
   other_face?: number;
-  /** no_roof_area: the towers (from 0) whose shaft took all of the roof; tower_base_below_roof: the tower whose roof starts below this roof. */
+  /** no_roof_area: the towers (from 0) whose shaft took all of the roof; tower_base_below_roof: the tower whose roof starts below this roof; tower_eave_below_roof: the tower whose overhang's eave lies below this roof. */
   towers?: number[];
 }
 
@@ -939,8 +943,12 @@ export interface BreakdownTower {
     bottom_perimeter: number;
     top_perimeter: number;
     area: number;
+    /** The tier's row in the export's list ("Z3.01"); null for a vertical tier (core `breakdown::TowerTierStep::list_row`). */
+    list_row?: string | null;
   }[];
   cap?: number;
+  /** The flat top's row in the export's list. */
+  cap_list_row?: string;
   /** Σ of the roof tiers and the flat top (the vertical tiers are wall area). */
   roof_area: number;
   wall_area: number;

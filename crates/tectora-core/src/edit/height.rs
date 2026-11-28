@@ -98,10 +98,13 @@ fn walls(project: &Project, part: usize) -> Result<&RoofPart, String> {
 }
 
 /// Moves the dormers, chimneys, towers and hand-drawn lines on part `part`
-/// (centre inside its outline) up by `d`. Returns whether any moved.
-fn move_objects(project: &mut Project, part: usize, d: f64) -> bool {
+/// (centre inside its outline) up by `d`. Returns whether any moved;
+/// refused when a tower that moved has a problem it did not have (its
+/// overhang's eave under the ground), with the tower's index and code, so
+/// the app's command and MCP answer alike (audit r3 ARCH-002).
+fn move_objects(project: &mut Project, part: usize, d: f64) -> Result<bool, String> {
     if d == 0.0 {
-        return false;
+        return Ok(false);
     }
     let outline = project.parts[part].clone();
     let on = |q: Point2| inside_outline(&outline, q);
@@ -120,9 +123,15 @@ fn move_objects(project: &mut Project, part: usize, d: f64) -> bool {
     }
     // A tower's base rises with the building as a chimney's top does
     // (audit r2 ARCH-001); never below the ground.
-    for t in &mut project.towers {
+    for (k, t) in project.towers.iter_mut().enumerate() {
         if on(t.center) {
+            let had: Vec<&str> = t.problems().into_iter().map(|p| p.0).collect();
             t.base_height = round_to((t.base_height + d).max(0.0), 3);
+            if let Some((code, msg)) = t.problems().into_iter().find(|p| !had.contains(&p.0)) {
+                return Err(format!(
+                    "the building's height would leave tower index {k} wrong: {msg} ({code})"
+                ));
+            }
             changed = true;
         }
     }
@@ -137,7 +146,7 @@ fn move_objects(project: &mut Project, part: usize, d: f64) -> bool {
             changed = true;
         }
     }
-    changed
+    Ok(changed)
 }
 
 /// Sets the height of building `part` to `height` and carries its roof
@@ -176,7 +185,7 @@ pub fn set_part_height(project: &mut Project, part: usize, height: f64) -> Resul
                 "at a building height of {height:.3} m an eave would be {lowest:.3} m, below the ground"
             ));
         }
-        move_objects(&mut next, part, d);
+        move_objects(&mut next, part, d)?;
     }
     *project = next;
     Ok(changed)
@@ -203,7 +212,9 @@ pub fn set_part_eave_height(
     let keep = p.building_height();
     let d = round_to(eave_height - lowest, 3);
     let mut changed = false;
-    let pm = &mut project.parts[part];
+    // On a copy: a tower the change would spoil refuses it whole.
+    let mut next = project.clone();
+    let pm = &mut next.parts[part];
     if pm.height.is_none() && keep.is_some() && d != 0.0 {
         pm.height = keep;
         changed = true;
@@ -215,7 +226,8 @@ pub fn set_part_eave_height(
         e.eave_height = eave_height;
         changed |= *e != before;
     }
-    changed |= move_objects(project, part, d);
+    changed |= move_objects(&mut next, part, d)?;
+    *project = next;
     Ok(changed)
 }
 

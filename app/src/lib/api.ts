@@ -219,10 +219,13 @@ export const api = {
     invoke<Tower>("tower_preset", { kind, center, width, baseHeight }),
   /** The roof of a tower being edited (areas, tiers, rings); refused with its first problem. */
   towerPreview: (tower: Tower) => invoke<TowerPreview>("tower_preview", { tower }),
-  /** A corner of part `part` rounded, a wall bent into an arc, an arc straightened or changed (the MCP tool edit_walls' round_corner / bend_wall / straighten_arc / reshape_arc); "refused" when it does not fit. */
+  /** A corner of part `part` rounded, a wall bent into an arc, an arc straightened or changed, a rounded corner given another radius (the MCP tool edit_walls' round_corner / bend_wall / straighten_arc / reshape_arc / change_corner_radius); "refused" when it does not fit. */
   arcEdit: (project: Project, part: number, edit: ArcEdit) => invoke<Project>("arc_edit", { project, part, edit }),
   /** "Delete building": the job without part `part` and the towers on it, and the indices those towers had. */
   deletePart: (project: Project, part: number) => invoke<{ project: Project; towers_removed: number[] }>("delete_part", { project, part }),
+  /** The towers "Delete building" would remove with part `part` (core `commands::towers_removed_by`), the job unchanged: what its question names. */
+  towersRemovedBy: (project: Project, part: number) =>
+    invoke<{ towers_removed: number[] }>("item_geometry", { request: { op: "towers_removed_by", project, part } }).then((r) => r.towers_removed),
   /** "Replace the selected building": part `part` replaced by `next`, the towers left on no building removed. */
   replacePart: (project: Project, part: number, next: RoofPart) => invoke<{ project: Project; towers_removed: number[] }>("replace_part", { project, part, new: next }),
   /** The corners of a regular polygon, counter-clockwise, the first wall along the x axis. */

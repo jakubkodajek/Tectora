@@ -377,6 +377,9 @@ pub enum GeometryRequest {
         tier: usize,
         pitch_deg: f64,
     },
+    /// The towers deleting part `part` would remove ([`towers_removed_by`]):
+    /// `{towers_removed}`.
+    TowersRemovedBy { project: Box<Project>, part: usize },
 }
 
 /// Answers a [`GeometryRequest`]: `{corners}`, a chimney `{corners, height}`
@@ -495,6 +498,7 @@ pub fn item_geometry(req: &GeometryRequest) -> Result<Value, CommandError> {
                 crate::edit::towers::rise_for_pitch(bottom, top, *pitch_deg).map_err(refused)?;
             Ok(serde_json::json!({ "rise": rise }))
         }
+        GeometryRequest::TowersRemovedBy { project, part } => towers_removed_by(project, *part),
         GeometryRequest::ArcRun { part, edge } => {
             let pts = part.outline();
             if !points_ok(&pts) {
@@ -635,6 +639,19 @@ pub fn delete_part(project: &Project, part: usize) -> Result<Value, CommandError
     Ok(serde_json::json!({ "project": next, "towers_removed": towers }))
 }
 
+/// The towers [`delete_part`] would remove with part `part`, the job left
+/// as it is (`edit::transform::towers_removed_by_delete`): what the
+/// editor's "Delete building" question names (audit r3 ARCH-003).
+/// `{towers_removed}`; `refused` for a part the job does not have.
+pub fn towers_removed_by(project: &Project, part: usize) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let towers =
+        crate::model::guarded(|| crate::edit::transform::towers_removed_by_delete(project, part))
+            .map_err(CommandError::internal)?
+            .map_err(refused)?;
+    Ok(serde_json::json!({ "towers_removed": towers }))
+}
+
 /// The editor's "Replace the selected building" (`edit::transform::
 /// replace_part`, MCP `create_standard_roof` with `replace_part`): part
 /// `part` replaced by `new`, the towers that stood on it and stand on no
@@ -704,6 +721,14 @@ pub enum ArcEdit {
         #[serde(default)]
         segments: Option<usize>,
     },
+    /// The rounded corner wall `index` belongs to given a new radius
+    /// (`edit::arcs::change_corner_radius`, audit r3 UX-004).
+    ChangeCornerRadius {
+        index: usize,
+        radius: f64,
+        #[serde(default)]
+        segments: Option<usize>,
+    },
 }
 
 /// Applies `edit` to part `part`; `refused` with the reason when the arc
@@ -735,6 +760,13 @@ pub fn arc_edit(project: &Project, part: usize, edit: ArcEdit) -> Result<Project
                 bulge,
                 segments,
             } => crate::edit::arcs::reshape(p, index, bulge, segments).map(|(_, n)| n),
+            ArcEdit::ChangeCornerRadius {
+                index,
+                radius,
+                segments,
+            } => {
+                crate::edit::arcs::change_corner_radius(p, index, radius, segments).map(|(_, n)| n)
+            }
         }
     })
     .map_err(CommandError::internal)?;

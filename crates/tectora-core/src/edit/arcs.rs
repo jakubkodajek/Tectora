@@ -482,7 +482,13 @@ pub fn arc_run(part: &RoofPart, wall: usize) -> Option<ArcRun> {
     let seeds = [wall, (wall + 1) % n].map(|c| signed_turn_deg(&pts, c));
     let (start, walls, turn) = seeds
         .into_iter()
-        .filter(|t| (MIN_ARC_TURN_DEG - RUN_TURN_TOL_DEG..=MAX_RUN_TURN_DEG).contains(&t.abs()))
+        // Both bounds with the tolerance: a three-wall semicircle turns by
+        // 60° a few thousandths over or under once stored (audit r3
+        // ARCH-001).
+        .filter(|t| {
+            (MIN_ARC_TURN_DEG - RUN_TURN_TOL_DEG..=MAX_RUN_TURN_DEG + RUN_TURN_TOL_DEG)
+                .contains(&t.abs())
+        })
         .map(|t| {
             let (s, w) = grow(t);
             (s, w, t)
@@ -517,10 +523,51 @@ pub fn arc_run(part: &RoofPart, wall: usize) -> Option<ArcRun> {
     })
 }
 
-/// Replaces the arc that wall `wall` belongs to ([`arc_run`]) by one
-/// straight wall from the arc's start to its end, with the roof definition
-/// of the arc's first wall. Returns the straight wall's index; refused with
-/// [`ARC_NONE`] when the wall is no part of an arc.
+/// The sharp corner a rounded corner replaced: when the arc `run` of
+/// `part` meets the walls on either side tangentially (its end corners
+/// turn by half its step, as [`round_corner`] makes them) and those walls,
+/// run on, meet ahead of both, the point where they meet. `None` for any
+/// other arc (a bent wall, or a semicircle between parallel walls).
+pub fn rounded_corner(part: &RoofPart, run: &ArcRun) -> Option<Point2> {
+    let n = part.edges.len();
+    if run.walls < MIN_RUN_WALLS || run.walls + 2 > n {
+        return None;
+    }
+    let pts = part.outline();
+    let (first, last) = (run.start, (run.start + run.walls) % n);
+    let step = signed_turn_deg(&pts, (run.start + 1) % n);
+    let tangent = |k: usize| (signed_turn_deg(&pts, k) - step / 2.0).abs() <= RUN_TURN_TOL_DEG;
+    if !(tangent(first) && tangent(last)) {
+        return None;
+    }
+    // The wall before the arc ends at its start, the one after starts at
+    // its end.
+    let (a0, a1) = (pts[(first + n - 1) % n], pts[first]);
+    let (b0, b1) = (pts[last], pts[(last + 1) % n]);
+    let (dx, dy) = (a1.x - a0.x, a1.y - a0.y);
+    let (ex, ey) = (b1.x - b0.x, b1.y - b0.y);
+    let den = dx * ey - dy * ex;
+    if !(den.abs() > 1e-9 * dx.hypot(dy) * ex.hypot(ey)) {
+        return None;
+    }
+    // a1 + s·d = b0 - t·e, with s and t ahead of both walls.
+    let (wx, wy) = (b0.x - a1.x, b0.y - a1.y);
+    let s = (wx * ey - wy * ex) / den;
+    let t = (dx * wy - dy * wx) / den;
+    let p = Point2::new(a1.x + s * dx, a1.y + s * dy);
+    (s > 0.0 && t > 0.0 && p.x.is_finite() && p.y.is_finite()).then_some(p)
+}
+
+/// Replaces the arc that wall `wall` belongs to ([`arc_run`]) by straight
+/// walls again. A rounded corner ([`rounded_corner`]) becomes its sharp
+/// corner: the walls on either side run on to where they meet, each with
+/// its own roof definition (audit r3 UX-004: it became a chamfer). Any
+/// other arc becomes one straight wall from its start to its end, with the
+/// roof definition of its first wall: a gable bent into an apse comes back
+/// as that eave (the bend gave its walls the neighbouring eave's
+/// definition and the outline keeps no note of the gable). Returns the
+/// index of the straight wall, or of the wall starting at the restored
+/// corner; refused with [`ARC_NONE`] when the wall is no part of an arc.
 pub fn straighten(part: &mut RoofPart, wall: usize) -> Result<usize, String> {
     let n = part.edges.len();
     if wall >= n {
@@ -529,7 +576,11 @@ pub fn straighten(part: &mut RoofPart, wall: usize) -> Result<usize, String> {
     let Some(run) = arc_run(part, wall) else {
         return Err(format!("wall {wall} is no part of an arc ({ARC_NONE})"));
     };
-    let gone: Vec<usize> = (1..run.walls).map(|k| (run.start + k) % n).collect();
+    let corner = rounded_corner(part, &run);
+    // A rounded corner loses all its walls, the wall after it starting at
+    // the corner; any other arc keeps its first wall as the chord.
+    let from = usize::from(corner.is_none());
+    let gone: Vec<usize> = (from..run.walls).map(|k| (run.start + k) % n).collect();
     let kept = run.start - gone.iter().filter(|&&k| k < run.start).count();
     let mut k = 0;
     part.edges.retain(|_| {
@@ -537,10 +588,42 @@ pub fn straighten(part: &mut RoofPart, wall: usize) -> Result<usize, String> {
         k += 1;
         keep
     });
+    let kept = kept % part.edges.len().max(1);
     if let Some(e) = part.edges.get_mut(kept) {
+        if let Some(p) = corner {
+            e.start = p3(p);
+        }
         e.source = None;
     }
     Ok(kept)
+}
+
+/// "Change the radius" of a rounded corner: the corner wall `wall`'s arc
+/// rounded ([`rounded_corner`]) made sharp again ([`straighten`]) and
+/// rounded with `radius` and `segments` ([`round_corner`]). Returns the
+/// corner's index (the wall starting there) and the new arc's wall count;
+/// refused with [`ARC_NONE`] when the wall is no part of a rounded corner,
+/// and the part is left as it was when either step is refused.
+pub fn change_corner_radius(
+    part: &mut RoofPart,
+    wall: usize,
+    radius: f64,
+    segments: Option<usize>,
+) -> Result<(usize, usize), String> {
+    let n = part.edges.len();
+    if wall >= n {
+        return Err(format!("wall {wall} does not exist ({ARC_NO_WALL})"));
+    }
+    if arc_run(part, wall).is_none_or(|run| rounded_corner(part, &run).is_none()) {
+        return Err(format!(
+            "wall {wall} is no part of a rounded corner ({ARC_NONE})"
+        ));
+    }
+    let mut work = part.clone();
+    let v = straighten(&mut work, wall)?;
+    let segs = round_corner(&mut work, v, radius, segments)?;
+    *part = work;
+    Ok((v, segs))
 }
 
 /// "Change the arc": the arc that wall `wall` belongs to straightened
@@ -902,14 +985,24 @@ mod tests {
         assert_eq!(n, 4 + segs);
         let run = arc_run(&part, n - 1).expect("an arc");
         assert_eq!((run.start, run.walls), (n - 2, segs));
-        let i = straighten(&mut part, 1).unwrap();
-        assert_eq!(i, 5 - 1);
-        assert_eq!(part.edges.len(), 5);
-        // The chord from (0, 3) to (3, 0) replaces the arc.
-        let a = part.edges[i].start;
-        let b = part.edges[(i + 1) % 5].start;
-        assert!(a.approx_eq(Point2::new(0.0, 3.0), 1e-4), "{a:?}");
-        assert!(b.approx_eq(Point2::new(3.0, 0.0), 1e-4), "{b:?}");
+        straighten(&mut part, 1).unwrap();
+        // A straightened rounded corner is the sharp corner again (UX-004
+        // of the third tower audit), not the chord from (0, 3) to (3, 0).
+        assert_eq!(part.edges.len(), 4);
+        assert!(
+            part.edges
+                .iter()
+                .any(|e| e.start.approx_eq(Point2::new(0.0, 0.0), 1e-4)),
+            "{:?}",
+            part.edges.iter().map(|e| e.start).collect::<Vec<_>>()
+        );
+        assert!(
+            !part
+                .edges
+                .iter()
+                .any(|e| e.start.approx_eq(Point2::new(0.0, 3.0), 1e-4)
+                    || e.start.approx_eq(Point2::new(3.0, 0.0), 1e-4))
+        );
         let mut prj = crate::Project::new("t");
         prj.parts.push(part);
         assert!(prj.problems().is_empty(), "{:?}", prj.problems());

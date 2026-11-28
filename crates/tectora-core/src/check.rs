@@ -200,6 +200,13 @@ pub enum WarningKind {
     /// in `project.towers`. `value`: how far the roof rises above the
     /// tower's base, m.
     TowerBaseBelowRoof,
+    /// A tower's base is above the roof around it, but the eave its
+    /// overhang carries down and out lies under that roof: the skirt is
+    /// inside the building's roof yet counted in full (audit r3 MATH-005).
+    /// Tectora's own check; the figures are kept. Reported on the building
+    /// whose roof rises highest over the eave. `towers`: the tower's index.
+    /// `value`: how far that roof rises above the eave, m.
+    TowerEaveBelowRoof,
 }
 
 /// Plan area two hand-drawn faces may share (or a hand-drawn face and the
@@ -249,14 +256,39 @@ impl WarningKind {
 /// [`WarningKind::TowerBaseBelowRoof`] for the towers of `project` whose
 /// base lies under the roofs `geos` (in the order of `project.parts`), as
 /// `(building, warning)`: the building whose roof face rises highest over
-/// the base.
+/// the base; [`WarningKind::TowerEaveBelowRoof`] for those whose base is
+/// clear but whose overhang's eave is not.
 pub fn towers_below_roof(
     project: &crate::Project,
     geos: &[RoofGeometry],
 ) -> Vec<(usize, RoofWarning)> {
     let mut out = Vec::new();
     for (k, t) in project.towers.iter().enumerate() {
-        if !t.problems().is_empty() || !crate::tower::shaft(t, project, geos).base_below_roof {
+        if !t.problems().is_empty() {
+            continue;
+        }
+        let shaft = crate::tower::shaft(t, project, geos);
+        if !shaft.base_below_roof {
+            // The base clear, the eave of its overhang under the roof
+            // around (audit r3 MATH-005): on the building whose roof rises
+            // highest over it.
+            if shaft.eave_below_roof {
+                let best = geos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| (i, crate::tower::eave_below(t, std::slice::from_ref(g))))
+                    .filter(|(_, d)| *d > 0.0)
+                    .max_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((i, d)) = best {
+                    out.push((
+                        i,
+                        RoofWarning {
+                            towers: vec![k],
+                            ..RoofWarning::new(WarningKind::TowerEaveBelowRoof, d)
+                        },
+                    ));
+                }
+            }
             continue;
         }
         // The building whose roof over the shaft is highest.

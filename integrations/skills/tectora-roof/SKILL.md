@@ -64,13 +64,19 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    slope or curvature from the section; see the guide, "Towers, turrets
    and curved walls"). Rounded corners and apses are `edit_walls`
    `round_corner` / `bend_wall` on the footprint, not hand-drawn faces;
-   an arc read wrong is changed with `reshape_arc` (new bulge) or taken
-   back with `straighten_arc` on any of its walls. A tier whose section
+   an arc read wrong is changed with `reshape_arc` (new bulge), a rounded
+   corner with `change_corner_radius` (new radius), or either taken back with
+   `straighten_arc` on any of its walls (a rounded corner comes back sharp;
+   an apse bent from a gable comes back as an eave: set the gable again).
+   A tier whose section
    gives a pitch, not a height, takes `pitch_deg` in place of `rise`.
    A cone on a round building whose roof overhangs the wall takes the
-   wall's diameter as `width` and the overhang as `overhang`.
+   wall's diameter as `width` and the overhang as `overhang` (the same
+   distance out from every side; refused on a first tier steeper than 75°
+   at the shaft: draw the eave as a flatter first tier there).
    After a tower, check `calc`: `shaft.base_below_roof` and the warning
-   `tower_base_below_roof` (base under the roof), `shaft.roof_failed` (the
+   `tower_base_below_roof` (base under the roof), `shaft.eave_below_roof`
+   and `tower_eave_below_roof` (the overhang's eave under it), `shaft.roof_failed` (the
    building under it has no roof) and a roof error whose `towers` names its
    shaft. A refused tower or arc ends with its code (`tower_tiers_limit`:
    at most 120 tiers in all towers; `arc_flat` / `arc_too_short`: fewer

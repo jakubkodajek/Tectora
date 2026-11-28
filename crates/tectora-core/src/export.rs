@@ -329,13 +329,9 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             holes: Vec::new(),
             windows: Vec::new(),
         });
-    // The next roof number: after the dormers' roof when there is one.
-    let mut roof_no = if dormer_faces.is_empty() {
-        dormer_roof - 1
-    } else {
-        dormer_roof
-    };
     dormer_faces.extend(manual);
+    let results = crate::tower::results(project);
+    let roofs = tower_list_roofs(project, geos, &results);
     // Towers: each roof tier (and a flat top) is a face of its own roof,
     // numbered after the dormers' (`Z<n>.<tier>`), with its lines. A row
     // carries the tier's number from 1 as the tower dialog and the
@@ -344,8 +340,11 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
     // r2 UX-006). A rectangle's sides along its depth, of their own pitch
     // (audit MATH-006), are a second row of the tier's number, as the list
     // gives every face of one wall the wall's number.
-    for r in crate::tower::results(project).into_iter().flatten() {
-        roof_no += 1;
+    for (r, roof_no) in results
+        .iter()
+        .zip(roofs)
+        .filter_map(|(r, n)| Some((r.as_ref()?, n?)))
+    {
         for t in r
             .tiers
             .iter()
@@ -356,7 +355,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
                 .chain(t.depth_sides.map(|d| (d.pitch_deg, d.area)));
             for (pitch, area) in rows {
                 dormer_faces.push(ListFace {
-                    name: format!("Z{roof_no}.{:02}", t.index + 1),
+                    name: tower_row_name(roof_no, t.index),
                     // A tier leaning outward (over 90°, under a cornice) is
                     // listed with its slope from the horizontal.
                     pitch: pitch.min(180.0 - pitch),
@@ -370,7 +369,7 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
         }
         if let Some(cap) = &r.cap {
             dormer_faces.push(ListFace {
-                name: format!("Z{roof_no}.{:02}", r.tiers.len() + 1),
+                name: tower_row_name(roof_no, r.tiers.len()),
                 pitch: 0.0,
                 area: cap.area,
                 rafter: None,
@@ -392,6 +391,38 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
         other_faces: dormer_faces,
         minus,
     }
+}
+
+/// The roof number each tower's rows carry in the list (`Z<n>.<tier>`),
+/// in the order of `results` (`tower::results` of the project): after the
+/// buildings' roofs and the dormers' and hand-drawn faces' roof when
+/// there is one; `None` for a tower without a roof. What the breakdown
+/// names the tiers by (audit r3 UX-008).
+pub fn tower_list_roofs(
+    project: &Project,
+    geos: &[RoofGeometry],
+    results: &[Option<crate::tower::TowerResult>],
+) -> Vec<Option<usize>> {
+    let others = geos.iter().enumerate().any(|(pi, g)| {
+        let n = project.parts.get(pi).map_or(0, |p| p.edges.len());
+        g.faces.iter().any(|f| f.edge >= n)
+    }) || project.manual_faces.iter().any(|f| f.pitch_counts());
+    let mut no = geos.len() + usize::from(others);
+    results
+        .iter()
+        .map(|r| {
+            r.as_ref().map(|_| {
+                no += 1;
+                no
+            })
+        })
+        .collect()
+}
+
+/// The list's name of the row of tier `tier` (from 0; the tier count for
+/// the flat top) of the tower listed as roof `roof`.
+pub fn tower_row_name(roof: usize, tier: usize) -> String {
+    format!("Z{roof}.{:02}", tier + 1)
 }
 
 fn section(out: &mut String, head: &str) {

@@ -241,6 +241,10 @@ pub struct TowerStep {
     /// The flat top where the profile does not end in a point, m².
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cap: Option<f64>,
+    /// The flat top's row in the export's list (`Z<roof>.<nn>`), audit r3
+    /// UX-008.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap_list_row: Option<String>,
     /// Σ of the roof tiers and the flat top, m² (the vertical tiers are
     /// wall area).
     pub roof_area: f64,
@@ -265,6 +269,10 @@ pub struct TowerTierStep {
     pub bottom_perimeter: f64,
     pub top_perimeter: f64,
     pub area: f64,
+    /// The name of the tier's row in the export's list (`Z<roof>.<nn>`,
+    /// both rows of a rectangle's two pitches); `null` for a vertical tier,
+    /// which has none (audit r3 UX-008).
+    pub list_row: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -802,18 +810,16 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
     }
 
     let mut towers = Vec::new();
-    for (ti, (t, r)) in project
-        .towers
-        .iter()
-        .zip(crate::tower::results(project))
-        .enumerate()
-    {
+    let results = crate::tower::results(project);
+    let roofs = crate::export::tower_list_roofs(project, geos, &results);
+    for (ti, ((t, r), roof)) in project.towers.iter().zip(results).zip(roofs).enumerate() {
         let Some(r) = r else {
             towers.push(TowerStep {
                 no: ti + 1,
                 label: t.label.clone(),
                 tiers: Vec::new(),
                 cap: None,
+                cap_list_row: None,
                 roof_area: 0.0,
                 wall_area: 0.0,
                 calculated: false,
@@ -833,6 +839,9 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
                 bottom_perimeter: k.bottom_perimeter,
                 top_perimeter: k.top_perimeter,
                 area: k.area,
+                list_row: roof
+                    .filter(|_| k.kind == crate::tower::TierKind::Roof)
+                    .map(|n| crate::export::tower_row_name(n, k.index)),
             });
             if k.kind == crate::tower::TierKind::Roof {
                 materials
@@ -874,6 +883,9 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
             label: t.label.clone(),
             tiers,
             cap: r.cap.as_ref().map(|c| c.area),
+            cap_list_row: roof
+                .filter(|_| r.cap.is_some())
+                .map(|n| crate::export::tower_row_name(n, r.tiers.len())),
             roof_area: r.roof_area(),
             wall_area: r.wall_area(),
             calculated: true,

@@ -321,14 +321,27 @@ The tools cover every operation of the Tectora editor:
   tier. Start from a `preset` (pyramid, octagon, cone, helm, onion, baroque)
   and give your own `tiers` when the drawing dimensions them.
 - `base_height` is the roof over the shaft's wall line. `overhang` (m,
-  default 0) carries the first tier on at its pitch beyond the shaft to the
-  eave, `overhang · tan(pitch)` lower, as a wall's eave lies at its
-  overhang line: give it for a cone on a round building whose roof
-  overhangs the wall; `width` stays the wall's.
+  default 0) carries the first tier on beyond the shaft to the eave, the
+  same distance out from every side (square to it; a rounded corner's
+  radius grows by it), each side at its own pitch at the shaft (a curved
+  tier along its tangent there), so the eave lies `overhang · tan(pitch)`
+  lower, as a wall's eave lies at its overhang line: give it for a cone on
+  a round building whose roof overhangs the wall; `width` stays the
+  wall's. A rectangle's steeper sides end lower, and the steeper side takes
+  the eave's corner (as a hip roof of two pitches); `calc`'s first tier
+  gives the lowest eave as `bottom_height` and the eave's plan length as
+  `bottom_perimeter`. An overhang is refused (`tower_overhang`, the reason
+  after the colon) when the first tier starts steeper than 75° at the
+  shaft on any side (a dome or an ogee: its eave would hang metres down the
+  shaft): give such a tower a short flatter first tier as its eave (a bell
+  cast) instead, or no overhang.
 - The shaft is cut out of the roofs like a chimney (WV/WH/WS lines). Its
   `base_height` must be above the roof around it: `calc` lists each tower
   with `shaft.base_below_roof` when it is not, and the building gets the
-  warning `tower_base_below_roof` naming it in `towers`. `calc` also lists every
+  warning `tower_base_below_roof` naming it in `towers`. With an overhang
+  its eave must be above that roof too: `shaft.eave_below_roof` and the
+  warning `tower_eave_below_roof` (value: how far the roof rises above the
+  eave) say when it is not; lower the overhang or raise `base_height`. `calc` also lists every
   tier's pitch, area and material (a material number from 1, as on walls),
   the roof area and the wall area (lantern), and the shaft's cladding area
   above the roof. `shaft.on_roof: false` is a tower beside every roof,
@@ -338,9 +351,12 @@ The tools cover every operation of the Tectora editor:
   it in `towers` (indices), not as a chimney. A rectangular tower's tier
   lists the other pair of sides as `depth_sides` (pitch, area).
 - A tower moves, rotates and is copied with the building its centre stands
-  in (`transform_part`), rises with it (`set_part_height`), and is deleted
-  with it (`delete_items` of the part, or a part replaced so that the tower
-  stands on no building).
+  in (`transform_part`), rises with it (`set_part_height`; a height that
+  would put its overhang's eave under the ground is refused with
+  `(tower_overhang)`, nothing saved), and is deleted with it
+  (`delete_items` of the part, or a part replaced so that the tower stands
+  on no building; a tower whose centre stands in another building too
+  stays).
 - Limits: shaft `width` and `depth` 0.1-100 m, 3-64 `sides`, a tier rises
   0-100 m and ends 0-200 m wide, `overhang` 0-10 m; at most 24 tiers a
   tower, 50 towers and 120 tiers of all towers in a job.
@@ -351,18 +367,21 @@ The tools cover every operation of the Tectora editor:
   `(tower_label)` (a label too long or with a line break), `(tower_missing)`,
   `(tower_tier_pitch)` (a tier's `pitch_deg` no rise of 0-100 m gives).
   `tower_bulge` names the tier and the largest curve it takes ("tier 3
-  takes a curve of at most 0.412 m"). Copies of towers or of a building
-  with towers (`transform_part`, `transform_items`) over the job's 50
-  towers or 120 tiers are refused with `(tower_limit)` /
-  `(tower_tiers_limit)`, nothing saved.
+  takes a curve of at most 0.412 m"), `tower_overhang` the condition that
+  failed. Copies of towers or of a building with towers (`transform_part`,
+  `transform_items`) over the job's 50 towers or 120 tiers are refused with
+  `(tower_limit)` / `(tower_tiers_limit)`, nothing saved; `calc` of a job
+  over them ends its `too_many` detail with the same codes.
 - A tier may give `pitch_deg` in place of `rise` (the pitch along its
   chord, as `calc` reports it; 0-90° narrowing, 90-180° leaning outward):
-  the rise comes from the width below it and `top_width`.
+  the rise comes from the width below it and `top_width`. A pitch whose
+  rise rounds (to 0.1 mm) to 0 is refused with `(tower_tier_pitch)`.
   Arcs: `(arc_no_wall)`, `(arc_no_corner)`, `(arc_no_part)`,
   `(arc_segments)`, `(arc_too_short)`, `(arc_flat)`, `(arc_bulge)`,
   `(arc_radius_min)`, `(arc_radius_max)`, `(arc_straight)`,
   `(arc_no_length)`, `(arc_touches)`, `(arc_invalid)`, `(arc_none)` (the
-  wall of `straighten_arc` / `reshape_arc` is no part of an arc).
+  wall of `straighten_arc` / `reshape_arc` is no part of an arc, or that
+  of `change_corner_radius` no part of a rounded corner).
 - A cone on a round building drawn as walls (DACAD's way) still works; a
   tower is simpler and exact.
 - A rounded building corner is `edit_walls` `round_corner {index, radius}`
@@ -381,11 +400,18 @@ The tools cover every operation of the Tectora editor:
 - The project stores no arcs, only walls. `straighten_arc {index}` finds
   the arc wall `index` belongs to by its shape (at least 3 consecutive
   walls of one length whose corners turn alike by 2° to 60°; an arc of 2
-  walls is not recognised) and replaces it by one straight wall from its
-  start to its end with the roof definition of its first wall: a bent wall
-  is the wall again, a rounded corner becomes its chord (a chamfer).
+  walls is not recognised) and takes it back. A rounded corner (an arc
+  meeting both walls beside it tangentially, those walls running on to
+  meet) becomes the sharp corner again, each wall keeping its roof
+  definition. Any other arc becomes one straight wall from its start to its
+  end with the roof definition of its first wall: a bent wall is the wall
+  again, but a gable bent into an apse comes back as the eave its arc
+  copied (the project keeps no note of the gable): set it as a gable again
+  with `update_edges`.
   `reshape_arc {index, bulge, segments?}` changes an arc: straighten, then
-  `bend_wall` on that straight wall. Both shift the later wall indices.
+  `bend_wall` on that straight wall. `change_corner_radius {index, radius,
+  segments?}` gives a rounded corner another radius (the corner restored,
+  then `round_corner`). All shift the later wall indices.
 
 ## Stored result
 

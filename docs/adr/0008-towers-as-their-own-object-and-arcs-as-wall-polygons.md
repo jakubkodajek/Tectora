@@ -83,11 +83,34 @@ total nor in the list's `Stena` row (the building's walls).
   - A tower may have an eave `overhang`: its first tier runs on at its own
     pitch beyond the shaft, the eave `overhang · tan(pitch)` below
     `base_height`, as a wall's roof meets its eave at the overhang line;
-    the shaft and its cut stay the wall's.
+    the shaft and its cut stay the wall's. Audit round 3 settled what the
+    number means: the eave lies `overhang` out from every side, square to
+    it (not the plan scaled, which put 1.5 m on the long sides of a 2 × 6 m
+    tower for 0.5 m typed); each side's roof runs on at that side's pitch
+    at the shaft (a curved tier along its tangent there), so a rectangle's
+    steeper sides end lower and the steeper plane takes the eave's corner,
+    as on a hip roof of two pitches; a rounded corner's radius grows by the
+    overhang. An overhang under a first tier steeper than 75° at the shaft
+    on any side is refused (`tower_overhang`, the reason in the message):
+    a dome or ogee starting near vertical would hang its eave metres down
+    the shaft (0.3 m put a dome's eave 6.3 m below the base); such a tower
+    gets its eave from a short flatter first tier. 75° is Tectora's own
+    bound [no source]: steeper than the steepest pitch a roofer lays an
+    eave course at, shallow enough that the drop stays under 3.8 times the
+    overhang. An eave under the roof around the tower is the warning
+    `tower_eave_below_roof`; a building height that would put the eave
+    under the ground is refused by `edit::height`.
   - The arcs keep to what the roof core takes: walls of at least 0.15 m
     and corners turning at least 2° (DACAD's own steps are 11.25° and 15°;
     finer arcs lost the roof or were calculated off); an arc touching
     another wall is refused. Every refusal ends with a stable code.
+  - The outline keeps no arc: an arc is found again by its shape
+    (`edit::arcs::arc_run`). Straightened, a rounded corner (an arc meeting
+    both walls beside it tangentially, those walls running on to meet)
+    becomes the sharp corner again; any other arc becomes its chord with
+    the definition of its first wall, so a gable bent into an apse comes
+    back as the eave the bend copied (audit r3 UX-004: telling the two
+    apart would need the gable kept in the model; not done).
   - A tower is deleted with the building it stands in, rises with it, and
     a tower sunk into the roof is a warning (`tower_base_below_roof`).
 - Follow-ups: a tower's shaft cladding and lantern walls in the price-sheet

@@ -65,7 +65,8 @@ fn warning_kinds() -> Vec<String> {
         | W::ManualFaceCrosses
         | W::ManualFacesOverlap
         | W::ManualFaceOverRoof
-        | W::TowerBaseBelowRoof => k,
+        | W::TowerBaseBelowRoof
+        | W::TowerEaveBelowRoof => k,
     };
     [
         W::OutsideOutline,
@@ -95,6 +96,7 @@ fn warning_kinds() -> Vec<String> {
         W::ManualFacesOverlap,
         W::ManualFaceOverRoof,
         W::TowerBaseBelowRoof,
+        W::TowerEaveBelowRoof,
     ]
     .into_iter()
     .map(|k| name(all(k)))
@@ -362,5 +364,62 @@ fn the_ui_translates_every_error_code_of_the_core() {
     assert!(
         gaps.is_empty(),
         "error codes of the core missing from KNOWN in errors.ts: {gaps:?}"
+    );
+}
+
+/// Audit r3 TEST-012: every refusal code of an arc (`edit::arcs::ARC_CODES`)
+/// has its text in `ARC_KEYS` of errors.ts, and that text exists in every
+/// language; every tower code (`Tower::PROBLEMS` and the codes of
+/// `edit::towers`) is in `TOWER_CODES`, which picks the tower's dialog
+/// text. A new code without them fails here, not in the user's hands.
+#[test]
+fn the_ui_knows_every_arc_and_tower_refusal_code() {
+    use tectora_core::edit::{arcs, towers};
+    let errors = read("app/src/lib/errors.ts");
+    let at = errors
+        .find("const ARC_KEYS = new Map<string, string>([")
+        .expect("ARC_KEYS in errors.ts");
+    let end = at + errors[at..].find("]);").expect("end of ARC_KEYS");
+    let arc_keys: BTreeMap<String, String> = errors[at..end]
+        .lines()
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.split('"').collect();
+            (parts.len() >= 5).then(|| (parts[1].to_string(), parts[3].to_string()))
+        })
+        .collect();
+    let dicts = dictionaries();
+    let mut gaps = Vec::new();
+    for code in arcs::ARC_CODES {
+        match arc_keys.get(code) {
+            None => gaps.push(format!("{code}: not in ARC_KEYS")),
+            Some(key) => gaps.extend(missing(&dicts, std::slice::from_ref(key))),
+        }
+    }
+    let at = errors
+        .find("const TOWER_CODES = new Set([")
+        .expect("TOWER_CODES in errors.ts");
+    let end = at + errors[at..].find("]);").expect("end of TOWER_CODES");
+    let tower_codes = literals(&errors[at..end]);
+    let core: Vec<&str> = tectora_core::tower::Tower::PROBLEMS
+        .iter()
+        .map(|(c, _)| *c)
+        .chain([
+            towers::TOWER_LIMIT,
+            towers::TOWER_MISSING,
+            towers::TOWER_NOT_CALCULATED,
+            towers::TOWER_TIERS_LIMIT,
+            towers::TOWER_LABEL,
+            towers::TOWER_TIER_PITCH,
+        ])
+        .collect();
+    for code in core {
+        if !tower_codes.contains(code) {
+            gaps.push(format!("{code}: not in TOWER_CODES"));
+        }
+    }
+    assert!(
+        gaps.is_empty(),
+        "refusal codes the UI does not know:\n{}",
+        gaps.join("\n")
     );
 }

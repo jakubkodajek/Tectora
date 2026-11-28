@@ -13,8 +13,9 @@ import { hasBuilding } from "./offer";
 export function warningText(w: RoofWarning, result: CalcResult | null = null): string {
   switch (w.kind) {
     case "tower_base_below_roof":
-      // The core's warning for a tower roof sunk into the roof (UX-002), by the tower's name.
-      return t("res.warn.tower_base_below_roof", { name: (w.towers ?? []).map((i) => result?.towers?.[i]?.label || t("tower.n", { n: i + 1 })).join(", "), v: num(w.value) });
+    case "tower_eave_below_roof":
+      // The core's warnings for a tower roof sunk into the roof (UX-002) or its eave under it (r3 MATH-005), by the tower's name.
+      return t(`res.warn.${w.kind}`, { name: (w.towers ?? []).map((i) => result?.towers?.[i]?.label || t("tower.n", { n: i + 1 })).join(", "), v: num(w.value) });
     case "merged_walls": {
       const [a, b] = w.edges ?? [0, 0];
       return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });

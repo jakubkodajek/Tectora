@@ -152,11 +152,13 @@ pub fn rise_for_pitch(bottom_width: f64, top_width: f64, pitch_deg: f64) -> Resu
     {
         return Err(refuse());
     }
-    let rise = run * pitch_deg.to_radians().tan();
+    // Checked as it is stored, to 0.1 mm: a pitch so slight its rise
+    // rounds to 0 would save a flat tier (audit r3, errors To check 4).
+    let rise = super::round_to(run * pitch_deg.to_radians().tan(), 4);
     if !(rise > 0.0 && rise <= crate::tower::MAX_RISE) {
         return Err(refuse());
     }
-    Ok(super::round_to(rise, 4))
+    Ok(rise)
 }
 
 /// The job's towers against [`crate::tower::MAX_TOWERS`] and

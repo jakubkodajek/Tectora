@@ -157,6 +157,14 @@ pub const MAX_WIDTH: f64 = 100.0;
 pub const MAX_RISE: f64 = 100.0;
 /// Largest eave overhang of a tower's roof, m.
 pub const MAX_OVERHANG: f64 = 10.0;
+/// The steepest a first tier may start at the shaft, on any side, under an
+/// overhang, degrees: the roof runs on at that pitch to the eave, so a
+/// dome or an ogee starting near vertical would hang its eave metres down
+/// the shaft (audit r3 MATH-002: 0.3 m on a dome starting at 87° put the
+/// eave 6.3 m below the base and quadrupled the area). A steep tower gets
+/// its eave from a flatter first tier instead (a bell cast). [no source:
+/// Tectora's own bound, ADR 0008]
+pub const MAX_OVERHANG_PITCH_DEG: f64 = 75.0;
 
 /// Angle step of arcs (circle, rounded corners) for areas and lengths:
 /// 1/512 of a turn; the chord polygon is short of the arc by step²/24,
@@ -185,6 +193,10 @@ const EPS: f64 = 1e-9;
 pub struct Outline {
     pub points: Vec<Point2>,
     pub sharp: Vec<usize>,
+    /// The outward unit normal of the curve at each point of a round or
+    /// rounded outline (empty for one of sharp corners): what the eave of an
+    /// overhang is pushed out along (audit r3 MATH-001).
+    pub normals: Vec<Point2>,
 }
 
 impl Outline {
@@ -301,21 +313,30 @@ impl Tower {
         ),
         (
             "tower_overhang",
-            "the overhang must be 0 to 10 m, its first tier must slope down outward from the shaft and its eave stay above the ground",
+            "the overhang must be 0 to 10 m, its first tier must slope down outward from the shaft at 75° or less and its eave stay above the ground",
         ),
     ];
 
     /// What is wrong with the tower, as `(code, English message)`; the
     /// messages are those of [`Tower::PROBLEMS`], `tower_bulge`'s with the
-    /// tier and the largest curve it takes appended.
+    /// tier and the largest curve it takes appended, `tower_overhang`'s
+    /// with the condition that failed.
     pub fn problems(&self) -> Vec<(&'static str, String)> {
         self.problem_list()
             .into_iter()
             .map(|(code, msg)| {
-                let msg = match (code, self.bulge_limit()) {
-                    ("tower_bulge", Some((k, max))) => {
-                        format!("{msg}: tier {} takes a curve of at most {max:.3} m", k + 1)
-                    }
+                let msg = match code {
+                    "tower_bulge" => match self.bulge_limit() {
+                        Some((k, max)) => {
+                            format!("{msg}: tier {} takes a curve of at most {max:.3} m", k + 1)
+                        }
+                        None => msg.to_string(),
+                    },
+                    // Which of the conditions failed (audit r3 MATH-002).
+                    "tower_overhang" => match self.overhang_reason() {
+                        Some(why) => format!("{msg}: {why}"),
+                        None => msg.to_string(),
+                    },
                     _ => msg.to_string(),
                 };
                 (code, msg)
@@ -394,13 +415,10 @@ impl Tower {
                 "a curve may be at most half its chord and must stay within its tier's heights and not cross the tower's axis",
             ));
         }
-        if out.is_empty()
-            && (!(0.0..=MAX_OVERHANG).contains(&self.overhang)
-                || (self.overhang > 0.0 && self.eave_point().is_none()))
-        {
+        if out.is_empty() && self.overhang_reason().is_some() {
             out.push((
                 "tower_overhang",
-                "the overhang must be 0 to 10 m, its first tier must slope down outward from the shaft and its eave stay above the ground",
+                "the overhang must be 0 to 10 m, its first tier must slope down outward from the shaft at 75° or less and its eave stay above the ground",
             ));
         }
         out
@@ -419,48 +437,351 @@ impl Tower {
             }
             let n = ((2.0 * PI / step).ceil() as usize).max(8);
             let r = w / 2.0;
-            let points = (0..n)
-                .map(|i| {
-                    let a = 2.0 * PI * i as f64 / n as f64 - PI / 2.0;
-                    Point2::new(r * a.cos(), r * a.sin())
-                })
+            let angle = |i: usize| 2.0 * PI * i as f64 / n as f64 - PI / 2.0;
+            let normals: Vec<Point2> = (0..n)
+                .map(|i| Point2::new(angle(i).cos(), angle(i).sin()))
+                .collect();
+            let points = normals
+                .iter()
+                .map(|u| Point2::new(r * u.x, r * u.y))
                 .collect();
             return Some(Outline {
                 points,
                 sharp: Vec::new(),
+                normals,
             });
         };
         Some(fillet(&corners, self.corner_radius.max(0.0), step))
     }
 
-    /// The roof profile of every tier as `(half width, height)` points,
-    /// curved tiers in `substeps` chords; `None` when a tier's curve is
-    /// more than a semicircle or the profile crosses the axis.
-    fn profiles(&self, substeps: usize) -> Option<Vec<Profile>> {
-        let mut out = self.bare_profiles(substeps)?;
-        if self.overhang > 0.0 {
-            let eave = self.eave_point()?;
-            out.first_mut()?.insert(0, eave);
-        }
-        Some(out)
-    }
-
-    /// The eave of a tower with an overhang, `(half width, height)`: the
-    /// first tier's line (its first chord at the fine steps) carried on
-    /// outward by the overhang; `None` when the first tier does not slope
-    /// down outward or the eave would be below the ground.
-    fn eave_point(&self) -> Option<(f64, f64)> {
-        let first = self.bare_profiles(FINE_ARC_SUBSTEPS)?.into_iter().next()?;
-        let ((ha, za), (hb, zb)) = (*first.first()?, *first.get(1)?);
-        let (run, drop) = (ha - hb, zb - za);
-        if !(run > EPS && drop >= 0.0) {
+    /// The first tier's direction at the shaft in the profile plane
+    /// `(half width, height)`, a unit vector: its chord, or for a curved
+    /// tier the arc's tangent at its start (audit r3 MATH-003: the first of
+    /// the fine chords was off it by 1/256 of the sweep).
+    fn base_direction(&self) -> Option<(f64, f64)> {
+        let t = self.tiers.first()?;
+        let (dh, dz) = (t.top_width / 2.0 - self.width / 2.0, t.rise);
+        let l = dh.hypot(dz);
+        if !(l > EPS) {
             return None;
         }
-        let z = za - self.overhang * drop / run;
-        (z >= 0.0 && z.is_finite()).then_some((ha + self.overhang, z))
+        let (ch, cz) = (dh / l, dz / l);
+        if t.bulge == 0.0 {
+            return Some((ch, cz));
+        }
+        // An arc of sagitta s on chord l meets the chord at its ends at
+        // half its central angle, 2·atan(2s / l), on the bulge's side.
+        let s = t.bulge.abs().min(l / 2.0);
+        let alpha = 2.0 * (2.0 * s / l).atan();
+        let side = t.bulge.signum();
+        let (nh, nz) = (cz * side, -ch * side);
+        let (ca, sa) = (alpha.cos(), alpha.sin());
+        Some((ca * ch + sa * nh, ca * cz + sa * nz))
     }
 
-    /// [`Tower::profiles`] without the overhang.
+    /// The slope (tangent of the pitch) of the first tier at the shaft on
+    /// the sides at half the width; `None` when it does not slope down
+    /// outward from the shaft.
+    fn overhang_slope(&self) -> Option<f64> {
+        let (dh, dz) = self.base_direction()?;
+        if !(-dh > 1e-9) || dz < -1e-9 {
+            return None;
+        }
+        let g = dz.max(0.0) / -dh;
+        g.is_finite().then_some(g)
+    }
+
+    /// Why the overhang cannot be (the end of `tower_overhang`'s message),
+    /// `None` when it can: out of 0 to [`MAX_OVERHANG`], a first tier that
+    /// does not slope down outward, one steeper than
+    /// [`MAX_OVERHANG_PITCH_DEG`] at the shaft on some side (audit r3
+    /// MATH-002: a dome's skirt hung metres down the shaft), or an eave
+    /// under the ground.
+    fn overhang_reason(&self) -> Option<String> {
+        if self.overhang == 0.0 {
+            return None;
+        }
+        if !(0.0..=MAX_OVERHANG).contains(&self.overhang) {
+            return Some(format!("it is {:.3} m", self.overhang));
+        }
+        let Some(g) = self.overhang_slope() else {
+            return Some("the first tier does not slope down outward at the shaft".into());
+        };
+        let Some(fine) = self.outline(FINE_ARC_STEP) else {
+            return Some("the shaft has no outline".into());
+        };
+        let nearest = fine
+            .edges()
+            .iter()
+            .filter(|e| e.0 > 0.0)
+            .map(|e| e.1)
+            .fold(f64::INFINITY, f64::min);
+        if !(nearest > EPS && nearest.is_finite()) {
+            return Some("the shaft has no outline".into());
+        }
+        let steepest = g * (self.width / 2.0) / nearest;
+        let deg = steepest.atan().to_degrees();
+        if deg > MAX_OVERHANG_PITCH_DEG + 1e-9 {
+            return Some(format!(
+                "the first tier starts at {deg:.1}° at the shaft, steeper than {MAX_OVERHANG_PITCH_DEG}°: give the tower a flatter first tier as its eave"
+            ));
+        }
+        let z = self.base_height - self.overhang * steepest;
+        if !(z >= 0.0) {
+            return Some(format!("the eave would be at {z:.3} m, below the ground"));
+        }
+        None
+    }
+
+    /// The eave band of a tower with an overhang over the base outline `o`
+    /// (the tower's own axes, scale 1), the first tier's slope `g` at the
+    /// shaft: the eave lies `overhang` out from every side, square to it
+    /// (audit r3 MATH-001: it was the plan scaled, 1.5 m on the long sides
+    /// of a 2 × 6 m tower for 0.5 m typed). Each side's roof runs on at its
+    /// own slope `g · (width/2) / d`, `d` the side's distance from the axis
+    /// (what the scaled tier has there), as a wall's roof runs on to its
+    /// overhang line; so a rectangle's steeper sides end lower, and at a
+    /// sharp corner the hip runs on where the two planes meet, the
+    /// steeper plane taking the corner of the eave (a hip roof of two
+    /// pitches). A rounded or round outline is swept by its normal.
+    fn band(&self, o: &Outline, g: f64, depth_half: Option<f64>) -> Option<Band> {
+        let pts = &o.points;
+        let n = pts.len();
+        if n < 3 {
+            return None;
+        }
+        let (half, ov, z0) = (self.width / 2.0, self.overhang, self.base_height);
+        let mut sharp = vec![false; n];
+        for &k in &o.sharp {
+            *sharp.get_mut(k)? = true;
+        }
+        let mut normals = Vec::with_capacity(n);
+        let mut dist = Vec::with_capacity(n);
+        let mut slopes = Vec::with_capacity(n);
+        for i in 0..n {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            let l = a.distance(b);
+            if !(l > 1e-12) {
+                return None;
+            }
+            // Outward: to the right of a counter-clockwise outline.
+            let nn = Point2::new((b.y - a.y) / l, -(b.x - a.x) / l);
+            let d = a.x * nn.x + a.y * nn.y;
+            if !(d > EPS) {
+                return None;
+            }
+            normals.push(nn);
+            dist.push(d);
+            slopes.push(g * half / d);
+        }
+        let mut eave = Vec::with_capacity(n);
+        for k in 0..n {
+            let ia = (k + n - 1) % n;
+            let (na, nb) = (normals[ia], normals[k]);
+            let (sa, sb) = (slopes[ia], slopes[k]);
+            let v = pts[k];
+            if sharp[k] {
+                // The two eave lines meet `overhang` out from both sides.
+                let c = na.x * nb.x + na.y * nb.y;
+                if !(1.0 + c > 1e-9) {
+                    return None;
+                }
+                let m = ov / (1.0 + c);
+                let e = Point2::new(v.x + m * (na.x + nb.x), v.y + m * (na.y + nb.y));
+                let (hi, lo) = (sa.max(sb), sa.min(sb));
+                let det = 1.0 - c * c;
+                // Where the planes meet, the hip, in the distances `u`
+                // beyond each side: s_a·u_a = s_b·u_b; it reaches the
+                // gentler side's eave (u = overhang) first.
+                let hip = (hi - lo > 1e-12 * hi.max(1.0) && lo > 0.0 && det > 1e-12).then(|| {
+                    let r = hi / lo;
+                    let (ua, ub) = if sa > sb { (ov / r, ov) } else { (ov, ov / r) };
+                    let alpha = (ua - c * ub) / det;
+                    let beta = (ub - c * ua) / det;
+                    let h = Point2::new(
+                        v.x + alpha * na.x + beta * nb.x,
+                        v.y + alpha * na.y + beta * nb.y,
+                    );
+                    // On the incoming side's eave line when that side is
+                    // the gentler one.
+                    (h, z0 - ov * lo, sa < sb)
+                });
+                eave.push(EaveVertex {
+                    p: e,
+                    z: z0 - ov * hi,
+                    hip,
+                });
+            } else {
+                // The curve's own normal, else the corner's bisector.
+                let u = match o.normals.get(k) {
+                    Some(&u) => u,
+                    None => {
+                        let (sx, sy) = (na.x + nb.x, na.y + nb.y);
+                        let sl = sx.hypot(sy);
+                        if !(sl > 1e-12) {
+                            return None;
+                        }
+                        Point2::new(sx / sl, sy / sl)
+                    }
+                };
+                let d = v.x * u.x + v.y * u.y;
+                if !(d > EPS) {
+                    return None;
+                }
+                eave.push(EaveVertex {
+                    p: Point2::new(v.x + ov * u.x, v.y + ov * u.y),
+                    z: z0 - ov * g * half / d,
+                    hip: None,
+                });
+            }
+        }
+        // Each side's piece: between the shaft's side and its eave, cut at
+        // the corners on the line from corner to eave corner; a planar
+        // piece of the side's own plane between two sharp corners, else two
+        // triangles at the corners' heights.
+        let sec = |s: f64| (1.0 + s * s).sqrt();
+        let mut piece = vec![0.0; n];
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (a, b, ea, eb) = (pts[i], pts[j], &eave[i], &eave[j]);
+            piece[i] = if sharp[i] && sharp[j] {
+                plan_area(&[a, b, eb.p, ea.p]) * sec(slopes[i])
+            } else {
+                // The surface swept by the normal, in BAND_STEPS strips
+                // from the shaft to the eave (one strip is the trapezoid
+                // rule across a twisted band, 0.2 % high on a corner).
+                let at = |p: Point2, e: &EaveVertex, u: f64| {
+                    [
+                        p.x + (e.p.x - p.x) * u,
+                        p.y + (e.p.y - p.y) * u,
+                        z0 + (e.z - z0) * u,
+                    ]
+                };
+                (0..BAND_STEPS)
+                    .map(|m| {
+                        let (u0, u1) = (
+                            m as f64 / BAND_STEPS as f64,
+                            (m + 1) as f64 / BAND_STEPS as f64,
+                        );
+                        let (a0, b0) = (at(a, ea, u0), at(b, eb, u0));
+                        let (a1, b1) = (at(a, ea, u1), at(b, eb, u1));
+                        triangle_area(a0, b0, b1) + triangle_area(a0, b1, a1)
+                    })
+                    .sum()
+            };
+        }
+        // At a sharp corner of two slopes the hip leaves the line to the
+        // eave corner: the triangle between them is the steeper plane's.
+        for k in 0..n {
+            if let Some((h, _, before)) = eave[k].hip {
+                let ia = (k + n - 1) % n;
+                let (steep, gentle) = if before { (k, ia) } else { (ia, k) };
+                let t = plan_area(&[pts[k], eave[k].p, h]);
+                piece[steep] += t * sec(slopes[steep]);
+                piece[gentle] -= t * sec(slopes[gentle]);
+            }
+        }
+        let area: f64 = piece.iter().sum();
+        let depth_area: f64 = depth_half.map_or(0.0, |hy| {
+            (0..n)
+                .filter(|&i| (dist[i] - hy).abs() < (dist[i] - half).abs())
+                .map(|i| piece[i])
+                .sum()
+        });
+        // The eave line: each side's eave at its own height, and where a
+        // steeper neighbour takes the corner its eave falls along this
+        // side's line from the hip to the corner.
+        let (mut length, mut perimeter) = (0.0, 0.0);
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (ea, eb) = (&eave[i], &eave[j]);
+            let plan = ea.p.distance(eb.p);
+            perimeter += plan;
+            let (mut za, mut zb, mut mid) = (ea.z, eb.z, plan);
+            if sharp[i] {
+                za = z0 - ov * slopes[i];
+                if let Some((h, _, false)) = ea.hip {
+                    let l = ea.p.distance(h);
+                    length += l.hypot(ea.z - za);
+                    mid -= l;
+                }
+            }
+            if sharp[j] {
+                zb = z0 - ov * slopes[i];
+                if let Some((h, _, true)) = eb.hip {
+                    let l = eb.p.distance(h);
+                    length += l.hypot(eb.z - zb);
+                    mid -= l;
+                }
+            }
+            length += mid.max(0.0).hypot(zb - za);
+        }
+        let low = eave.iter().map(|e| e.z).fold(f64::INFINITY, f64::min);
+        let hips: Vec<f64> = (0..n)
+            .map(|k| {
+                let (h, z) = eave[k]
+                    .hip
+                    .map_or((eave[k].p, eave[k].z), |(h, z, _)| (h, z));
+                pts[k].distance(h).hypot(z0 - z)
+            })
+            .collect();
+        let ok = [area, depth_area, length, perimeter, low]
+            .iter()
+            .all(|v| v.is_finite());
+        ok.then_some(Band {
+            area,
+            depth_area,
+            eave,
+            slopes,
+            length,
+            perimeter,
+            low,
+            hips,
+        })
+    }
+
+    /// Plan points along the eave of a tower with an overhang (about every
+    /// 0.25 m) and the eave's height there; empty without an overhang or
+    /// for a tower with problems. What the check for an eave under the
+    /// roof around reads (audit r3 MATH-005).
+    pub fn eave_samples(&self) -> Vec<(Point2, f64)> {
+        if !(self.overhang > 0.0) || !self.problems().is_empty() {
+            return Vec::new();
+        }
+        let (Some(g), Some(o)) = (self.overhang_slope(), self.outline(DRAW_ARC_STEP)) else {
+            return Vec::new();
+        };
+        let Some(b) = self.band(&o, g, None) else {
+            return Vec::new();
+        };
+        let n = b.eave.len();
+        let sharp = |k: usize| o.sharp.contains(&k);
+        let mut out = Vec::new();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (a, c) = (&b.eave[i], &b.eave[j]);
+            let face = self.base_height - self.overhang * b.slopes[i];
+            let k = ((a.p.distance(c.p) / 0.25).ceil() as usize).clamp(1, 64);
+            for m in 0..k {
+                let s = m as f64 / k as f64;
+                let p = Point2::new(a.p.x + (c.p.x - a.p.x) * s, a.p.y + (c.p.y - a.p.y) * s);
+                let z = if m == 0 {
+                    a.z
+                } else if sharp(i) && sharp(j) {
+                    face
+                } else {
+                    a.z + (c.z - a.z) * s
+                };
+                out.push((self.place(p, 1.0), z));
+            }
+        }
+        out
+    }
+
+    /// The roof profile of every tier as `(half width, height)` points,
+    /// curved tiers in `substeps` chords, from the shaft up (the overhang's
+    /// band is [`Tower::band`]); `None` when a tier's curve is more than a
+    /// semicircle or the profile crosses the axis.
     fn bare_profiles(&self, substeps: usize) -> Option<Vec<Profile>> {
         let mut out = Vec::with_capacity(self.tiers.len());
         let (mut h, mut z) = (self.width / 2.0, self.base_height);
@@ -681,10 +1002,15 @@ impl Tower {
         if draw.points.len() > most {
             let n = draw.points.len();
             draw.points = (0..most).map(|i| draw.points[i * n / most]).collect();
+            if draw.normals.len() == n {
+                draw.normals = (0..most).map(|i| draw.normals[i * n / most]).collect();
+            } else {
+                draw.normals.clear();
+            }
             draw.sharp.clear();
         }
-        let fine_profiles = self.profiles(FINE_ARC_SUBSTEPS)?;
-        let draw_profiles = self.profiles(detail.substeps.clamp(1, DRAW_ARC_SUBSTEPS))?;
+        let fine_profiles = self.bare_profiles(FINE_ARC_SUBSTEPS)?;
+        let draw_profiles = self.bare_profiles(detail.substeps.clamp(1, DRAW_ARC_SUBSTEPS))?;
         let half = self.width / 2.0;
         let edges = fine.edges();
         // A rectangle that is not square has a second pitch on the sides
@@ -692,6 +1018,17 @@ impl Tower {
         let depth_half = (self.shape == TowerShape::Rectangle
             && (self.depth_or_width() - self.width).abs() > 1e-9)
             .then(|| self.depth_or_width() / 2.0);
+        // The overhang's band below the first tier, for the figures and to
+        // draw (audit r3 MATH-001).
+        let (band, draw_band) = if self.overhang > 0.0 {
+            let g = self.overhang_slope()?;
+            (
+                Some(self.band(&fine, g, depth_half)?),
+                Some(self.band(&draw, g, None)?),
+            )
+        } else {
+            (None, None)
+        };
         let perimeter = fine.perimeter();
         let plan_area = fine.area();
         let sharp_radii: Vec<f64> = fine
@@ -726,11 +1063,24 @@ impl Tower {
                 }
                 hip += dz.hypot(dk * sharp_radii.first().copied().unwrap_or(0.0));
             }
+            let (mut bottom_height, mut bottom_perimeter) = (z0, perimeter * h0 / half);
+            if let (0, Some(b)) = (ti, &band) {
+                area += b.area;
+                depth_area += b.depth_area;
+                hip += fine
+                    .sharp
+                    .first()
+                    .and_then(|&k| b.hips.get(k))
+                    .copied()
+                    .unwrap_or(0.0);
+                bottom_height = b.low;
+                bottom_perimeter = b.perimeter;
+            }
             // Pitch of the sides at distance width/2 (all sides of a square,
             // polygon or circle; the x-facing sides of a rectangle), along
             // the tier's chord: 90° and more lean outward.
-            // From the profile's ends: with an overhang the first tier
-            // starts lower and wider on the same line.
+            // From the tier's own ends, the overhang's band left out: what a
+            // typed pitch sets (`edit::towers::rise_for_pitch`).
             let pitch_deg = if t.rise <= EPS {
                 0.0
             } else {
@@ -760,9 +1110,9 @@ impl Tower {
                 pitch_deg,
                 area,
                 depth_sides,
-                bottom_height: z0,
+                bottom_height,
                 top_height: z1,
-                bottom_perimeter: perimeter * h0 / half,
+                bottom_perimeter,
                 top_perimeter: perimeter * h1 / half,
                 hip_count: hips,
                 hip_length: if hips > 0 { hip } else { 0.0 },
@@ -782,6 +1132,19 @@ impl Tower {
         };
         for (tr, prof) in tiers.iter_mut().zip(&draw_profiles) {
             tr.rings = prof.iter().map(|&(h, z)| ring(h, z)).collect();
+        }
+        // The eave ring below the first tier's.
+        let eave_ring = draw_band.as_ref().map(|b| {
+            b.eave
+                .iter()
+                .map(|e| {
+                    let q = self.place(e.p, 1.0);
+                    mm([q.x, q.y, e.z])
+                })
+                .collect::<Vec<_>>()
+        });
+        if let (Some(r), Some(t)) = (&eave_ring, tiers.first_mut()) {
+            t.rings.insert(0, r.clone());
         }
 
         // Lines: eaves where a roof tier starts above a wall or the shaft,
@@ -805,6 +1168,34 @@ impl Tower {
             let below = li.checked_sub(1).map(|j| &tiers[live[j]]);
             let (bottom_h, bottom_z) = fine_profiles[i][0];
             match below {
+                None if i == 0 && draw_band.is_some() => {
+                    // The eave of the overhang, with the corners where a
+                    // steeper side's eave falls to its corner.
+                    let points = draw_band
+                        .iter()
+                        .flat_map(|b| &b.eave)
+                        .flat_map(|e| {
+                            let at = |p: Point2, z: f64| {
+                                let q = self.place(p, 1.0);
+                                mm([q.x, q.y, z])
+                            };
+                            let corner = at(e.p, e.z);
+                            match e.hip {
+                                Some((h, z, true)) => vec![at(h, z), corner],
+                                Some((h, z, false)) => vec![corner, at(h, z)],
+                                None => vec![corner],
+                            }
+                        })
+                        .collect();
+                    lines.push(TowerLine {
+                        code: "T",
+                        tier: i,
+                        length: band.as_ref().map_or(0.0, |b| b.length),
+                        points,
+                        closed: true,
+                        at_bottom: false,
+                    });
+                }
                 None => {
                     lines.push(self.ring_line("T", i, bottom_h, bottom_z, &draw, half, perimeter))
                 }
@@ -815,7 +1206,9 @@ impl Tower {
                     if ((b.pitch_deg - tr.pitch_deg).abs() > 0.5 || b.area == 0.0)
                         && bottom_h > EPS =>
                 {
-                    lines.push(self.ring_line("c", i, bottom_h, bottom_z, &draw, half, perimeter))
+                    let mut l = self.ring_line("c", i, bottom_h, bottom_z, &draw, half, perimeter);
+                    l.at_bottom = true;
+                    lines.push(l);
                 }
                 _ => {}
             }
@@ -834,20 +1227,31 @@ impl Tower {
                 }
             }
             if tr.hip_count > 0 {
-                for &corner in &hip_corners {
-                    let points: Vec<[f64; 3]> = draw_profiles[i]
+                for (j, &corner) in hip_corners.iter().enumerate() {
+                    let mut points: Vec<[f64; 3]> = draw_profiles[i]
                         .iter()
                         .map(|&(h, z)| {
                             let q = self.place(corner, h / half);
                             mm([q.x, q.y, z])
                         })
                         .collect();
+                    // Down to the eave of the overhang first.
+                    let foot = fine
+                        .sharp
+                        .get(j)
+                        .and_then(|&k| band.as_ref().filter(|_| i == 0)?.eave.get(k));
+                    if let Some(e) = foot {
+                        let (p, z) = e.hip.map_or((e.p, e.z), |(h, z, _)| (h, z));
+                        let q = self.place(p, 1.0);
+                        points.insert(0, mm([q.x, q.y, z]));
+                    }
                     lines.push(TowerLine {
                         code: "G",
                         tier: i,
                         length: tr.hip_length,
                         points,
                         closed: false,
+                        at_bottom: false,
                     });
                 }
             }
@@ -911,6 +1315,7 @@ impl Tower {
             length: perimeter * h / half,
             points,
             closed: true,
+            at_bottom: false,
         }
     }
 }
@@ -919,6 +1324,54 @@ impl TierResult {
     fn rise_positive(&self) -> bool {
         self.top_height - self.bottom_height > EPS
     }
+}
+
+/// Strips across the overhang's band of a round or rounded outline.
+const BAND_STEPS: usize = 8;
+
+/// The eave band of a tower with an overhang ([`Tower::band`]).
+struct Band {
+    /// True area, m², and the part of it on a rectangle's depth sides.
+    area: f64,
+    depth_area: f64,
+    /// The eave's corner at each corner of the outline.
+    eave: Vec<EaveVertex>,
+    /// Slope of each side's roof at the shaft.
+    slopes: Vec<f64>,
+    /// The eave line's true length and its plan length, m.
+    length: f64,
+    perimeter: f64,
+    /// The lowest point of the eave, m above ground.
+    low: f64,
+    /// At each corner of the outline, the length of the hip from the shaft
+    /// down to the eave, m.
+    hips: Vec<f64>,
+}
+
+struct EaveVertex {
+    p: Point2,
+    z: f64,
+    /// Where the hip of a sharp corner of two slopes meets the eave of the
+    /// gentler side: the point, its height, and whether that side is the
+    /// one coming into the corner.
+    hip: Option<(Point2, f64, bool)>,
+}
+
+/// The plan area of a polygon.
+fn plan_area(pts: &[Point2]) -> f64 {
+    crate::geom::signed_area(pts).abs()
+}
+
+/// The area of a triangle in space.
+fn triangle_area(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let x = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt() / 2.0
 }
 
 /// The calculated roof of a tower.
@@ -1008,6 +1461,11 @@ pub struct TowerLine {
     pub length: f64,
     pub points: Vec<[f64; 3]>,
     pub closed: bool,
+    /// A pitch break at the bottom of its tier (it counts for the tier
+    /// below's material too), marked when written, not read back from a
+    /// drawn point rounded to the millimetre (audit r3 MATH-004).
+    #[serde(skip)]
+    pub at_bottom: bool,
 }
 
 /// How finely a tower's rings, lines and hips are given to draw.
@@ -1183,12 +1641,7 @@ pub fn lines_by_material(project: &crate::Project) -> Vec<(u8, &'static str, f64
         for l in &r.lines {
             let own = m(l.tier);
             out.push((own, l.code, l.length));
-            if l.code == "c"
-                && l.tier > 0
-                && r.tiers.get(l.tier).is_some_and(|x| {
-                    (x.bottom_height - l.points.first().map_or(0.0, |p| p[2])).abs() < 1e-9
-                })
-            {
+            if l.code == "c" && l.tier > 0 && l.at_bottom {
                 let below = m(l.tier - 1);
                 if below != own {
                     out.push((below, l.code, l.length));
@@ -1267,6 +1720,9 @@ pub struct Shaft {
     pub on_roof: bool,
     /// Whether some of the roof around it is higher than the tower's base.
     pub base_below_roof: bool,
+    /// Whether the roof around it is higher than the eave its overhang
+    /// carries down and out (audit r3 MATH-005).
+    pub eave_below_roof: bool,
     /// The shaft stands in a building whose roof is not calculated (an
     /// error, or input the calculation left out): it is not beside the
     /// roofs, and its walls have no figure (`wall_area` is 0) until that
@@ -1386,8 +1842,19 @@ pub fn shaft(t: &Tower, project: &crate::Project, geos: &[crate::roof::RoofGeome
         wall_area: if roof_failed { 0.0 } else { wall_area },
         on_roof,
         base_below_roof: below,
+        eave_below_roof: eave_below(t, geos) > 0.0,
         roof_failed,
     }
+}
+
+/// How far the roofs `geos` rise above the eave of tower `t`'s overhang at
+/// its highest, m (0 when they stay under it or there is no overhang).
+pub fn eave_below(t: &Tower, geos: &[crate::roof::RoofGeometry]) -> f64 {
+    t.eave_samples()
+        .iter()
+        .filter_map(|&(p, z)| roof_height_at(geos, p).map(|r| r - z))
+        .filter(|d| *d > 1e-6)
+        .fold(0.0, f64::max)
 }
 
 /// The rounding of corner `v` (between `prev` and `next`) by `r`, as
@@ -1457,9 +1924,11 @@ fn fillet(corners: &[Point2], r: f64, step: f64) -> Outline {
         return Outline {
             points: corners.to_vec(),
             sharp: (0..n).collect(),
+            normals: Vec::new(),
         };
     }
     let mut points = Vec::new();
+    let mut normals = Vec::new();
     for i in 0..n {
         let arc = corner_arc(
             corners[(i + n - 1) % n],
@@ -1472,15 +1941,19 @@ fn fillet(corners: &[Point2], r: f64, step: f64) -> Outline {
             let p = arc.point(j as f64 / k as f64);
             if points.last().is_none_or(|q: &Point2| q.distance(p) > 1e-9) {
                 points.push(p);
+                let a = arc.start + arc.sweep * j as f64 / k as f64;
+                normals.push(Point2::new(a.cos(), a.sin()));
             }
         }
     }
     if points.len() > 1 && points[0].distance(points[points.len() - 1]) <= 1e-9 {
         points.pop();
+        normals.pop();
     }
     Outline {
         points,
         sharp: Vec::new(),
+        normals,
     }
 }
 

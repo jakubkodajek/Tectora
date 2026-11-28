@@ -136,9 +136,10 @@ describe("warningText for every kind", () => {
     manual_faces_overlap: { kind: "manual_faces_overlap", value: 36, face: 0, other_face: 2 },
     manual_face_over_roof: { kind: "manual_face_over_roof", value: 8.25, face: 1 },
     tower_base_below_roof: { kind: "tower_base_below_roof", value: 1.2, towers: [0] },
+    tower_eave_below_roof: { kind: "tower_eave_below_roof", value: 1.2, towers: [0] },
   };
-  it("gives a filled-in sentence for all 27 kinds in all four languages (TEST-003)", () => {
-    expect(Object.keys(every)).toHaveLength(27);
+  it("gives a filled-in sentence for all 28 kinds in all four languages (TEST-003)", () => {
+    expect(Object.keys(every)).toHaveLength(28);
     for (const locale of Object.keys(DICTS) as (keyof typeof DICTS)[]) {
       i18n.locale = locale;
       for (const w of Object.values(every)) {
