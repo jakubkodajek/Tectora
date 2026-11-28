@@ -66,7 +66,8 @@ pub struct Queued {
     pub size: u64,
     /// `waiting`, or `local` when this build cannot send.
     pub state: String,
-    pub entries: usize,
+    /// Names inside the ZIP, `manifest.json` first.
+    pub entries: Vec<String>,
     pub left_out: Vec<LeftOut>,
 }
 
@@ -610,9 +611,20 @@ impl Outbox {
             id,
             size: created.size,
             state: state.as_str().into(),
-            entries: created.manifest.entries.len(),
+            entries: std::iter::once("manifest.json".to_string())
+                .chain(created.manifest.entries.iter().map(|e| e.name.clone()))
+                .collect(),
             left_out: created.manifest.left_out,
         })
+    }
+
+    /// Where a report is now: `waiting`, `failed`, `local`, or `sent` when
+    /// it left the queue.
+    pub fn status(&self, name: &str) -> &'static str {
+        if !bugreport::is_report_name(name) || fs::symlink_metadata(self.zip_path(name)).is_err() {
+            return "sent";
+        }
+        self.read_side(name).map_or("failed", |s| s.state.as_str())
     }
 
     /// Number and bytes of the queued ZIPs.
@@ -869,8 +881,23 @@ impl Outbox {
         force: bool,
         send: &mut dyn FnMut(&Value, &Path) -> Result<Receipt, SendFailure>,
     ) -> DrainResult {
+        self.drain_only(None, now_ms, force, send)
+    }
+
+    /// [`drain`](Self::drain) for the one report `only` (right after it was
+    /// queued), or for all with `None`.
+    pub fn drain_only(
+        &self,
+        only: Option<&str>,
+        now_ms: u64,
+        force: bool,
+        send: &mut dyn FnMut(&Value, &Path) -> Result<Receipt, SendFailure>,
+    ) -> DrainResult {
         let mut sent = 0;
         for name in self.names() {
+            if only.is_some_and(|o| o != name) {
+                continue;
+            }
             let Some(side) = self.read_side(&name) else {
                 continue;
             };

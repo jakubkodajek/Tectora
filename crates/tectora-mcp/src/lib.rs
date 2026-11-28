@@ -33,6 +33,7 @@ mod input_tests;
 mod more;
 #[cfg(test)]
 mod relay_tests;
+pub mod reports;
 mod worker;
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -47,6 +48,10 @@ pub struct Server {
     calc_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// How long a write waits for its calculations (tests shorten it).
     commit_timeout: std::time::Duration,
+    /// Where bug reports wait until they are sent.
+    outbox: tectora_core::outbox::Outbox,
+    /// The relay reports are sent to; `None` = this build cannot send.
+    relay: Option<tectora_relay::Config>,
 }
 
 /// Longest a write waits for the calculations behind its answer (window
@@ -1064,6 +1069,7 @@ const DESTRUCTIVE: &[&str] = &[
     "update_settings",
     "clear_roof",
     "delete_items",
+    "discard_bug_report",
 ];
 
 /// MCP tool annotations (spec 2025-06-18, `ToolAnnotations`). Clients use
@@ -1071,7 +1077,8 @@ const DESTRUCTIVE: &[&str] = &[
 /// "Always allow" per group of read-only and write tools, so a user can stop
 /// the prompts for everything that only reads. A tool reads only when it
 /// takes no `summary` (every write needs one, `AGENTS.md`). Everything is
-/// local: no tool reaches the internet.
+/// local, except that a bug report is sent to the developers (the tool says so
+/// in its description; the hint stays false for every tool).
 fn annotations(name: &str, tool: &Value) -> Value {
     let writes = tool["inputSchema"]["properties"].get("summary").is_some();
     let mut title: String = name.replace('_', " ");
@@ -1121,11 +1128,10 @@ fn base_tools() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir, drawings_dir or reports_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then. Every other change applies at once and is shown to the user with your summary and the values before and after, to accept or revert (`settings.ai_changes`).",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then. Every other change applies at once and is shown to the user with your summary and the values before and after, to accept or revert (`settings.ai_changes`).",
             "inputSchema": schema(json!({
                 "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
                 "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
-                "reports_dir": { "type": ["string", "null"], "description": "Absolute path of the folder bug reports are saved to (e.g. a shared Google Drive folder); default: `reports` in the job library." },
                 "locale": { "type": ["string", "null"], "enum": ["cs", "sk", "en", "de", null] },
                 "theme": { "type": "string", "enum": ["system", "light", "dark"] },
                 "roof_defaults": {
@@ -1319,7 +1325,26 @@ impl Server {
             client: "AI".into(),
             calc_busy: Default::default(),
             commit_timeout: COMMIT_CALC_TIMEOUT,
+            outbox: tectora_core::outbox::Outbox::open_default(),
+            relay: tectora_relay::Config::baked(),
         }
+    }
+
+    /// A server with its own report outbox folder and relay (tests, the
+    /// preview): nothing is read from the environment.
+    pub fn with_relay(
+        store: Store,
+        outbox_root: &std::path::Path,
+        relay: Option<tectora_relay::Config>,
+    ) -> Self {
+        let mut s = Self::new(store);
+        s.outbox = tectora_core::outbox::Outbox::at(outbox_root);
+        s.relay = relay;
+        s
+    }
+
+    pub fn set_relay(&mut self, relay: Option<tectora_relay::Config>) {
+        self.relay = relay;
     }
 
     /// Parts from which a job may take long enough to need the deadline of
