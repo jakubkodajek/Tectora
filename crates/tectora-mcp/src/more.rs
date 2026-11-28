@@ -706,7 +706,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_bug_report",
-            "description": "Report a problem to the developers of Tectora. The report (one ZIP (.zip) with your description, the job - customer and address included unless `include_customer` is false -, its calculation, change history, versions and the app's log) is queued and sent at once; when there is no connection it waits and is sent later by itself. Ask the user before you send one, and tell them what it contains. You never name a path. Returns `state` (`sent`, `waiting` or `local` when this build cannot send), `file_name`, `size`, the `entries` and what was `left_out`. Attached drawings are left out unless `include_files` is true: include them only when the user agreed.",
+            "description": "Report a problem to the developers of Tectora. The report (one ZIP (.zip) with your description, the job - customer and address included unless `include_customer` is false -, its calculation, change history, versions and the app's log) is queued and sent at once; when there is no connection it waits and is sent later by itself. Ask the user before you send one, and tell them what it contains. You never name a path. Returns `state` - `sent`, `waiting` (no connection: sent later by itself), `failed` (refused for good, with its `last_error` code: tell the user and do not retry) or `local` (this build cannot send) -, `file_name`, `size`, the `entries` and what was `left_out`. Attached drawings are left out unless `include_files` is true: include them only when the user agreed.",
             "inputSchema": schema(json!({
                 "description": { "type": "string", "description": "What went wrong and what you expected, at most 5000 characters." },
                 "id": { "type": "string", "description": "The job the report is about; left out: the report holds only the technical record." },
@@ -718,7 +718,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "send_bug_reports",
-            "description": "Try again to send the bug reports that wait (no connection earlier, or a failed attempt), now. Returns how many were `sent` and how many still `waiting` or `failed`. Takes no report name: it concerns all of them.",
+            "description": "Try again to send the bug reports that wait (no connection earlier, or a failed attempt), now. Returns how many were `sent` and how many still `waiting` or `failed`, with the `last_error` code of the first failure. Takes no report name: it concerns all of them.",
             "inputSchema": schema(json!({ "summary": summary_prop() }), &["summary"]),
         }),
         json!({
@@ -822,6 +822,11 @@ impl Server {
         {
             out["issue_url"] = json!(u);
         }
+        if state == "failed"
+            && let Some(code) = self.outbox.last_error(&queued.file_name)
+        {
+            out["last_error"] = json!(code);
+        }
         Ok(out)
     }
 
@@ -834,8 +839,18 @@ impl Server {
                 "note": "this build cannot send reports; they stay in the queue",
             }));
         };
-        let r = crate::reports::drain(&self.outbox, cfg, true, crate::reports::MCP_TIMEOUTS);
-        Ok(json!({ "sent": r.sent, "waiting": r.waiting, "failed": r.failed }))
+        let r = crate::reports::drain(
+            &self.outbox,
+            cfg,
+            true,
+            crate::reports::MCP_TIMEOUTS,
+            Some(crate::reports::MCP_TIMEOUTS.total),
+        );
+        let mut out = json!({ "sent": r.sent, "waiting": r.waiting, "failed": r.failed });
+        if let Some(code) = r.last_error {
+            out["last_error"] = json!(code);
+        }
+        Ok(out)
     }
 
     fn discard_bug_report(&self, args: &Value) -> ToolResult {

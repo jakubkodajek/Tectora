@@ -18,11 +18,26 @@ pub const MCP_TIMEOUTS: Timeouts = Timeouts {
 fn sender<'a>(
     cfg: &'a Config,
     t: Timeouts,
+    budget: Option<std::time::Duration>,
     issue: &'a mut Option<String>,
 ) -> impl FnMut(&Value, &Path) -> Result<Receipt, SendFailure> + 'a {
+    let started = std::time::Instant::now();
     move |job: &Value, zip: &Path| {
         let id = job["id"].as_str().unwrap_or("");
         let name = job["file_name"].as_str().unwrap_or("");
+        let mut t = t;
+        if let Some(b) = budget {
+            // The whole run stays within the budget: what is left is the
+            // time of this send, and none left ends the run.
+            let left = b.saturating_sub(started.elapsed());
+            if left < std::time::Duration::from_secs(2) {
+                return Err(SendFailure::Retry {
+                    code: "offline".into(),
+                    after_s: None,
+                });
+            }
+            t.total = t.total.min(left);
+        }
         match tectora_relay::send_with(cfg, id, name, &job["meta"], zip, t) {
             Ok(r) => {
                 *issue = r.issue_url.clone();
@@ -46,18 +61,28 @@ fn sender<'a>(
     }
 }
 
-/// Sends what is due (everything with `force`). Reports made while no relay
-/// was configured become `waiting` first.
-pub fn drain(outbox: &Outbox, cfg: &Config, force: bool, t: Timeouts) -> DrainResult {
-    outbox.promote_local();
+/// Sends what is due (everything, also failed and local reports, with
+/// `force`: Send now). `budget` bounds the whole run.
+pub fn drain(
+    outbox: &Outbox,
+    cfg: &Config,
+    force: bool,
+    t: Timeouts,
+    budget: Option<std::time::Duration>,
+) -> DrainResult {
     let mut issue = None;
-    outbox.drain(now_ms(), force, &mut sender(cfg, t, &mut issue))
+    outbox.drain(now_ms(), force, &mut sender(cfg, t, budget, &mut issue))
 }
 
 /// Tries the one report `name` once; the issue link when it went.
 pub fn send_one(outbox: &Outbox, cfg: &Config, name: &str, t: Timeouts) -> Option<String> {
     let mut issue = None;
-    outbox.drain_only(Some(name), now_ms(), true, &mut sender(cfg, t, &mut issue));
+    outbox.drain_only(
+        Some(name),
+        now_ms(),
+        true,
+        &mut sender(cfg, t, None, &mut issue),
+    );
     issue
 }
 

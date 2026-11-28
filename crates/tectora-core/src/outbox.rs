@@ -78,11 +78,14 @@ pub struct Counts {
     pub local: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct DrainResult {
     pub sent: usize,
     pub waiting: usize,
     pub failed: usize,
+    /// The code of the first failure of this run, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -627,6 +630,17 @@ impl Outbox {
         self.read_side(name).map_or("failed", |s| s.state.as_str())
     }
 
+    /// The code that last stopped a queued report, if any.
+    pub fn last_error(&self, name: &str) -> Option<String> {
+        if !bugreport::is_report_name(name) {
+            return None;
+        }
+        match self.read_side(name) {
+            Some(s) => s.last_error,
+            None => Some("unreadable".into()),
+        }
+    }
+
     /// Number and bytes of the queued ZIPs.
     fn totals(&self) -> (usize, u64) {
         let names = self.names();
@@ -653,6 +667,26 @@ impl Outbox {
             }
         }
         c
+    }
+
+    /// The sent lines with the name each is listed and read under: the
+    /// queued name, or - when an earlier line has it already - the name with
+    /// the report id's first 8 characters before `.zip`.
+    fn sent_named(&self) -> (Vec<(String, Value)>, usize) {
+        let (lines, skipped) = self.sent_lines();
+        let mut used = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for l in lines {
+            let mut name = l["file_name"].as_str().unwrap_or("").to_string();
+            if !used.insert(name.clone()) {
+                let id8 = l["id"].as_str().unwrap_or("").get(..8).unwrap_or("").to_string();
+                let stem = name.strip_suffix(".zip").unwrap_or(&name).to_string();
+                name = format!("{stem}-{id8}.zip");
+                used.insert(name.clone());
+            }
+            out.push((name, l));
+        }
+        (out, skipped)
     }
 
     fn sent_lines(&self) -> (Vec<Value>, usize) {
@@ -719,9 +753,8 @@ impl Outbox {
                 },
             });
         }
-        let (sent, skipped) = self.sent_lines();
-        for l in sent {
-            let name = l["file_name"].as_str().unwrap_or("").to_string();
+        let (sent, skipped) = self.sent_named();
+        for (name, l) in sent {
             if all.iter().any(|r| r.file_name == name) {
                 continue;
             }
@@ -772,9 +805,9 @@ impl Outbox {
             v["state"] = json!(state);
             return Ok(v);
         }
-        let (sent, _) = self.sent_lines();
-        match sent.into_iter().find(|l| l["file_name"] == name) {
-            Some(l) => Ok(json!({ "state": "sent", "sent": l })),
+        let (sent, _) = self.sent_named();
+        match sent.into_iter().find(|(n, _)| n == name) {
+            Some((_, l)) => Ok(json!({ "state": "sent", "sent": l })),
             None => Err(not_found(name)),
         }
     }
@@ -858,23 +891,11 @@ impl Outbox {
         copied
     }
 
-    /// A report made by a build without a relay waits as `local`; a build
-    /// that has one makes them `waiting`.
-    pub fn promote_local(&self) {
-        for n in self.names() {
-            if let Some(mut s) = self.read_side(&n)
-                && s.state == State::Local
-            {
-                s.state = State::Waiting;
-                let _ = self.write_side(&s);
-            }
-        }
-    }
-
     // ------------------------------------------------------------ drain
 
-    /// Sends what is due through `send` (everything with `force`, except
-    /// `local` ones). `send` gets `{ id, file_name, meta }` and the ZIP path.
+    /// Sends what is due through `send`: everything with `force` (also a
+    /// `failed` or `local` report), else only the waiting ones whose time has
+    /// come. The first `offline` failure ends the run. `send` gets `{ id, file_name, meta }` and the ZIP path.
     pub fn drain(
         &self,
         now_ms: u64,
@@ -894,6 +915,7 @@ impl Outbox {
         send: &mut dyn FnMut(&Value, &Path) -> Result<Receipt, SendFailure>,
     ) -> DrainResult {
         let mut sent = 0;
+        let mut first_error: Option<String> = None;
         for name in self.names() {
             if only.is_some_and(|o| o != name) {
                 continue;
@@ -902,11 +924,19 @@ impl Outbox {
                 continue;
             };
             let due = match side.state {
-                State::Local => false,
+                // A report made without a relay goes only on an explicit
+                // Send now, never by itself.
+                State::Local => force,
                 State::Failed => force,
-                State::Waiting => force || side.next_try_ms <= now_ms,
+                // A time further ahead than the longest backoff is a clock
+                // that jumped or a damaged file: due.
+                State::Waiting => {
+                    force
+                        || side.next_try_ms <= now_ms
+                        || side.next_try_ms > now_ms.saturating_add(MAX_BACKOFF_MS)
+                }
             };
-            if !due {
+            if !due || (!force && cooling(&self.side_path(&name), now_ms)) {
                 continue;
             }
             let Some(_claim) = self.claim(&name) else {
@@ -917,7 +947,7 @@ impl Outbox {
             let Some(mut side) = self.read_side(&name) else {
                 continue;
             };
-            if side.state == State::Local {
+            if side.state == State::Local && !force {
                 continue;
             }
             if self.already_sent(&side.id) {
@@ -926,6 +956,7 @@ impl Outbox {
             }
             let zip = self.zip_path(&name);
             let job = json!({ "id": side.id, "file_name": name, "meta": side.meta });
+            let mut stop = false;
             match send(&job, &zip) {
                 Ok(r) => {
                     self.append_sent(&side, &r);
@@ -944,17 +975,25 @@ impl Outbox {
                     side.next_try_ms = now_ms.saturating_add(wait);
                     side.state = State::Waiting;
                     side.last_error = Some(code.clone());
-                    let _ = self.write_side(&side);
+                    self.save_after_send(&side, now_ms.saturating_add(wait));
                     crate::applog::line("WARN", &format!("report send failed: {code}"));
+                    // No connection: the other reports would fail the same
+                    // way and each cost its timeout.
+                    stop = code == "offline";
+                    first_error.get_or_insert(code);
                 }
                 Err(SendFailure::Permanent { code }) => {
                     let code = code_text(&code);
                     side.attempts = side.attempts.saturating_add(1);
                     side.state = State::Failed;
                     side.last_error = Some(code.clone());
-                    let _ = self.write_side(&side);
+                    self.save_after_send(&side, u64::MAX);
                     crate::applog::line("WARN", &format!("report send failed: {code}"));
+                    first_error.get_or_insert(code);
                 }
+            }
+            if stop {
+                break;
             }
         }
         let c = self.counts();
@@ -962,6 +1001,22 @@ impl Outbox {
             sent,
             waiting: c.waiting,
             failed: c.failed,
+            last_error: first_error,
+        }
+    }
+
+    /// Writes the sidecar after a send attempt. When that fails the report
+    /// would be due again at once, so this process leaves it alone until
+    /// `until_ms` (the backoff it should have had).
+    fn save_after_send(&self, side: &Side, until_ms: u64) {
+        if self.write_side(side).is_err() {
+            if let Ok(mut m) = COOLDOWN.lock() {
+                if m.len() > 1000 {
+                    m.clear();
+                }
+                m.insert(self.side_path(&side.file_name), until_ms);
+            }
+            crate::applog::line("WARN", "report state not written");
         }
     }
 
@@ -1008,6 +1063,13 @@ impl Outbox {
     }
 
     fn append_sent(&self, side: &Side, r: &Receipt) {
+        let _ = fs::create_dir_all(&self.root);
+        // Two processes finishing together must not lose each other's line:
+        // read, add, trim and write happen under one lock.
+        let Some(_lock) = self.lock_sent() else {
+            crate::applog::line("WARN", "report sent log busy");
+            return;
+        };
         let mut lines: Vec<Value> = self.sent_lines().0;
         if lines.iter().any(|l| l["id"] == side.id) {
             return;
@@ -1033,11 +1095,52 @@ impl Outbox {
             text.push('\n');
         }
         let path = self.sent_path();
-        let _ = fs::create_dir_all(&self.root);
         if crate::store::write_atomic_bytes(&path, text.as_bytes()).is_err() {
             crate::applog::line("WARN", "report sent log not written");
         }
     }
+
+    /// The lock around the sent log: waits a few seconds, takes over one
+    /// older than a minute.
+    fn lock_sent(&self) -> Option<Claim> {
+        let path = self.root.join("sent.lock");
+        for _ in 0..1000 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Some(Claim { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = fs::symlink_metadata(&path).is_ok_and(|m| {
+                        m.modified()
+                            .ok()
+                            .and_then(|t| SystemTime::now().duration_since(t).ok())
+                            .is_some_and(|age| age > Duration::from_secs(60))
+                    });
+                    if stale {
+                        let _ = fs::remove_file(&path);
+                    } else {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+}
+
+/// Reports whose state could not be written after a send attempt, and the
+/// time before which this process does not try them again.
+static COOLDOWN: std::sync::Mutex<std::collections::BTreeMap<PathBuf, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn cooling(side_path: &Path, now_ms: u64) -> bool {
+    COOLDOWN
+        .lock()
+        .map(|m| m.get(side_path).is_some_and(|until| *until > now_ms))
+        .unwrap_or(false)
 }
 
 fn outbox_full() -> FileError {
