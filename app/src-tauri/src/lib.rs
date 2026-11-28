@@ -47,8 +47,14 @@ struct AppState {
     /// the UI names them in its language (`name_seeded_examples`).
     seeded: Mutex<Vec<(String, String)>>,
     /// The bug report file saved last (Save as may name it anything):
-    /// "Show in folder" reveals it and the reports of the reports folder.
+    /// "Show in folder" reveals only this one.
     last_report: Mutex<Option<PathBuf>>,
+    /// Reports waiting to be sent (shared with the MCP server).
+    outbox: tectora_core::outbox::Outbox,
+    /// Where reports are sent; `None` = this build cannot send.
+    relay: Option<tectora_mcp::reports::Config>,
+    /// One drain at a time.
+    drain_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -939,46 +945,85 @@ fn answer_ai_change(id: u64, revert: bool) -> Result<Value, String> {
     Ok(next.describe())
 }
 
-/// What a saved bug report is, for the UI's notice.
+/// What a finished bug report is, for the UI's notice. `state`: `sent`,
+/// `waiting` (queued, sent later by itself), `local` (this build cannot
+/// send) or `saved` (Save as, with `path`).
 #[derive(Serialize)]
-struct SavedReport {
-    path: String,
+struct ReportResult {
+    state: &'static str,
     file_name: String,
     size: u64,
     left_out: Vec<bugreport::LeftOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issue_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
-/// Writes a bug report (`bugreport::create`). `path` is the file the user
-/// chose with Save as; without it the report goes to the reports folder of
-/// the settings. Off the main thread: it calculates the job and copies the
-/// drawings.
+/// The queue's counts for the indicator; also pushed as `report-outbox`.
+fn push_outbox(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let _ = app.emit("report-outbox", state.outbox.counts());
+}
+
+/// Makes a bug report. With `path` (Save as) the ZIP is written there;
+/// without it the report is queued and sent once (when this build has a
+/// relay), or waits when that fails. Off the main thread: it calculates the
+/// job, copies the drawings and uses the network.
 #[tauri::command(async)]
 fn create_bug_report(
+    app: tauri::AppHandle,
     state: State<AppState>,
     request: bugreport::Request,
     path: Option<String>,
-) -> CmdResult<SavedReport> {
+) -> CmdResult<ReportResult> {
     guard(|| {
-        let store = state.store();
-        let dest = match path {
-            Some(p) => bugreport::Dest::File(PathBuf::from(p)),
-            None => match Settings::load().reports_dir {
-                Some(dir) => bugreport::Dest::Folder(dir),
-                None => {
-                    return Err(AppError::new("invalid_input")
-                        .detail("no reports folder is set; choose a file to save to"));
-                }
+        if let Some(p) = path {
+            let made = bugreport::create(
+                &state.store(),
+                &request,
+                &bugreport::Dest::File(PathBuf::from(p)),
+            )?;
+            tectora_core::applog::line("INFO", "bug report saved as a file");
+            *state.last_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(made.path.clone());
+            return Ok(ReportResult {
+                state: "saved",
+                file_name: made.file_name,
+                size: made.size,
+                left_out: made.manifest.left_out,
+                issue_url: None,
+                path: Some(made.path.display().to_string()),
+            });
+        }
+        // The library is only read while the report is built, not while it
+        // is sent.
+        let queued = state
+            .outbox
+            .enqueue(&state.store(), &request, state.relay.is_none())?;
+        let mut issue_url = None;
+        let mut result_state = queued.state.clone();
+        if let Some(cfg) = &state.relay {
+            let _one_at_a_time = state.drain_lock.lock().unwrap_or_else(|e| e.into_inner());
+            issue_url = tectora_mcp::reports::send_one(
+                &state.outbox,
+                cfg,
+                &queued.file_name,
+                tectora_mcp::reports::APP_TIMEOUTS,
+            );
+            result_state = state.outbox.status(&queued.file_name).to_string();
+        }
+        push_outbox(&app);
+        Ok(ReportResult {
+            state: match result_state.as_str() {
+                "sent" => "sent",
+                "local" => "local",
+                _ => "waiting",
             },
-        };
-        let made = bugreport::create(&store, &request, &dest)?;
-        // No file name in the log: it carries the job's name.
-        tectora_core::applog::line("INFO", "bug report written");
-        *state.last_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(made.path.clone());
-        Ok(SavedReport {
-            path: made.path.display().to_string(),
-            file_name: made.file_name,
-            size: made.size,
-            left_out: made.manifest.left_out,
+            file_name: queued.file_name,
+            size: queued.size,
+            left_out: queued.left_out,
+            issue_url,
+            path: None,
         })
     })
 }
@@ -989,8 +1034,8 @@ fn bug_report_name(job_name: Option<String>, stamp: String) -> String {
     bugreport::file_name(job_name.as_deref(), &stamp)
 }
 
-/// Shows a saved bug report in Finder / Explorer. Only the file just saved,
-/// or a file named like a report inside the reports folder, is revealed.
+/// Shows a report saved with Save as in Finder / Explorer. Only the file
+/// just saved is revealed.
 #[tauri::command(async)]
 fn show_bug_report(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
     guard(|| {
@@ -1000,15 +1045,7 @@ fn show_bug_report(app: tauri::AppHandle, state: State<AppState>, path: String) 
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let saved_now = last.as_ref() == Some(&path);
-        let in_reports = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(bugreport::is_report_name)
-            && path
-                .parent()
-                .is_some_and(|d| d == bugreport::reports_dir(&Settings::load(), &state.store()));
-        if !(saved_now || in_reports) || !path.is_absolute() || !path.is_file() {
+        if last.as_ref() != Some(&path) || !path.is_absolute() || !path.is_file() {
             return Err(AppError::new("invalid_input").detail("not a bug report file"));
         }
         app.opener()
@@ -1017,15 +1054,136 @@ fn show_bug_report(app: tauri::AppHandle, state: State<AppState>, path: String) 
     })
 }
 
+/// The reports that wait (or failed, or are kept here only), the counts for
+/// the indicator and whether this build can send at all.
+#[tauri::command(async)]
+fn bug_report_outbox(state: State<AppState>) -> CmdResult<Value> {
+    guard(|| {
+        let waiting: Vec<_> = state
+            .outbox
+            .list(100)?
+            .reports
+            .into_iter()
+            .filter(|r| r.state != "sent")
+            .collect();
+        Ok(serde_json::json!({
+            "sendable": state.relay.is_some(),
+            "counts": state.outbox.counts(),
+            "reports": waiting,
+        }))
+    })
+}
+
+/// Sends what waits, now ("Send now"). Without a relay nothing is sent.
+#[tauri::command(async)]
+fn send_bug_reports(app: tauri::AppHandle, state: State<AppState>) -> CmdResult<Value> {
+    guard(|| {
+        let result = match &state.relay {
+            Some(cfg) => {
+                let _one_at_a_time = state.drain_lock.lock().unwrap_or_else(|e| e.into_inner());
+                tectora_mcp::reports::drain(
+                    &state.outbox,
+                    cfg,
+                    true,
+                    tectora_mcp::reports::APP_TIMEOUTS,
+                )
+            }
+            None => {
+                let c = state.outbox.counts();
+                tectora_core::outbox::DrainResult {
+                    sent: 0,
+                    waiting: c.waiting,
+                    failed: c.failed,
+                }
+            }
+        };
+        push_outbox(&app);
+        Ok(serde_json::json!({
+            "sent": result.sent, "waiting": result.waiting, "failed": result.failed,
+        }))
+    })
+}
+
+/// Save as of a queued report: copies it to the file the user chose. The
+/// report stays queued.
+#[tauri::command(async)]
+fn save_queued_bug_report(
+    state: State<AppState>,
+    name: String,
+    path: String,
+) -> CmdResult<ReportResult> {
+    guard(|| {
+        let dest = PathBuf::from(&path);
+        state.outbox.export(&name, &dest)?;
+        let size = std::fs::metadata(&dest).map_or(0, |m| m.len());
+        *state.last_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(dest);
+        Ok(ReportResult {
+            state: "saved",
+            file_name: name,
+            size,
+            left_out: Vec::new(),
+            issue_url: None,
+            path: Some(path),
+        })
+    })
+}
+
+/// Removes a queued report that was not sent (the UI asked first).
+#[tauri::command(async)]
+fn discard_bug_report(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    name: String,
+) -> CmdResult<()> {
+    guard(|| {
+        state.outbox.discard(&name)?;
+        push_outbox(&app);
+        Ok(())
+    })
+}
+
+/// Sends due reports in the background: 10 seconds after the start, then
+/// every minute while something waits (the outbox's own backoff decides
+/// which are due). Never on the main thread, never a notice when the
+/// network is off.
+fn start_report_drain(app: tauri::AppHandle) {
+    let _ = std::thread::Builder::new()
+        .name("tectora-report-drain".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let mut last = None;
+            loop {
+                let state = app.state::<AppState>();
+                if let Some(cfg) = &state.relay
+                    && state.outbox.counts().waiting + state.outbox.counts().local > 0
+                    && let Ok(_one) = state.drain_lock.try_lock()
+                {
+                    tectora_mcp::reports::drain(
+                        &state.outbox,
+                        cfg,
+                        false,
+                        tectora_mcp::reports::APP_TIMEOUTS,
+                    );
+                }
+                let counts = state.outbox.counts();
+                if last != Some(counts) {
+                    last = Some(counts);
+                    let _ = app.emit("report-outbox", counts);
+                }
+                drop(state);
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        });
+}
+
 /// Opens one of the configured folders in Finder / Explorer.
 #[tauri::command]
-fn open_folder(state: State<AppState>, which: String) -> Result<(), String> {
+fn open_folder(which: String) -> Result<(), String> {
     let s = Settings::load();
     let dir = match which.as_str() {
         "projects" => s.projects_dir(),
         "drawings" => s.drawings_dir(),
         "settings" => settings::config_dir(),
-        "reports" => bugreport::reports_dir(&s, &state.store()),
         _ => return Err("invalid_value".into()),
     };
     std::fs::create_dir_all(&dir).map_err(|_| "not_writable".to_string())?;
@@ -1293,7 +1451,11 @@ pub fn run() {
                 watcher_error: Mutex::new(None),
                 seeded: Mutex::new(seeded),
                 last_report: Mutex::new(None),
+                outbox: tectora_core::outbox::Outbox::open_default(),
+                relay: tectora_mcp::reports::Config::baked(),
+                drain_lock: Mutex::new(()),
             });
+            start_report_drain(app.handle().clone());
             set_watcher(app.handle(), dir);
             open_files(app.handle(), file_args(std::env::args().skip(1)));
             Ok(())
@@ -1367,6 +1529,10 @@ pub fn run() {
             create_bug_report,
             bug_report_name,
             show_bug_report,
+            bug_report_outbox,
+            send_bug_reports,
+            save_queued_bug_report,
+            discard_bug_report,
             updates::update_check,
             updates::update_install
         ])

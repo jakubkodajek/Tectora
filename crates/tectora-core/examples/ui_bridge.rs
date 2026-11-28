@@ -583,26 +583,87 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
         }
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
         "create_bug_report" => {
-            let request = arg::<tectora_core::bugreport::Request>(a, "request")?;
-            let dest = match arg::<Option<String>>(a, "path")? {
-                Some(p) => tectora_core::bugreport::Dest::File(PathBuf::from(p)),
-                None => match Settings::load().reports_dir {
-                    Some(dir) => tectora_core::bugreport::Dest::Folder(dir),
-                    None => {
-                        return Err(coded(
-                            "invalid_input",
-                            "no reports folder is set; choose a file to save to",
-                        ));
-                    }
-                },
-            };
-            let made = tectora_core::bugreport::create(store, &request, &dest)?;
+            use tectora_core::bugreport::{Dest, Request};
+            let request = arg::<Request>(a, "request")?;
+            if let Some(p) = arg::<Option<String>>(a, "path")? {
+                let made = tectora_core::bugreport::create(
+                    store,
+                    &request,
+                    &Dest::File(PathBuf::from(p)),
+                )?;
+                return Ok(json!({
+                    "state": "saved",
+                    "file_name": made.file_name,
+                    "size": made.size,
+                    "left_out": made.manifest.left_out,
+                    "path": made.path.display().to_string(),
+                }));
+            }
+            let outbox = tectora_core::outbox::Outbox::open_default();
+            let relay = report_relay();
+            let queued = outbox.enqueue(store, &request, relay.is_none())?;
+            let mut out = json!({
+                "file_name": queued.file_name,
+                "size": queued.size,
+                "left_out": queued.left_out,
+            });
+            let mut state = queued.state.clone();
+            if let Some(cfg) = &relay {
+                let (_, issue) = send_reports(&outbox, cfg, Some(&queued.file_name), true);
+                state = outbox.status(&queued.file_name).to_string();
+                if state == "sent"
+                    && let Some(u) = issue
+                {
+                    out["issue_url"] = json!(u);
+                }
+            }
+            out["state"] = json!(report_state(&state));
+            Ok(out)
+        }
+        "bug_report_outbox" => {
+            let outbox = tectora_core::outbox::Outbox::open_default();
+            let reports: Vec<_> = outbox
+                .list(100)?
+                .reports
+                .into_iter()
+                .filter(|r| r.state != "sent")
+                .collect();
             Ok(json!({
-                "path": made.path.display().to_string(),
-                "file_name": made.file_name,
-                "size": made.size,
-                "left_out": made.manifest.left_out,
+                "sendable": report_relay().is_some(),
+                "counts": outbox.counts(),
+                "reports": reports,
             }))
+        }
+        "send_bug_reports" => {
+            let outbox = tectora_core::outbox::Outbox::open_default();
+            let r = match report_relay() {
+                Some(cfg) => send_reports(&outbox, &cfg, None, true).0,
+                None => {
+                    let c = outbox.counts();
+                    tectora_core::outbox::DrainResult {
+                        sent: 0,
+                        waiting: c.waiting,
+                        failed: c.failed,
+                    }
+                }
+            };
+            Ok(json!({ "sent": r.sent, "waiting": r.waiting, "failed": r.failed }))
+        }
+        "save_queued_bug_report" => {
+            let name = arg::<String>(a, "name")?;
+            let path = arg::<String>(a, "path")?;
+            let outbox = tectora_core::outbox::Outbox::open_default();
+            outbox.export(&name, Path::new(&path))?;
+            let size = std::fs::metadata(&path).map_or(0, |m| m.len());
+            Ok(json!({
+                "state": "saved", "file_name": name, "size": size,
+                "left_out": [], "path": path,
+            }))
+        }
+        "discard_bug_report" => {
+            let name = arg::<String>(a, "name")?;
+            tectora_core::outbox::Outbox::open_default().discard(&name)?;
+            Ok(Value::Null)
         }
         "bug_report_name" => Ok(Value::String(tectora_core::bugreport::file_name(
             arg::<Option<String>>(a, "jobName")?.as_deref(),
@@ -642,6 +703,68 @@ fn scan(dir: &Path) -> BTreeMap<PathBuf, SystemTime> {
     out
 }
 
+/// The relay the preview sends reports to: `TECTORA_REPORT_URL` and
+/// `TECTORA_REPORT_KEY` read at run time, a loopback address allowed (the E2E
+/// tests run a fake relay there). Without them reports stay `local`.
+fn report_relay() -> Option<tectora_relay::Config> {
+    let url = std::env::var("TECTORA_REPORT_URL").ok()?;
+    let key = std::env::var("TECTORA_REPORT_KEY").ok()?;
+    tectora_relay::Config::checked(&url, &key, true)
+}
+
+/// Sends the reports that wait (one, or all) like the app's drain: a relay
+/// failure becomes a retry or a permanent failure of the outbox.
+fn send_reports(
+    outbox: &tectora_core::outbox::Outbox,
+    cfg: &tectora_relay::Config,
+    only: Option<&str>,
+    force: bool,
+) -> (tectora_core::outbox::DrainResult, Option<String>) {
+    use tectora_core::outbox::{Receipt, SendFailure};
+    outbox.promote_local();
+    let mut issue = None;
+    let result = outbox.drain_only(only, store::now_ms(), force, &mut |job, zip| {
+        let id = job["id"].as_str().unwrap_or("");
+        let name = job["file_name"].as_str().unwrap_or("");
+        match tectora_relay::send(cfg, id, name, &job["meta"], zip) {
+            Ok(r) => {
+                issue = r.issue_url.clone();
+                Ok(Receipt {
+                    file_id: r.file_id,
+                    issue_url: r.issue_url,
+                })
+            }
+            Err(e) => {
+                let code = e.code().to_string();
+                Err(if e.permanent() {
+                    SendFailure::Permanent { code }
+                } else {
+                    SendFailure::Retry {
+                        code,
+                        after_s: e.retry_after_s(),
+                    }
+                })
+            }
+        }
+    });
+    (result, issue)
+}
+
+/// The state the UI is told: `sent`, `local`, else `waiting`.
+fn report_state(state: &str) -> &'static str {
+    if state == "sent" {
+        "sent"
+    } else if state == "local" {
+        "local"
+    } else {
+        "waiting"
+    }
+}
+
+/// The outbox counts the last poll reported (`report-outbox` event).
+static LAST_OUTBOX: std::sync::Mutex<Option<tectora_core::outbox::Counts>> =
+    std::sync::Mutex::new(None);
+
 /// What changed since the last poll, as the Tauri watcher would emit it.
 fn events(store: &Store, seen: &mut BTreeMap<PathBuf, SystemTime>) -> Value {
     let now = scan(&store.dir);
@@ -674,6 +797,12 @@ fn events(store: &Store, seen: &mut BTreeMap<PathBuf, SystemTime>) -> Value {
     }
     if live && let Some(status) = store.live() {
         out.push(json!({ "event": "live-status", "payload": status }));
+    }
+    let counts = tectora_core::outbox::Outbox::open_default().counts();
+    let mut last = LAST_OUTBOX.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != Some(counts) {
+        *last = Some(counts);
+        out.push(json!({ "event": "report-outbox", "payload": counts }));
     }
     Value::Array(out)
 }

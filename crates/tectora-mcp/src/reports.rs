@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::Value;
 use tectora_core::outbox::{DrainResult, Outbox, Receipt, SendFailure};
 use tectora_core::store::now_ms;
-use tectora_relay::{Config, Timeouts};
+pub use tectora_relay::{Config, Timeouts};
 
 /// What the MCP tools wait for one request: an AI client has no background
 /// thread to finish the upload later.
@@ -60,3 +60,6 @@ pub fn send_one(outbox: &Outbox, cfg: &Config, name: &str, t: Timeouts) -> Optio
     outbox.drain_only(Some(name), now_ms(), true, &mut sender(cfg, t, &mut issue));
     issue
 }
+
+/// What the app waits for one request.
+pub const APP_TIMEOUTS: Timeouts = Timeouts::DEFAULT;
