@@ -99,9 +99,6 @@ pub struct Settings {
     pub projects_dir: Option<PathBuf>,
     /// Inbox for technical drawings; `None` = `<projects_dir>/drawings`.
     pub drawings_dir: Option<PathBuf>,
-    /// Folder bug reports are saved to (a shared Drive or iCloud folder);
-    /// `None` = the user chooses per report, MCP uses `<library>/reports`.
-    pub reports_dir: Option<PathBuf>,
     /// UI language (`cs`, `sk`, `en`, `de`); `None` = system language.
     pub locale: Option<String>,
     pub theme: Theme,
@@ -139,7 +136,6 @@ impl Default for Settings {
         Self {
             projects_dir: None,
             drawings_dir: None,
-            reports_dir: None,
             locale: None,
             theme: Theme::System,
             roof_defaults: RoofDefaults::default(),
@@ -184,9 +180,6 @@ impl SettingsError {
             Self::InvalidValue("pitch_deg") => range("pitch_deg", RoofDefaults::PITCH, "°"),
             Self::InvalidValue("eave_height") => range("eave_height", RoofDefaults::EAVE, " m"),
             Self::InvalidValue("overhang") => range("overhang", RoofDefaults::OVERHANG, " m"),
-            Self::InvalidValue("reports_dir") => {
-                "reports_dir must not be one of the library's own folders (.activity, .files, .trash, files)".into()
-            }
             Self::InvalidValue("locale") => "locale must be cs, sk, en, de or null".into(),
             Self::InvalidValue("key") => "an unknown setting was given; see get_settings for the keys".into(),
             Self::InvalidValue("type") => {
@@ -297,12 +290,8 @@ impl Settings {
         match serde_json::from_slice::<Self>(&bytes) {
             Ok(mut s) => {
                 s.roof_defaults = s.roof_defaults.repaired();
-                // A hand-edited relative or empty folder is no folder: the
-                // reports go where the user chooses instead of into a
-                // folder relative to wherever the app was started.
-                if s.reports_dir.as_ref().is_some_and(|d| !d.is_absolute()) {
-                    s.reports_dir = None;
-                }
+                // The reports folder is gone (ADR 0008): an older file's key is dropped.
+                s.extra.remove("reports_dir");
                 (s, None)
             }
             Err(e) => (Self::default(), Some(format!("{}: {e}", path.display()))),
@@ -371,7 +360,7 @@ impl Settings {
     /// Checks values only; folders are checked by [`prepare_dir`] when they
     /// are chosen, so a missing network drive does not block other changes.
     pub fn validate(&self) -> Result<(), SettingsError> {
-        for dir in [&self.projects_dir, &self.drawings_dir, &self.reports_dir]
+        for dir in [&self.projects_dir, &self.drawings_dir]
             .into_iter()
             .flatten()
         {
@@ -404,7 +393,7 @@ impl Settings {
 
 /// Keys an update may change ([`Settings::patched`]).
 /// Settings an AI client may only ask for ([`Settings::patched_by_ai`]).
-pub const FOLDER_KEYS: [&str; 3] = ["projects_dir", "drawings_dir", "reports_dir"];
+pub const FOLDER_KEYS: [&str; 2] = ["projects_dir", "drawings_dir"];
 
 /// Folders an AI client asked to switch to, with who asked and why.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -553,10 +542,9 @@ pub fn is_network_path(path: &Path) -> bool {
     }
 }
 
-pub const EDITABLE_KEYS: [&str; 7] = [
+pub const EDITABLE_KEYS: [&str; 6] = [
     "projects_dir",
     "drawings_dir",
-    "reports_dir",
     "locale",
     "theme",
     "roof_defaults",
@@ -594,7 +582,7 @@ impl Settings {
                         }
                     }
                 }
-                ("projects_dir" | "drawings_dir" | "reports_dir" | "locale", Value::String(s))
+                ("projects_dir" | "drawings_dir" | "locale", Value::String(s))
                     if s.trim().is_empty() =>
                 {
                     doc[*key] = Value::Null;
@@ -605,28 +593,13 @@ impl Settings {
         let next: Settings =
             serde_json::from_value(doc).map_err(|_| SettingsError::InvalidValue("type"))?;
         next.validate()?;
-        // Reports never go into the library's own folders.
-        if patch.contains_key("reports_dir")
-            && let Some(dir) = &next.reports_dir
-        {
-            let lib = next.projects_dir();
-            let inside = [".activity", ".files", ".trash", "files"]
-                .iter()
-                .any(|d| dir.starts_with(lib.join(d)));
-            if inside {
-                return Err(SettingsError::InvalidValue("reports_dir"));
-            }
-        }
-        for key in ["projects_dir", "drawings_dir", "reports_dir"] {
+        for key in ["projects_dir", "drawings_dir"] {
             if prepare && patch.contains_key(key) {
                 let dir = match key {
-                    "projects_dir" => Some(next.projects_dir()),
-                    "drawings_dir" => Some(next.drawings_dir()),
-                    _ => next.reports_dir.clone(),
+                    "projects_dir" => next.projects_dir(),
+                    _ => next.drawings_dir(),
                 };
-                if let Some(dir) = dir {
-                    prepare_dir(&dir)?;
-                }
+                prepare_dir(&dir)?;
             }
         }
         Ok(next)
@@ -657,8 +630,7 @@ impl Settings {
         // waits for the user's yes.
         let moved = self.patched_with(&Value::Object(folders.clone()), false)?;
         let asks = moved.projects_dir() != self.projects_dir()
-            || moved.drawings_dir() != self.drawings_dir()
-            || moved.reports_dir != self.reports_dir;
+            || moved.drawings_dir() != self.drawings_dir();
         if asks {
             next.folder_request = Some(FolderRequest {
                 changes: folders,
@@ -898,7 +870,6 @@ impl Settings {
             "effective": {
                 "projects_dir": self.projects_dir(),
                 "drawings_dir": self.drawings_dir(),
-                "reports_dir": self.reports_dir,
                 "projects_dir_from_env": env_projects_dir().is_some(),
                 "default_projects_dir": builtin_projects_dir(),
                 "settings_file": settings_path(),

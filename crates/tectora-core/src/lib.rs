@@ -34,6 +34,7 @@ pub mod nfc;
 mod nfc_pairs;
 mod nfc_singletons;
 pub mod openings;
+pub mod outbox;
 pub mod quantities;
 pub mod raised;
 pub mod report;

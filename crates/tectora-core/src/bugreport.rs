@@ -1,6 +1,6 @@
 //! Bug reports: one ZIP with everything a developer (or an AI client) needs
-//! to reproduce a problem, written into a reports folder (a shared Drive or
-//! iCloud folder) or to a place the user chose. Offline: nothing is sent.
+//! to reproduce a problem. The ZIP is written by [`create`]; `outbox` queues
+//! it and the relay client sends it, or the user saves it as a file.
 //!
 //! ```text
 //! manifest.json               format, versions, entry list with sizes, what was left out
@@ -219,23 +219,6 @@ pub fn file_name(job_name: Option<&str>, stamp: &str) -> String {
     format!("{PREFIX}{stamp}-{slug}.{EXT}")
 }
 
-/// The folder reports go to: the setting, else `<library>/reports`.
-pub fn reports_dir(settings: &Settings, store: &Store) -> PathBuf {
-    settings
-        .reports_dir
-        .clone()
-        .unwrap_or_else(|| store.dir.join("reports"))
-}
-
-/// The folder inside the library, created when missing and refused when a
-/// link or a file is in its place.
-pub fn ensure_library_reports(store: &Store) -> Result<PathBuf, FileError> {
-    let dir = store.dir.join("reports");
-    fs::create_dir_all(&store.dir).map_err(|e| FileError::io(&store.dir, e))?;
-    crate::store::own_folder(&dir).map_err(|e| FileError::io(&dir, e))?;
-    Ok(dir)
-}
-
 /// Whether `name` is the name of a report file (not that it is one).
 pub fn is_report_name(name: &str) -> bool {
     name.starts_with(PREFIX)
@@ -278,7 +261,7 @@ fn bad_char(c: char) -> bool {
 
 /// Plain text: control, invisible and bidi characters removed (a line break
 /// kept when `multiline`), cut to `max` characters.
-fn text(s: &str, max: usize, multiline: bool) -> String {
+pub(crate) fn text(s: &str, max: usize, multiline: bool) -> String {
     let kept: String = s
         .chars()
         .filter(|&c| (multiline && c == '\n') || !bad_char(c))
@@ -286,7 +269,7 @@ fn text(s: &str, max: usize, multiline: bool) -> String {
     crate::edit::capped(&kept, max)
 }
 
-fn line(s: &str, max: usize) -> String {
+pub(crate) fn line(s: &str, max: usize) -> String {
     text(s, max, false)
 }
 
@@ -693,8 +676,16 @@ fn calculation_of(project: &Project) -> Value {
     }
 }
 
-fn gather(store: &Store, req: &Request) -> Gathered {
-    let inc = req.include;
+fn gather(store: &Store, req: &Request, forced: &[&str]) -> Gathered {
+    let mut inc = req.include;
+    let force_files = inc.files && forced.contains(&"files");
+    let force_history = inc.history && forced.contains(&"history");
+    if force_files {
+        inc.files = false;
+    }
+    if force_history {
+        inc.history = false;
+    }
     let mut g = Gathered {
         items: Vec::new(),
         left_out: Vec::new(),
@@ -801,7 +792,7 @@ fn gather(store: &Store, req: &Request) -> Gathered {
             }
         }
     }
-    if inc.history
+    if (inc.history || force_history)
         && let Ok(path) = store.activity_path(id)
     {
         match crate::store::read_newest_lines(&path, MAX_TEXT_ENTRY) {
@@ -812,7 +803,14 @@ fn gather(store: &Store, req: &Request) -> Gathered {
                 } else {
                     blank_history(newest)
                 };
-                if !out.is_empty() {
+                if force_history {
+                    // Dropped to fit the upload cap: said only when there
+                    // was a history to drop.
+                    if !out.is_empty() {
+                        g.left_out.push(LeftOut::new("history", "too_large"));
+                        g.missing.push("history");
+                    }
+                } else if !out.is_empty() {
                     put(&mut g.items, "job/history.jsonl", out);
                 }
             }
@@ -831,6 +829,19 @@ fn gather(store: &Store, req: &Request) -> Gathered {
                 g.left_out.push(LeftOut::new("files", "unreadable"));
                 g.missing.push("files");
             }
+        }
+        Ok(attachments) if force_files => {
+            // Dropped to fit the upload cap; still listed, not packed.
+            let list: Vec<Value> = attachments
+                .iter()
+                .take(MAX_FILES + 1)
+                .map(|a| json!({ "name": line(&a.name, MAX_STRING), "size": a.size, "included": false }))
+                .collect();
+            if !list.is_empty() {
+                g.left_out.push(LeftOut::new("files", "too_large"));
+                g.missing.push("files");
+            }
+            job["attachments"] = json!(list);
         }
         Ok(attachments) => {
             let total: u64 = attachments.iter().map(|a| a.size).sum();
@@ -980,6 +991,18 @@ fn check_folder(dir: &Path) -> Result<(), FileError> {
 /// destination when it fails: the ZIP is built beside it as a `.part` file
 /// and moved into place at the end.
 pub fn create(store: &Store, req: &Request, dest: &Dest) -> Result<Created, FileError> {
+    create_with(store, req, dest, &[])
+}
+
+/// [`create`] that leaves out the `forced` parts (`files`, `history`,
+/// `model`) with the reason `too_large`, to fit a report into an upload cap.
+/// A part that was not in the report anyway is not named.
+pub fn create_with(
+    store: &Store,
+    req: &Request,
+    dest: &Dest,
+    forced: &[&str],
+) -> Result<Created, FileError> {
     if req.description.chars().count() > MAX_DESCRIPTION {
         return Err(FileError::new(
             "too_large",
@@ -1007,7 +1030,7 @@ pub fn create(store: &Store, req: &Request, dest: &Dest) -> Result<Created, File
         .filter(|s| req.source == Source::App && stamp_ok(s));
     let stamp = local.map_or_else(|| utc_stamp(now), str::to_string);
 
-    let mut g = gather(store, req);
+    let mut g = gather(store, req, forced);
     let inc = req.include;
     let from_ui = req.source == Source::App;
     let client = if from_ui { &req.client } else { &Value::Null };
@@ -1042,6 +1065,10 @@ pub fn create(store: &Store, req: &Request, dest: &Dest) -> Result<Created, File
             None => {}
         }
         match req.model_png.as_deref() {
+            Some(_) if forced.contains(&"model") => {
+                g.left_out.push(LeftOut::new("model", "too_large"));
+                lost = true;
+            }
             Some(png) if png.len() > MAX_MODEL_PNG => {
                 g.left_out.push(LeftOut::new("model", "too_large"));
                 lost = true;
@@ -1137,6 +1164,13 @@ pub fn create(store: &Store, req: &Request, dest: &Dest) -> Result<Created, File
         body: Body::Bytes(report_bytes),
     }];
     items.append(&mut g.items);
+    // The parts dropped to fit come first, in the order they were dropped.
+    g.left_out.sort_by_key(|l| {
+        ["files", "history", "model"]
+            .iter()
+            .position(|p| *p == l.part && forced.contains(p))
+            .unwrap_or(usize::MAX)
+    });
     let manifest = Manifest {
         format: FORMAT.into(),
         format_version: FORMAT_VERSION,
