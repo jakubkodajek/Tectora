@@ -39,8 +39,9 @@ use crate::roof::{CalcError, CalcErrorKind, OpeningKind, RoofGeometry};
 /// Why the engine gives no roof.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Failure {
-    /// DACAD's calculation ends with this error too: report it.
-    Dacad(CalcError),
+    /// DACAD's calculation ends with this error too: report it (boxed:
+    /// the error is large and every `Result` of the engine carries it).
+    Dacad(Box<CalcError>),
     /// Something DACAD would not run into (our RD2, a gap of the port):
     /// fall back to the sweep engine.
     Ours(String),
@@ -247,14 +248,15 @@ const NO_END_MESSAGE: &str = "the roof calculation does not end";
 /// Whether DACAD ends with the same error.
 fn classify(e: CoreError) -> Failure {
     let dacad = |e: &CoreError, kind: CalcErrorKind, id: Option<u32>, message: String| {
-        Failure::Dacad(CalcError {
+        Failure::Dacad(Box::new(CalcError {
             kind,
             code: e.dacad_code(),
             message_id: id,
             message,
             parts: Vec::new(),
             edges: Vec::new(),
-        })
+            towers: Vec::new(),
+        }))
     };
     match &e {
         CoreError::Cut { msg, .. } => {

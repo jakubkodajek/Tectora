@@ -986,10 +986,32 @@ pub struct Shaft {
     pub on_roof: bool,
     /// Whether some of the roof around it is higher than the tower's base.
     pub base_below_roof: bool,
+    /// The shaft stands in a building whose roof is not calculated (an
+    /// error, or input the calculation left out): it is not beside the
+    /// roofs, and its walls have no figure (`wall_area` is 0) until that
+    /// roof is (audit ERR-005).
+    pub roof_failed: bool,
 }
 
-/// The shaft of tower `t` on the calculated roofs.
-pub fn shaft(t: &Tower, geos: &[crate::roof::RoofGeometry]) -> Shaft {
+/// Whether the plan point `p` lies within the walls of a part of
+/// `project` with roofed walls that has no roof face in `geos` (same order
+/// as `project.parts`): its roof failed or was left out.
+fn in_failed_building(
+    project: &crate::Project,
+    geos: &[crate::roof::RoofGeometry],
+    p: Point2,
+) -> bool {
+    project.parts.iter().enumerate().any(|(i, part)| {
+        let roofed = part.edges.iter().any(|e| !e.is_gable());
+        let failed = geos
+            .get(i)
+            .is_none_or(|g| g.error.is_some() || g.faces.is_empty());
+        roofed && failed && part.edges.len() >= 3 && point_in(&part.outline(), p)
+    })
+}
+
+/// The shaft of tower `t` on the calculated roofs `geos` of `project`.
+pub fn shaft(t: &Tower, project: &crate::Project, geos: &[crate::roof::RoofGeometry]) -> Shaft {
     let fp = t.footprint();
     let n = fp.len();
     let mut on_roof = false;
@@ -1037,11 +1059,13 @@ pub fn shaft(t: &Tower, geos: &[crate::roof::RoofGeometry]) -> Shaft {
         }
         wall_area += len * sum / k as f64;
     }
+    let roof_failed = !on_roof && in_failed_building(project, geos, t.center);
     Shaft {
         bottom,
-        wall_area,
+        wall_area: if roof_failed { 0.0 } else { wall_area },
         on_roof,
         base_below_roof: below,
+        roof_failed,
     }
 }
 

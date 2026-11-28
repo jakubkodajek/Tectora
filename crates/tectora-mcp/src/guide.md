@@ -67,7 +67,8 @@ The tools cover every operation of the Tectora editor:
 - Parts: `add_part`, `add_shape_part` (standard roofs and regular polygons),
   `transform_part` (move, rotate, mirror, with copies; a mirror adds 0 or 1
   copy), `delete_items`,
-  `clear_roof` (remove everything drawn and start on an empty canvas),
+  `clear_roof` (remove everything drawn, towers included, and start on an
+  empty canvas),
   `set_part_height` (the editor's "Building height": `height` is the top of
   the walls; the roof, breaks, half-hips, dormers and chimneys move with it
   and each wall keeps its own eave; or `eave_height` for every wall at one
@@ -322,8 +323,16 @@ The tools cover every operation of the Tectora editor:
 - The shaft is cut out of the roofs like a chimney (WV/WH/WS lines). Its
   `base_height` must be above the roof around it: `calc` lists each tower
   with `shaft.base_below_roof` when it is not. `calc` also lists every
-  tier's pitch, area and material, the roof area and the wall area
-  (lantern), and the shaft's cladding area above the roof.
+  tier's pitch, area and material (a material number from 1, as on walls),
+  the roof area and the wall area (lantern), and the shaft's cladding area
+  above the roof. `shaft.on_roof: false` is a tower beside every roof,
+  measured from the ground; `shaft.roof_failed: true` is a tower in a
+  building whose roof is not calculated: its cladding area is `null` until
+  that roof is fixed. A roof error or a 0 m² roof that a shaft causes names
+  it in `towers` (indices), not as a chimney.
+- Refusals of `set_tower` and of arcs that are not about a value end with
+  their code: `(tower_limit)` (a job has at most 50 towers),
+  `(tower_missing)`, `(arc_no_wall)`, `(arc_no_corner)`, `(arc_no_part)`.
 - A cone on a round building drawn as walls (DACAD's way) still works; a
   tower is simpler and exact.
 - A rounded building corner is `edit_walls` `round_corner {index, radius}`
@@ -407,8 +416,10 @@ its kind and code, end points, true and plan length, its own slope, the
 heights of its ends above the ground (`z_low`, `z_high`: e.g. the ridge
 height, the eave height) and the faces it bounds with their pitch and
 material. `counted_length` is what the results count (a chimney or hole on
-the line takes its part off); per code it adds up to `calc`'s line totals
-without hand-drawn lines. Buildings without a roof are named in
+the line takes its part off, and so does a tower's shaft); per code it adds
+up to `calc`'s line totals without hand-drawn lines. Each tower's lines
+(eave T, pitch break c, P, hip G) follow with `tower` and `tier` instead of
+`part` and `faces`, and `closed` for a ring; `part` leaves them out. Buildings without a roof are named in
 `not_calculated`. Filter with `part` and `code` (`"F"` ridges, `"O"` all
 verges). Use it for "how high is the ridge / this eave", "which pitches meet
 at this hip".

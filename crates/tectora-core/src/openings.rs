@@ -75,6 +75,8 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             e.edges = crate::check::coplanar_error_walls(part, e.kind);
         }
     }
+    // A failure a tower's shaft causes names the tower (audit ERR-005).
+    blame_tower_shafts(&clean, &mut geos);
     // Windows, chimneys and openings the calculation left out: said, the
     // result unchanged.
     for (part, mut w) in crate::check::off_roof(&clean, &geos) {
@@ -152,6 +154,57 @@ pub fn with_tower_shafts(project: &Project) -> std::borrow::Cow<'_, Project> {
         }
     }
     std::borrow::Cow::Owned(p)
+}
+
+/// Names the towers whose shaft ([`with_tower_shafts`], cut out like a
+/// chimney) causes what `geos` (in the order of `project.parts`) report,
+/// so the user is not sent to look for a chimney (audit ERR-005): on a
+/// [`CalcErrorKind::NonConvexOpening`](crate::roof::CalcErrorKind) the
+/// shafts the core does not take as convex ([`dacad_convex`]), and on a
+/// [`WarningKind::NoRoofArea`] the shafts that cover every wall corner of
+/// the building. The roofs themselves are not changed.
+fn blame_tower_shafts(project: &Project, geos: &mut [RoofGeometry]) {
+    if project.towers.is_empty() {
+        return;
+    }
+    let shafts: Vec<(usize, Vec<Point2>)> = project
+        .towers
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.problems().is_empty())
+        .map(|(k, t)| (k, t.footprint()))
+        .filter(|(_, fp)| fp.len() >= 3)
+        .collect();
+    let not_convex: Vec<usize> = shafts
+        .iter()
+        .filter(|(_, fp)| !dacad_convex(fp))
+        .map(|(k, _)| *k)
+        .collect();
+    for (i, geo) in geos.iter_mut().enumerate() {
+        if let Some(e) = geo.error.as_mut()
+            && e.kind == crate::roof::CalcErrorKind::NonConvexOpening
+        {
+            e.towers = not_convex.clone();
+        }
+        let Some(part) = project.parts.get(i) else {
+            continue;
+        };
+        let corners = part.outline();
+        if corners.is_empty() {
+            continue;
+        }
+        for w in geo
+            .warnings
+            .iter_mut()
+            .filter(|w| w.kind == WarningKind::NoRoofArea)
+        {
+            w.towers = shafts
+                .iter()
+                .filter(|(_, fp)| corners.iter().all(|&c| on_or_inside(fp, c, 1e-6)))
+                .map(|(k, _)| *k)
+                .collect();
+        }
+    }
 }
 
 /// Index in the cleaned project of each part, and its edge count when it
@@ -614,12 +667,12 @@ fn generate_roofs(project: &Project) -> Vec<RoofGeometry> {
                 return match depart(project, e.kind) {
                     Some(geo) => vec![geo],
                     None => vec![RoofGeometry {
-                        error: Some(e),
+                        error: Some(*e),
                         ..RoofGeometry::default()
                     }],
                 };
             }
-            several_after_error(project, e)
+            several_after_error(project, *e)
         }
         // A failure of ours: the sweep, checked and said.
         Err(crate::engine::Failure::Ours(_)) => fallback_checked(project),
@@ -637,6 +690,7 @@ fn not_closed(part: Option<usize>) -> crate::roof::CalcError {
         message: "the roof faces do not close".into(),
         parts: part.into_iter().collect(),
         edges: Vec::new(),
+        towers: Vec::new(),
     }
 }
 
@@ -675,7 +729,7 @@ fn fallback_checked(project: &Project) -> Vec<RoofGeometry> {
                 Ok(mut geos) => geos.pop().filter(|_| geos.is_empty()).ok_or(None),
                 Err(crate::engine::Failure::Dacad(mut e)) => depart(&one, e.kind).ok_or({
                     e.parts = vec![k];
-                    Some(e)
+                    Some(*e)
                 }),
                 Err(crate::engine::Failure::Ours(_)) => swept(&one).ok_or(None),
             };
@@ -2786,5 +2840,55 @@ mod tests {
         assert!((total(geo, "T") - 20.0).abs() < 1e-6);
         assert!(total(geo, "P") < 1e-9);
         assert!(total(geo, "OS") > 4.0);
+    }
+
+    /// Audit ERR-005: a non-convex-opening error names the towers whose
+    /// shaft the core does not take as convex (a 10 cm hexagon with
+    /// rounded corners, 12.7 km from the origin, where the core's float32
+    /// reads fold a corner in), and only those; a chimney's error names
+    /// none.
+    #[test]
+    fn a_non_convex_opening_error_names_the_towers_whose_shaft_is_not_convex() {
+        use crate::roof::{CalcError, CalcErrorKind};
+        use crate::tower::{Tower, TowerShape};
+        let mut bad = Tower::pyramid(Point2::new(9000.0, 9000.0), 0.1, 16.0, 1.0);
+        bad.shape = TowerShape::Polygon;
+        bad.sides = 6;
+        bad.rotation_deg = 33.0;
+        bad.corner_radius = bad.max_corner_radius() * 8.0 / 11.0;
+        assert!(bad.problems().is_empty());
+        assert!(!dacad_convex(&bad.footprint()));
+        let good = Tower::pyramid(Point2::new(9003.0, 9000.0), 1.0, 16.0, 1.0);
+        let mut p = gable();
+        p.towers = vec![good.clone(), bad];
+        let error = |kind| CalcError {
+            kind,
+            code: None,
+            message_id: None,
+            message: String::new(),
+            parts: Vec::new(),
+            edges: Vec::new(),
+            towers: Vec::new(),
+        };
+        let mut geos = vec![RoofGeometry {
+            error: Some(error(CalcErrorKind::NonConvexOpening)),
+            ..RoofGeometry::default()
+        }];
+        blame_tower_shafts(&p, &mut geos);
+        assert_eq!(geos[0].error.as_ref().unwrap().towers, vec![1]);
+        // Another error is no shaft's doing; nor is any with convex shafts.
+        let mut geos = vec![RoofGeometry {
+            error: Some(error(CalcErrorKind::Cut)),
+            ..RoofGeometry::default()
+        }];
+        blame_tower_shafts(&p, &mut geos);
+        assert!(geos[0].error.as_ref().unwrap().towers.is_empty());
+        p.towers = vec![good];
+        let mut geos = vec![RoofGeometry {
+            error: Some(error(CalcErrorKind::NonConvexOpening)),
+            ..RoofGeometry::default()
+        }];
+        blame_tower_shafts(&p, &mut geos);
+        assert!(geos[0].error.as_ref().unwrap().towers.is_empty());
     }
 }

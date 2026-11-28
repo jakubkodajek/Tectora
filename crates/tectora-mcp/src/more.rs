@@ -508,7 +508,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "clear_roof",
-            "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
+            "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, towers, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
             "inputSchema": schema(json!({
                 "id": id,
                 "summary": summary_prop(),
@@ -530,7 +530,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "base_height": { "type": "number" },
                 "tiers": { "type": "array", "items": { "type": "object", "properties": {
                     "rise": { "type": "number" }, "top_width": { "type": "number" },
-                    "bulge": { "type": "number" }, "material": { "type": "integer", "minimum": 1, "maximum": 5 }
+                    "bulge": { "type": "number" }, "material": { "type": "integer", "minimum": 1, "description": "Roof material as on walls: 1 tiles, 2 sheet metal (default), 3 stone, 4 slate, 5 solar panels." }
                 }, "required": ["rise", "top_width"] } },
                 "summary": summary_prop(),
             }), &["id", "summary"]),
@@ -1671,8 +1671,11 @@ impl Server {
                         top_width: arg_f64(v, "top_width")?
                             .ok_or_else(|| at("missing `top_width`".into()))?,
                         bulge: arg_f64(v, "bulge")?.unwrap_or(0.0),
-                        material: opt::<u8>(v, "material")?
-                            .unwrap_or(tectora_core::tower::DEFAULT_TOWER_MATERIAL),
+                        // As on walls (audit: 0 counted as tiles).
+                        material: match v.get("material") {
+                            None | Some(Value::Null) => tectora_core::tower::DEFAULT_TOWER_MATERIAL,
+                            Some(m) => crate::material_arg(m).map_err(at)?,
+                        },
                     })
                 })
                 .collect::<Result<_, String>>()?;
@@ -3819,6 +3822,126 @@ mod tests {
             )
             .unwrap_err();
         assert!(e.contains("does not exist"), "{e}");
+    }
+
+    /// Audit (towers) "to check": a tier's material is taken as a wall's
+    /// is: a material number from 1; 0 (counted as tiles before) and what
+    /// is no material number are refused and nothing is saved.
+    #[test]
+    fn set_tower_takes_a_tier_material_as_walls_do() {
+        let (mut s, id) = setup();
+        for bad in [json!(0), json!(-1), json!(256), json!(2.5), json!("2")] {
+            let e = s
+                .call_tool(
+                    "set_tower",
+                    &json!({ "id": id, "summary": "x", "center": [5, 4], "width": 2, "base_height": 15,
+                             "tiers": [{ "rise": 1, "top_width": 0, "material": bad }] }),
+                )
+                .unwrap_err();
+            assert!(e.contains("material"), "{bad}: {e}");
+            assert!(s.store.load(&id).unwrap().towers.is_empty(), "{bad}");
+        }
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "x", "center": [5, 4], "width": 2, "base_height": 15,
+                    "tiers": [{ "rise": 1, "top_width": 0, "material": 4 }] }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().towers[0].tiers[0].material, 4);
+    }
+
+    /// Audit ERR-002: `clear_roof` removes the towers too, also when they
+    /// are all that is drawn.
+    #[test]
+    fn clear_roof_removes_the_towers() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "t", "preset": "onion", "center": [5, 4], "width": 2, "base_height": 15 }),
+        );
+        call(
+            &mut s,
+            "clear_roof",
+            json!({ "id": id, "summary": "Start over" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.parts.is_empty() && p.towers.is_empty(), "{:?}", p.towers);
+        let c = call(&mut s, "calc", json!({ "id": id }));
+        assert!(c.get("towers").is_none(), "{c}");
+        // A tower alone is something to clear.
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "t", "center": [5, 4], "width": 2, "base_height": 15 }),
+        );
+        call(
+            &mut s,
+            "clear_roof",
+            json!({ "id": id, "summary": "again" }),
+        );
+        assert!(s.store.load(&id).unwrap().towers.is_empty());
+    }
+
+    /// Audit MATH-013: `line_details` lists the towers' lines (with tower
+    /// and tier), so its counted lengths add up to `calc`'s line totals.
+    #[test]
+    fn line_details_add_up_to_calc_with_a_tower() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "t", "center": [5, 4], "width": 2, "base_height": 15,
+                    "tiers": [{ "rise": 1, "top_width": 1 }, { "rise": 1, "top_width": 0 }] }),
+        );
+        let c = call(&mut s, "calc", json!({ "id": id }));
+        let d = call(&mut s, "line_details", json!({ "id": id }));
+        let lines = d["lines"].as_array().unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l["tower"] == 0 && l["tier"] == 1 && l["code"] == "G"),
+            "{d}"
+        );
+        let codes = c["total"]["lines_by_dacad_code_m"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{c}"));
+        for (code, total) in codes {
+            let sum: f64 = lines
+                .iter()
+                .filter(|l| l["code"] == code.as_str())
+                .map(|l| l["counted_length"].as_f64().unwrap())
+                .sum();
+            assert!(
+                (sum - total.as_f64().unwrap()).abs() < 0.011,
+                "{code}: {sum} vs {total}"
+            );
+        }
+        // A building's lines only: the tower's are none of the part's.
+        let d = call(&mut s, "line_details", json!({ "id": id, "part": 0 }));
+        assert!(
+            d["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l.get("tower").is_none())
+        );
+        // The code filter applies to them as well.
+        let d = call(&mut s, "line_details", json!({ "id": id, "code": "G" }));
+        assert!(
+            d["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["code"] == "G")
+        );
+        assert!(
+            d["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["tower"] == 0)
+        );
     }
 
     #[test]

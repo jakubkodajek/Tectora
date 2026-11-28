@@ -262,6 +262,11 @@ pub struct RoofWarning {
     /// ([`WarningKind::ManualFacesOverlap`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_face: Option<usize>,
+    /// The towers (indices into `project.towers`) whose shaft the finding
+    /// is about: a shaft that took all of the roof
+    /// ([`WarningKind::NoRoofArea`], audit ERR-005).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub towers: Vec<usize>,
 }
 
 impl RoofWarning {
@@ -275,6 +280,7 @@ impl RoofWarning {
             item: None,
             face: None,
             other_face: None,
+            towers: Vec::new(),
         }
     }
 }

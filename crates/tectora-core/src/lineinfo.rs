@@ -122,6 +122,87 @@ pub fn line_details_of(project: &Project, geos: &[RoofGeometry]) -> Vec<LineDeta
     out
 }
 
+/// One roof line of a tower ([`crate::tower::TowerLine`]): a closed ring
+/// (eave T, pitch break c, Pult P) or a hip G up a sharp corner.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TowerLineDetail {
+    /// The tower, index into `project.towers` from 0.
+    pub tower: usize,
+    /// The tier the line belongs to, from 0 at the bottom.
+    pub tier: usize,
+    /// DACAD's line code (T, c, P, G).
+    pub code: &'static str,
+    /// Whether the line is a closed ring around the tower (`a` = `b`, its
+    /// first point).
+    pub closed: bool,
+    pub a: [f64; 3],
+    pub b: [f64; 3],
+    /// True length, m (a ring's along the tower's fine outline).
+    pub length: f64,
+    /// The length the results count, m: the whole line (nothing is cut
+    /// out of a tower's roof).
+    pub counted_length: f64,
+    /// Length in plan, m (a level ring's is its length).
+    pub plan_length: f64,
+    /// The line's own inclination against the horizontal, degrees.
+    pub slope_deg: f64,
+    pub z_low: f64,
+    pub z_high: f64,
+}
+
+/// Every roof line of the towers of `project`, tower by tower in line
+/// order (audit MATH-013: the line details left them out, so their lines
+/// did not add up to the results). Towers with problems have none.
+pub fn tower_line_details(project: &Project) -> Vec<TowerLineDetail> {
+    let mut out = Vec::new();
+    for (ti, r) in crate::tower::results(project).iter().enumerate() {
+        let Some(r) = r else { continue };
+        for l in &r.lines {
+            let a = l.points.first().copied().unwrap_or([0.0; 3]);
+            let b = if l.closed {
+                a
+            } else {
+                l.points.last().copied().unwrap_or(a)
+            };
+            let zs = l.points.iter().map(|p| p[2]);
+            let z_low = zs.clone().fold(f64::INFINITY, f64::min);
+            let z_high = zs.fold(f64::NEG_INFINITY, f64::max);
+            let (z_low, z_high) = if z_low <= z_high {
+                (z_low, z_high)
+            } else {
+                (a[2], a[2])
+            };
+            let (plan, slope) = if l.closed {
+                (l.length, 0.0)
+            } else {
+                let plan = (b[0] - a[0]).hypot(b[1] - a[1]);
+                let dz = (b[2] - a[2]).abs();
+                let slope = if plan < 1e-9 && dz < 1e-9 {
+                    0.0
+                } else {
+                    dz.atan2(plan).to_degrees()
+                };
+                (plan, slope)
+            };
+            out.push(TowerLineDetail {
+                tower: ti,
+                tier: l.tier,
+                code: l.code,
+                closed: l.closed,
+                a,
+                b,
+                length: l.length,
+                counted_length: l.length,
+                plan_length: plan,
+                slope_deg: slope,
+                z_low,
+                z_high,
+            });
+        }
+    }
+    out
+}
+
 /// The length each line of `geo` counts with in the results. The core
 /// takes the parts of lines on or under chimneys, openings and dormers off
 /// per code (`minus_lines`), not per line: each code's total is shared out
@@ -140,6 +221,15 @@ fn counted_lengths(project: &Project, geo: &RoofGeometry) -> Vec<f64> {
         .chain(&project.roof_openings)
         .map(|c| c.corners.clone())
         .chain(geo.footprints.iter().cloned())
+        // A tower's shaft, cut out of the roof like a chimney
+        // (`openings::with_tower_shafts`, audit MATH-013).
+        .chain(
+            project
+                .towers
+                .iter()
+                .filter(|t| t.problems().is_empty())
+                .map(|t| t.footprint()),
+        )
         // A dormer's walls closed along the roof wall it stands on.
         .chain(project.dormers.iter().map(|d| {
             let mut o: Vec<Point2> = d.edges.iter().map(|e| e.start).collect();
@@ -395,6 +485,10 @@ mod tests {
             assert!(l.counted_length >= 0.0, "{name}: {l:?}");
             *by.entry(l.code.to_string()).or_default() += l.counted_length;
         }
+        // The towers' own lines are in the results too (MATH-013).
+        for l in tower_line_details(p) {
+            *by.entry(l.code.to_string()).or_default() += l.counted_length;
+        }
         for (code, t) in &totals {
             let got = by.get(code).copied().unwrap_or(0.0);
             assert!(
@@ -403,6 +497,21 @@ mod tests {
             );
         }
         d
+    }
+
+    /// Audit MATH-013: a tower's shaft is cut out like a chimney, so the
+    /// parts of lines under it come off as under a chimney: on the ridge,
+    /// across the eave and over the whole roof.
+    #[test]
+    fn lines_count_without_their_parts_under_a_towers_shaft() {
+        use crate::edit::towers::{TowerPreset, preset};
+        let base = examples::find("hip").unwrap().project();
+        for (c, w) in [((6.0, 4.0), 1.0), ((6.0, 0.0), 1.5), ((6.0, 4.0), 30.0)] {
+            let mut p = base.clone();
+            p.towers
+                .push(preset(TowerPreset::Pyramid, Point2::new(c.0, c.1), w, 12.0));
+            assert_counted_add_up(&format!("tower {w} m at {c:?}"), &p);
+        }
     }
 
     /// Hip roof 12 × 8 m: a 1 m chimney standing on the eave takes 1 m off

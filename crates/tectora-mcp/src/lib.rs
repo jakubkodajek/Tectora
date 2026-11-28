@@ -223,6 +223,10 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
             "the building stands {:.1} km from the plan's origin; the calculation works in single precision on plan coordinates, so that far out the roof area can be wrong (about 1 % at 2.5 km, far more beyond 60 km). Move the whole plan close to the origin (transform_part) and calculate again",
             w.value / 1000.0
         ),
+        WarningKind::NoRoofArea if !w.towers.is_empty() => format!(
+            "the roof of this building has no area (0.00 m2): the shaft of {} covers the whole building and took all of its roof; make the tower smaller (cm typed as m?) or move it",
+            towers_named(&w.towers)
+        ),
         WarningKind::NoRoofArea => "the roof of this building has no area (0.00 m2): a chimney or roof opening larger than the roof took all of it (cm typed as m), or every eave is at about 100 m, where the calculation closes the faces empty; check the chimneys, openings and eave heights".to_string(),
         WarningKind::ObjectsOverlap => format!(
             "{:.0} pair(s) of objects on this roof lie on top of each other in plan (windows, chimneys, roof openings, dormers); each is still deducted and its lines counted in full. Usually one object was added twice: delete the duplicate",
@@ -285,7 +289,27 @@ pub fn warning(w: &tectora_core::check::RoofWarning) -> Value {
     if let Some(f) = w.other_face {
         v["other_face"] = json!(f);
     }
+    if !w.towers.is_empty() {
+        v["towers"] = json!(w.towers);
+    }
     v
+}
+
+/// A roof material number as walls and tower tiers take it: an integer
+/// from 1 (DACAD numbering), at most 255; 0, which the calculation would
+/// count as tiles, is refused.
+pub(crate) fn material_arg(m: &Value) -> Result<u8, String> {
+    match m.as_u64() {
+        Some(m @ 1..=255) => Ok(m as u8),
+        _ => Err("material must be a material number from 1 (1 tiles, 2 sheet metal, 3 stone, 4 slate, 5 solar panels)".into()),
+    }
+}
+
+/// "tower 2 (0-based)" or "towers 0, 3 (0-based)".
+fn towers_named(towers: &[usize]) -> String {
+    let list: Vec<String> = towers.iter().map(usize::to_string).collect();
+    let noun = if towers.len() == 1 { "tower" } else { "towers" };
+    format!("{noun} {} (0-based)", list.join(", "))
 }
 
 /// The roof line codes `line_details` filters by (DACAD's codes as
@@ -322,6 +346,17 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
     // (review ERR-005: the second used to overwrite the first).
     let mut text = message.to_string();
     let mut v = json!({ "kind": e.kind });
+    // A tower's shaft is cut out like a chimney: name the tower, not a
+    // chimney the job may not have (audit 2026-11-28 ERR-005).
+    if !e.towers.is_empty() {
+        v["towers"] = json!(e.towers);
+        if e.kind == CalcErrorKind::NonConvexOpening {
+            text = format!(
+                "the shaft of {} is not convex where it is cut out of the roof, so no roof is calculated; change its corner radius or number of sides",
+                towers_named(&e.towers)
+            );
+        }
+    }
     if let [outer, inner] = e.edges[..] {
         v["edges"] = json!(e.edges);
         text.push_str(&format!(
@@ -634,10 +669,7 @@ fn apply_edge_fields_with(
         None => {}
     }
     if let Some(m) = v.get("material") {
-        edge.material = match m.as_u64() {
-            Some(m @ 1..=255) => m as u8,
-            _ => return Err("material must be a material number from 1 (1 tiles, 2 sheet metal, 3 stone, 4 slate, 5 solar panels)".into()),
-        };
+        edge.material = material_arg(m)?;
     }
     if let Some(p) = v.get("priority") {
         edge.priority = match p.as_u64().or_else(|| p.as_bool().map(u64::from)) {
@@ -1274,7 +1306,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "line_details",
-            "description": "Details of every calculated roof line, as the editor shows them when the user points at or clicks a line in the plan or 3D: `kind` (eave, verge, ridge, hip, valley, pult, knick, gorge, abutment…), DACAD `code`, end points `a`/`b` (x, y, z in m), true `length` and `plan_length`, the line's own `slope_deg`, the heights `z_low`/`z_high` of its ends above the ground, and the roof `faces` it bounds (`part`, `face`, `wall` index, `pitch_deg`, `material`). `part` (index from 0) limits the parts, `code` the line codes (e.g. \"F\" for ridges; \"O\" matches OL, OR and OS, \"W\" all abutments). `length` is the line as drawn; `counted_length` is what the results count (less the parts on or under chimneys, openings and dormers), and summed per code it gives `calc`'s line totals without hand-drawn lines. Buildings the calculation gave no roof are listed in `not_calculated` (`part`, `name`, `error`); when no line is left the call fails with that reason.",
+            "description": "Details of every calculated roof line, as the editor shows them when the user points at or clicks a line in the plan or 3D: `kind` (eave, verge, ridge, hip, valley, pult, knick, gorge, abutment…), DACAD `code`, end points `a`/`b` (x, y, z in m), true `length` and `plan_length`, the line's own `slope_deg`, the heights `z_low`/`z_high` of its ends above the ground, and the roof `faces` it bounds (`part`, `face`, `wall` index, `pitch_deg`, `material`). `part` (index from 0) limits the parts, `code` the line codes (e.g. \"F\" for ridges; \"O\" matches OL, OR and OS, \"W\" all abutments). `length` is the line as drawn; `counted_length` is what the results count (less the parts on or under chimneys, openings and dormers), and summed per code it gives `calc`'s line totals without hand-drawn lines. Each tower's roof lines follow the buildings' with `tower` and `tier` (index from 0) instead of `part` and `faces`, and `closed` for a ring around the tower (eave T, pitch break c, P; `a` = `b`, its first point) as against a hip G; giving `part` leaves them out. Buildings the calculation gave no roof are listed in `not_calculated` (`part`, `name`, `error`); when no line is left the call fails with that reason.",
             "inputSchema": schema(json!({
                 "id": { "type": "string" },
                 "part": { "type": "integer", "minimum": 0, "description": "Only this part's lines." },
@@ -1954,7 +1986,7 @@ impl Server {
                         .iter()
                         .map(|t| {
                             let r = t.calculate();
-                            let sh = tectora_core::tower::shaft(t, &geos);
+                            let sh = tectora_core::tower::shaft(t, &p, &geos);
                             json!({
                                 "label": t.label,
                                 "roof_area_m2": r.as_ref().map(|r| round(r.roof_area(), 2)),
@@ -1968,9 +2000,12 @@ impl Server {
                                     "top_height_m": round(k.top_height, 3),
                                 })).collect::<Vec<_>>()),
                                 "flat_top_m2": r.as_ref().and_then(|r| r.cap.as_ref()).map(|c| round(c.area, 2)),
+                                // In a building whose roof failed the
+                                // shaft's walls have no figure (ERR-005).
                                 "shaft": {
-                                    "wall_area_m2": round(sh.wall_area, 2),
+                                    "wall_area_m2": (!sh.roof_failed).then(|| round(sh.wall_area, 2)),
                                     "on_roof": sh.on_roof,
+                                    "roof_failed": sh.roof_failed,
                                     "base_below_roof": sh.base_below_roof,
                                 },
                             })
@@ -2067,10 +2102,10 @@ impl Server {
                     format!("Reading the roof lines of “{}”", p.name),
                     Some(&id),
                 );
-                let (geos, lines) = tectora_core::model::guarded(|| {
+                let (geos, lines, tower_lines) = tectora_core::model::guarded(|| {
                     let geos = tectora_core::openings::generate_project(&p);
                     let lines = tectora_core::lineinfo::line_details_of(&p, &geos);
-                    (geos, lines)
+                    (geos, lines, tectora_core::lineinfo::tower_line_details(&p))
                 })?;
                 // Buildings without a roof have no lines: say so instead of
                 // an empty list that reads as "no such lines".
@@ -2106,11 +2141,23 @@ impl Server {
                         }))
                     })
                     .collect();
-                let lines: Vec<_> = lines
+                let keep = |c: &str| code.as_deref().is_none_or(|k| c.starts_with(k));
+                let mut lines: Vec<Value> = lines
                     .into_iter()
                     .filter(|l| only.is_none_or(|i| l.part == i))
-                    .filter(|l| code.as_deref().is_none_or(|c| l.code.starts_with(c)))
+                    .filter(|l| keep(l.code))
+                    .map(|l| serde_json::to_value(l).unwrap_or(Value::Null))
                     .collect();
+                // The towers' lines (audit MATH-013), with their tower and
+                // tier and no part: a tower belongs to no building.
+                if only.is_none() {
+                    lines.extend(
+                        tower_lines
+                            .into_iter()
+                            .filter(|l| keep(l.code))
+                            .map(|l| serde_json::to_value(l).unwrap_or(Value::Null)),
+                    );
+                }
                 if lines.is_empty() && !missing.is_empty() {
                     return Err(format!(
                         "the roof is not calculated, so it has no lines: {}",
@@ -3631,6 +3678,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// Audit ERR-005: an error or a 0 m² roof that a tower's shaft causes
+    /// names the tower, not a chimney the job does not have.
+    #[test]
+    fn a_failure_a_towers_shaft_causes_names_the_tower() {
+        use tectora_core::roof::{CalcError, CalcErrorKind};
+        let mut e = CalcError {
+            kind: CalcErrorKind::NonConvexOpening,
+            code: None,
+            message_id: None,
+            message: String::new(),
+            parts: Vec::new(),
+            edges: Vec::new(),
+            towers: Vec::new(),
+        };
+        let chimney = calc_error(&e);
+        assert!(chimney.get("towers").is_none(), "{chimney}");
+        e.towers = vec![2];
+        let v = calc_error(&e);
+        assert_eq!(v["towers"], json!([2]));
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("tower 2 (0-based)"), "{msg}");
+        assert!(!msg.contains("chimney"), "{msg}");
+
+        let mut w = tectora_core::check::RoofWarning::new(
+            tectora_core::check::WarningKind::NoRoofArea,
+            0.0,
+        );
+        w.towers = vec![0];
+        let v = warning(&w);
+        assert_eq!(v["towers"], json!([0]));
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("tower 0 (0-based)"), "{msg}");
+        assert!(!msg.contains("chimney"), "{msg}");
+
+        // calc: the shaft of a tower in a building without a roof has no
+        // cladding figure and is not "beside the roofs".
+        // A wall under 1 cm leaves the building out (as a job file can).
+        let mut s = server();
+        let mut p = tectora_core::examples::find("hip").unwrap().project();
+        let mut e = p.parts[0].edges[0].clone();
+        e.start.x += 0.005;
+        p.parts[0].edges.insert(1, e);
+        let id = s.store.save(None, &p).unwrap();
+        s.call_tool(
+            "set_tower",
+            &json!({ "id": id, "summary": "t", "center": [6, 4], "width": 2, "base_height": 12 }),
+        )
+        .unwrap();
+        let c = s.call_tool("calc", &json!({ "id": id })).unwrap();
+        let sh = &c["towers"][0]["shaft"];
+        assert_eq!(sh["roof_failed"], true, "{c}");
+        assert_eq!(sh["on_roof"], false, "{c}");
+        assert!(sh["wall_area_m2"].is_null(), "{c}");
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn calc_error_keeps_every_sentence() {
         // ERR-005: the parallel-walls sentence and the failing-buildings
@@ -3643,6 +3746,7 @@ mod tests {
             message: String::new(),
             parts: parts.to_vec(),
             edges: edges.to_vec(),
+            towers: Vec::new(),
         };
         let v = calc_error(&e(CalcErrorKind::Cut, &[0, 2], &[1]));
         let msg = v["message"].as_str().unwrap();

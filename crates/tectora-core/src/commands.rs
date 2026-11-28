@@ -581,7 +581,12 @@ pub fn tower_preview(tower: &crate::tower::Tower) -> Result<Value, CommandError>
     }
     let r = crate::model::guarded(|| tower.calculate())
         .map_err(CommandError::internal)?
-        .ok_or_else(|| refused("the tower cannot be calculated".into()))?;
+        .ok_or_else(|| {
+            refused(format!(
+                "the tower cannot be calculated ({})",
+                crate::edit::towers::TOWER_NOT_CALCULATED
+            ))
+        })?;
     Ok(serde_json::json!({
         "result": r,
         "roof_area": r.roof_area(),
@@ -616,7 +621,10 @@ pub fn arc_edit(project: &Project, part: usize, edit: ArcEdit) -> Result<Project
     let mut next = project.clone();
     let done = crate::model::guarded(|| {
         let Some(p) = next.parts.get_mut(part) else {
-            return Err(format!("part {part} does not exist"));
+            return Err(format!(
+                "part {part} does not exist ({})",
+                crate::edit::arcs::ARC_NO_PART
+            ));
         };
         match edit {
             ArcEdit::RoundCorner {
@@ -752,6 +760,44 @@ mod tests {
             height: 6.0,
         });
         assert_eq!(runs(|| drop(calc(&p).unwrap())), 2, "with a chimney");
+    }
+
+    /// Audit ERR-004: refusals that are not about a value carry their own
+    /// code at the end of the detail (as a tower's problems do).
+    #[test]
+    fn a_missing_building_or_a_full_job_is_refused_with_its_own_code() {
+        let e = arc_edit(
+            &hip(),
+            5,
+            ArcEdit::BendWall {
+                index: 0,
+                bulge: 1.0,
+                segments: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "refused");
+        assert!(e.detail.starts_with("part 5 does not exist"), "{e}");
+        assert!(
+            e.detail
+                .ends_with(&format!("({})", crate::edit::arcs::ARC_NO_PART)),
+            "{e}"
+        );
+        let t = crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Pyramid,
+            crate::geom::Point2::new(0.0, 0.0),
+            2.0,
+            9.0,
+        );
+        let mut p = hip();
+        p.towers = vec![t.clone(); crate::tower::MAX_TOWERS];
+        let e = set_tower(&p, None, t).unwrap_err();
+        assert_eq!(e.code, "refused");
+        assert!(
+            e.detail
+                .ends_with(&format!("({})", crate::edit::towers::TOWER_LIMIT)),
+            "{e}"
+        );
     }
 
     #[test]

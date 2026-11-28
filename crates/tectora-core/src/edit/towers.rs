@@ -96,9 +96,21 @@ pub fn preset(kind: TowerPreset, center: Point2, width: f64, base_height: f64) -
     t
 }
 
+/// The code that ends the refusal of a tower for a job that has
+/// [`crate::tower::MAX_TOWERS`] already: no value of the tower is wrong
+/// (audit ERR-004).
+pub const TOWER_LIMIT: &str = "tower_limit";
+/// The code that ends the refusal of a tower index the job does not have.
+pub const TOWER_MISSING: &str = "tower_missing";
+/// The code that ends the refusal of a tower without problems that still
+/// gives no roof (`commands::tower_preview`).
+pub const TOWER_NOT_CALCULATED: &str = "tower_not_calculated";
+
 /// Adds `tower` (`index` `None`) or replaces tower `index`; refuses a
 /// tower with problems, with the first one's English message. Returns the
-/// tower's index.
+/// tower's index. Every refusal ends with its code in parentheses (a
+/// problem's, [`TOWER_LIMIT`] or [`TOWER_MISSING`]), which the app
+/// translates by.
 pub fn set_tower(
     project: &mut Project,
     index: Option<usize>,
@@ -113,7 +125,7 @@ pub fn set_tower(
         None => {
             if project.towers.len() >= crate::tower::MAX_TOWERS {
                 return Err(format!(
-                    "a job has at most {} towers",
+                    "a job has at most {} towers ({TOWER_LIMIT})",
                     crate::tower::MAX_TOWERS
                 ));
             }
@@ -125,7 +137,7 @@ pub fn set_tower(
                 *t = tower;
                 Ok(i)
             }
-            None => Err(format!("tower {i} does not exist")),
+            None => Err(format!("tower {i} does not exist ({TOWER_MISSING})")),
         },
     }
 }
@@ -162,6 +174,26 @@ mod tests {
         let e = set_tower(&mut p, None, bad).unwrap_err();
         assert!(e.contains("tower_size"), "{e}");
         assert_eq!(p.towers.len(), 1);
+    }
+
+    /// Audit ERR-004: the refusals that are not about a value end with
+    /// their own stable code, as a tower's problems do, so the app can
+    /// say "the job is full" instead of "change this value"; the English
+    /// sentence before it stays.
+    #[test]
+    fn a_full_job_and_a_missing_tower_are_refused_with_their_own_codes() {
+        let mut p = Project::new("t");
+        let t = preset(TowerPreset::Pyramid, Point2::new(0.0, 0.0), 3.0, 10.0);
+        for _ in 0..crate::tower::MAX_TOWERS {
+            set_tower(&mut p, None, t.clone()).unwrap();
+        }
+        let e = set_tower(&mut p, None, t.clone()).unwrap_err();
+        assert!(e.starts_with("a job has at most 50 towers"), "{e}");
+        assert!(e.ends_with(&format!("({TOWER_LIMIT})")), "{e}");
+        assert_eq!(p.towers.len(), crate::tower::MAX_TOWERS);
+        let e = set_tower(&mut p, Some(77), t).unwrap_err();
+        assert!(e.starts_with("tower 77 does not exist"), "{e}");
+        assert!(e.ends_with(&format!("({TOWER_MISSING})")), "{e}");
     }
 
     #[test]

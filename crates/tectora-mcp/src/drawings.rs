@@ -968,6 +968,7 @@ mod tests {
             message: "Nicht konvexer Schornstein/Öffnung wird ignoriert!".into(),
             parts: Vec::new(),
             edges: Vec::new(),
+            towers: Vec::new(),
         };
         let line = super::calc_error_line("Main", &e);
         assert!(

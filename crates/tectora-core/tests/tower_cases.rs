@@ -441,3 +441,115 @@ fn a_rectangular_towers_two_pitches_are_both_listed() {
     assert!((at(71.57) - 3.0 * 10f64.sqrt()).abs() < 0.01, "{by:?}");
     assert!(at(63.43) > 6.0, "{by:?}");
 }
+
+/// Audit ERR-005: a tower standing in a building whose roof is not
+/// calculated (here a wall under 1 cm) has no roof to stand on: it is not
+/// "beside the roofs, measured from the ground" with a cladding figure
+/// from 0 m, as a tower standing off every building is.
+#[test]
+fn a_tower_in_a_building_without_a_roof_is_not_measured_from_the_ground() {
+    let mut p = support::uniform(
+        &[
+            (0.0, 0.0),
+            (30.0, 0.0),
+            (30.0, 12.0),
+            (0.0, 12.0),
+            (0.0, 0.005),
+        ],
+        PITCH,
+        EAVE,
+        0.0,
+    );
+    p.towers
+        .push(Tower::pyramid(Point2::new(15.0, 6.0), 3.0, 17.0, 2.0));
+    p.towers
+        .push(Tower::pyramid(Point2::new(60.0, 6.0), 3.0, 17.0, 2.0));
+    let v = calc(&p);
+    assert!(f(&v["totals"]["roof_area"]) > 0.0, "the towers' roofs");
+    let inside = &v["towers"][0]["shaft"];
+    assert_eq!(inside["on_roof"], false, "{inside}");
+    assert_eq!(inside["roof_failed"], true, "{inside}");
+    assert_eq!(f(&inside["wall_area"]), 0.0, "no cladding figure: {inside}");
+    let beside = &v["towers"][1]["shaft"];
+    assert_eq!(beside["on_roof"], false, "{beside}");
+    assert_eq!(beside["roof_failed"], false, "{beside}");
+    assert!(
+        (f(&beside["wall_area"]) - 4.0 * 3.0 * 17.0).abs() < 1e-6,
+        "{beside}"
+    );
+    // The same building with its roof: the tower stands on it.
+    let mut q = host();
+    q.towers
+        .push(Tower::pyramid(Point2::new(15.0, 6.0), 3.0, 17.0, 2.0));
+    let shaft = &calc(&q)["towers"][0]["shaft"];
+    assert_eq!(shaft["on_roof"], true);
+    assert_eq!(shaft["roof_failed"], false);
+}
+
+/// Audit ERR-005: a shaft wider than the building takes all of its roof;
+/// the warning names the tower, not a chimney the job does not have.
+#[test]
+fn a_shaft_that_takes_the_whole_roof_is_named_in_the_warning() {
+    let mut p = host();
+    p.towers
+        .push(Tower::pyramid(Point2::new(15.0, 6.0), 40.0, 17.0, 2.0));
+    let geos = tectora_core::openings::generate_project(&p);
+    let w = geos[0]
+        .warnings
+        .iter()
+        .find(|w| w.kind == tectora_core::check::WarningKind::NoRoofArea)
+        .unwrap_or_else(|| panic!("no_roof_area: {:?}", geos[0].warnings));
+    assert_eq!(w.towers, vec![0], "{w:?}");
+    // A chimney over the whole building is no tower's doing.
+    let mut c = host();
+    c.chimneys.push(tectora_core::model::Chimney {
+        corners: [(-5.0, -5.0), (35.0, -5.0), (35.0, 17.0), (-5.0, 17.0)]
+            .map(|(x, y)| Point2::new(x, y))
+            .to_vec(),
+        height: 17.0,
+    });
+    c.towers
+        .push(Tower::pyramid(Point2::new(60.0, 6.0), 3.0, 17.0, 2.0));
+    let geos = tectora_core::openings::generate_project(&c);
+    for w in &geos[0].warnings {
+        assert!(w.towers.is_empty(), "{w:?}");
+    }
+}
+
+/// Audit MATH-013: the line details list every tower line, with its tower
+/// and tier, and summed per code they give the towers' line totals.
+#[test]
+fn the_line_details_list_the_towers_lines() {
+    let mut p = host();
+    p.towers.push(turret());
+    let mut square = Tower::pyramid(Point2::new(60.0, 6.0), 3.0, 5.0, 3.0);
+    square.tiers = vec![
+        tier(1.0, 2.0, 0.0),
+        tier(1.0, 1.0, 0.0),
+        tier(1.0, 0.0, 0.0),
+    ];
+    p.towers.push(square);
+    let lines = tectora_core::lineinfo::tower_line_details(&p);
+    assert!(lines.iter().any(|l| l.tower == 0) && lines.iter().any(|l| l.tower == 1));
+    let totals = tectora_core::tower::line_totals(&p);
+    for &(code, _) in &totals {
+        let total: f64 = totals
+            .iter()
+            .filter(|(c, _)| *c == code)
+            .map(|(_, l)| l)
+            .sum();
+        let sum: f64 = lines
+            .iter()
+            .filter(|l| l.code == code)
+            .map(|l| l.counted_length)
+            .sum();
+        assert!((sum - total).abs() < 1e-9, "{code}: {sum} vs {total}");
+    }
+    // A hip of the square pyramid runs from its tier's bottom to its top.
+    let hip = lines
+        .iter()
+        .find(|l| l.tower == 1 && l.code == "G")
+        .expect("a hip");
+    assert!(!hip.closed && hip.z_high > hip.z_low, "{hip:?}");
+    assert!((hip.length - hip.plan_length.hypot(hip.z_high - hip.z_low)).abs() < 1e-9);
+}

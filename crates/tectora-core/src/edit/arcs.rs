@@ -17,6 +17,13 @@ use super::round_to;
 use crate::geom::Point2;
 use crate::model::{EdgeDef, RoofPart};
 
+/// The codes that end the refusal of an arc on a wall, corner or building
+/// the outline does not have: no value of the arc is wrong (audit
+/// ERR-004). The app translates by them.
+pub const ARC_NO_WALL: &str = "arc_no_wall";
+pub const ARC_NO_CORNER: &str = "arc_no_corner";
+pub const ARC_NO_PART: &str = "arc_no_part";
+
 /// Most walls one arc may become.
 pub const MAX_ARC_SEGMENTS: usize = 64;
 
@@ -85,7 +92,7 @@ pub fn bend_wall(
 ) -> Result<usize, String> {
     let n = part.edges.len();
     if i >= n {
-        return Err(format!("wall {i} does not exist"));
+        return Err(format!("wall {i} does not exist ({ARC_NO_WALL})"));
     }
     let a = part.edges[i].start;
     let b = part.edges[(i + 1) % n].start;
@@ -166,7 +173,7 @@ pub fn round_corner(
 ) -> Result<usize, String> {
     let n = part.edges.len();
     if v >= n || n < 3 {
-        return Err(format!("corner {v} does not exist"));
+        return Err(format!("corner {v} does not exist ({ARC_NO_CORNER})"));
     }
     if !(radius.is_finite() && radius >= 0.01) {
         return Err("the radius must be at least 0.01 m".into());
@@ -349,6 +356,19 @@ mod tests {
         assert!(bend_wall(&mut p, 0, 1.0, Some(1)).is_err());
         assert!(bend_wall(&mut p, 0, f64::NAN, None).is_err());
         assert_eq!(p, square(10.0));
+    }
+
+    /// Audit ERR-004: a wall or corner that does not exist is no value to
+    /// change; it ends with its own code, the sentence before it kept.
+    #[test]
+    fn a_missing_wall_or_corner_is_refused_with_its_own_code() {
+        let mut p = square(10.0);
+        let e = round_corner(&mut p, 7, 1.0, None).unwrap_err();
+        assert!(e.starts_with("corner 7 does not exist"), "{e}");
+        assert!(e.ends_with(&format!("({ARC_NO_CORNER})")), "{e}");
+        let e = bend_wall(&mut p, 9, 1.0, None).unwrap_err();
+        assert!(e.starts_with("wall 9 does not exist"), "{e}");
+        assert!(e.ends_with(&format!("({ARC_NO_WALL})")), "{e}");
     }
 
     #[test]

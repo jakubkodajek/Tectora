@@ -334,6 +334,7 @@ pub fn check_windows_write(before: Option<&Project>, after: &Project) -> Result<
             && b.chimneys == after.chimneys
             && b.roof_openings == after.roof_openings
             && b.manual_faces == after.manual_faces
+            && b.towers == after.towers
             && b.flat_roof == after.flat_roof;
         if same_roof {
             return Ok(());
@@ -1123,6 +1124,30 @@ mod tests {
         assert!(e.contains("roof window 0"), "{e}");
         // A job that already carries one is not locked by an unrelated edit.
         assert!(check_windows_write(Some(&p), &p).is_ok());
+    }
+
+    /// Audit ERR-002 "to check": a write that only adds a tower whose shaft
+    /// takes most of the face under a roof window is checked like any
+    /// other change of the roof (the window no longer fits its face).
+    #[test]
+    fn a_write_that_adds_a_tower_under_a_window_is_checked() {
+        let mut p = gable_12x8();
+        p.windows.push(crate::model::RoofWindow {
+            x: 1.0,
+            y: 0.2,
+            width: 6.0,
+            height: 5.0,
+        });
+        assert!(check_windows(&p).is_ok(), "30 m2 fit the 62.7 m2 face");
+        let before = p.clone();
+        p.towers.push(crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Pyramid,
+            Point2::new(6.0, 2.0),
+            8.0,
+            12.0,
+        ));
+        assert!(check_windows(&p).is_err(), "the shaft leaves about 21 m2");
+        assert!(check_windows_write(Some(&before), &p).is_err());
     }
 
     #[test]

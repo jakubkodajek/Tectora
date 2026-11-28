@@ -254,6 +254,13 @@ pub struct CalcError {
     /// no such walls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<usize>,
+    /// Tectora's hint, not part of DACAD's message: the towers (indices
+    /// into `project.towers`) whose shaft, cut out of the roof like a
+    /// chimney, causes the error (a shaft that is not convex where the
+    /// core reads it), so the user is not sent to look for a chimney
+    /// (audit ERR-005). Empty when no shaft is to blame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub towers: Vec<usize>,
 }
 
 /// The groups of DACAD calculation errors the app explains to the user.

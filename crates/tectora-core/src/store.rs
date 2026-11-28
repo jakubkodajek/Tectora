@@ -481,6 +481,8 @@ fn design_items(p: &Project) -> usize {
         + p.windows.len()
         + p.roof_openings.len()
         + p.manual_faces.len()
+        // A tower: its shaft cut out of the roof and each tier calculated.
+        + p.towers.iter().map(|t| 1 + t.tiers.len()).sum::<usize>()
 }
 
 /// An activity entry without the stored previous version.
@@ -6760,6 +6762,25 @@ mod tests {
         store.save(Some(id.clone()), &p).unwrap();
         assert!(store.result_origin(&id, now).is_some());
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit 2026-11-28 (towers, errors "to check"): towers are calculated
+    /// on save as well (each tier and the shaft's cut), so they count
+    /// towards the bound like walls and objects.
+    #[test]
+    fn towers_count_towards_the_design_checked_on_save() {
+        let mut p = examples::find("gable").unwrap().project();
+        let bare = design_items(&p);
+        let t = crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Onion,
+            crate::geom::Point2::new(3.0, 3.0),
+            2.0,
+            9.0,
+        );
+        let per = 1 + t.tiers.len();
+        p.towers = vec![t; 50];
+        assert_eq!(design_items(&p), bare + 50 * per);
+        assert!(design_items(&p) > ORIGIN_MAX_ITEMS);
     }
 
     #[test]

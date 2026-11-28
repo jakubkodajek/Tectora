@@ -14,12 +14,13 @@ use crate::roof::RoofQuantities;
 pub fn tower_report(
     t: &crate::tower::Tower,
     r: Option<&crate::tower::TowerResult>,
+    project: &Project,
     geos: &[crate::roof::RoofGeometry],
 ) -> Value {
     match r {
         None => json!({ "label": t.label, "result": null }),
         Some(r) => {
-            let shaft = crate::tower::shaft(t, geos);
+            let shaft = crate::tower::shaft(t, project, geos);
             json!({
                 "label": t.label,
                 "result": r,
@@ -65,7 +66,7 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
         .towers
         .iter()
         .zip(&tower_results)
-        .map(|(t, r)| tower_report(t, r.as_ref(), geos))
+        .map(|(t, r)| tower_report(t, r.as_ref(), project, geos))
         .collect();
     // Each hand-drawn face's area, to list beside the parts' (already in
     // the totals; display only).
