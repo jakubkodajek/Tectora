@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::geom::Point2;
 use crate::model::{EdgeDef, HalfHip, PitchBreak, Project};
 
+pub mod arcs;
 pub mod calc;
 pub mod corners;
 pub mod dormers;
@@ -24,6 +25,7 @@ pub mod openings;
 pub mod position;
 pub mod probe;
 pub mod round;
+pub mod towers;
 pub mod transform;
 
 /// New values for some fields of one wall; `None` keeps the field.

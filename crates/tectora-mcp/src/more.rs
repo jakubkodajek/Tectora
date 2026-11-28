@@ -131,6 +131,17 @@ fn part_index(args: &Value, p: &Project) -> Result<usize, String> {
     Ok(pi)
 }
 
+/// `segments` of an arc operation: absent for DACAD's steps.
+fn arc_segments(op: &Value) -> Result<Option<usize>, String> {
+    match op.get("segments") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| "`segments` must be a whole number".into()),
+    }
+}
+
 fn edge_index(args: &Value, key: &str, n: usize) -> Result<usize, String> {
     let i = args
         .get(key)
@@ -371,13 +382,14 @@ pub(crate) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "edit_walls",
-            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); rename {name}.",
+            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); round_corner {index, radius, segments?} (rounds the corner at the start of wall `index` into an arc of short walls tangent to both walls; the arc walls carry the roof definition of the wall before the corner); bend_wall {index, bulge, segments?} (bends wall `index` into an arc whose middle stands `bulge` m off the wall, + outward, at most half the wall; the arc walls keep its roof definition). Arcs get 11.25° steps, 15° where a step would be under 0.4 m, unless `segments` (2-64) is given; the roof is calculated on the walls as for any polygon. Wall indices after an arc shift by the walls it added. rename {name}.",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "operations": { "type": "array", "items": { "type": "object", "properties": {
-                    "op": { "type": "string", "enum": ["move_point", "insert_point", "delete_point", "set_length", "insert_direction_change", "shift_wall", "rename"] },
+                    "op": { "type": "string", "enum": ["move_point", "insert_point", "delete_point", "set_length", "insert_direction_change", "shift_wall", "round_corner", "bend_wall", "rename"] },
                     "index": { "type": "integer" }, "after": { "type": "integer" },
                     "x": { "type": "number" }, "y": { "type": "number" },
+                    "radius": { "type": "number" }, "bulge": { "type": "number" }, "segments": { "type": "integer", "minimum": 2, "maximum": 64 },
                     "length": { "type": "number" }, "distance": { "type": "number" }, "name": { "type": "string" }
                 }, "required": ["op"] } },
                 "summary": summary_prop(),
@@ -398,11 +410,11 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "transform_items",
-            "description": "Move, rotate or copy single objects on the roof (not their part): dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces, as the user drags them in the plan or picks Duplicate / Rotate in their context menu. `rotate` turns each item about its own centre unless `centre` is given (a window keeps its anchor and only moves). With `copies` > 0 the items stay and that many copies of each are added, each one the transform applied once more; the reply lists the new indices. On a move, `follow_roof` (default true) keeps chimney tops, dormer eaves and line ends at the same height above the roof.",
+            "description": "Move, rotate or copy single objects on the roof (not their part): dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces, towers, as the user drags them in the plan or picks Duplicate / Rotate in their context menu. `rotate` turns each item about its own centre unless `centre` is given (a window keeps its anchor and only moves). With `copies` > 0 the items stay and that many copies of each are added, each one the transform applied once more; the reply lists the new indices. On a move, `follow_roof` (default true) keeps chimney tops, dormer eaves and line ends at the same height above the roof.",
             "inputSchema": schema(json!({
                 "id": id,
                 "items": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
-                    "kind": { "type": "string", "enum": ["dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face"] },
+                    "kind": { "type": "string", "enum": ["dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face", "tower"] },
                     "index": { "type": "integer", "minimum": 0 }
                 }, "required": ["kind", "index"] } },
                 "op": { "type": "string", "enum": ["move", "rotate", "align"], "description": "align: turn each chimney or roof opening by the smallest angle that lines its first side up with the nearest eave wall (the context menu's Align to wall)." },
@@ -460,11 +472,11 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "delete_items",
-            "description": "Delete parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines or faces by index (indices as get_project lists them).",
+            "description": "Delete parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines or faces, or towers by index (indices as get_project lists them).",
             "inputSchema": schema(json!({
                 "id": id,
                 "items": { "type": "array", "items": { "type": "object", "properties": {
-                    "kind": { "type": "string", "enum": ["part", "dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face"] },
+                    "kind": { "type": "string", "enum": ["part", "dormer", "chimney", "window", "roof_opening", "manual_line", "manual_face", "tower"] },
                     "index": { "type": "integer" }
                 }, "required": ["kind", "index"] } },
                 "summary": summary_prop(),
@@ -499,6 +511,27 @@ pub(crate) fn tools() -> Vec<Value> {
             "description": "Remove everything drawn (parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines and faces) and leave an empty canvas, as the editor's Clear. Job data, notes, roof options and the stored result stay; the change can be reverted like any other.",
             "inputSchema": schema(json!({
                 "id": id,
+                "summary": summary_prop(),
+            }), &["id", "summary"]),
+        }),
+        json!({
+            "name": "set_tower",
+            "description": "Add a tower or turret standing through the roof, or change one (`index`). A tower is a shaft of a plan `shape` (rectangle `width` × `depth`, regular `polygon` with `sides` and `width` across the flats, or `circle` of diameter `width`; rectangles and polygons may have rounded corners `corner_radius`) around `center`, turned by `rotation_deg`, whose own roof starts at `base_height` (m above ground, like eave heights) and is a stack of `tiers` from the bottom up. Each tier rises `rise` m and ends `top_width` wide (measured like `width`; 0 = a point); the plan at every height is the base shape scaled about the centre. `bulge` (m, at most half the tier's chord) curves the tier's profile: positive outward (onion), negative inward (bell). A tier with the same width at bottom and top is a vertical wall (a lantern): listed as wall area, not roof area. `material` per tier as on walls (default 2, sheet metal). The shaft is cut out of the roofs it stands in like a chimney (deduction and abutment lines WV/WH/WS), and the tower's roof adds its area, eaves (T), pitch breaks (K), Pult lines (P) and hips (G) to the totals; calc lists every tower's tiers. Without `tiers`, `preset` gives a profile in proportion to the width: pyramid, octagon, cone, helm (bell-shaped), onion, baroque (helm, onion, lantern, small onion, spire). Read heights from the section drawing: base_height is where the shaft's walls end and the tower's roof begins.",
+            "inputSchema": schema(json!({
+                "id": id,
+                "index": { "type": "integer", "minimum": 0, "description": "Tower to change; omit to add one." },
+                "preset": { "type": "string", "enum": ["pyramid", "octagon", "cone", "helm", "onion", "baroque"] },
+                "label": { "type": "string" },
+                "center": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+                "shape": { "type": "string", "enum": ["rectangle", "polygon", "circle"] },
+                "width": { "type": "number" }, "depth": { "type": "number" },
+                "sides": { "type": "integer", "minimum": 3, "maximum": 64 },
+                "corner_radius": { "type": "number" }, "rotation_deg": { "type": "number" },
+                "base_height": { "type": "number" },
+                "tiers": { "type": "array", "items": { "type": "object", "properties": {
+                    "rise": { "type": "number" }, "top_width": { "type": "number" },
+                    "bulge": { "type": "number" }, "material": { "type": "integer", "minimum": 1, "maximum": 5 }
+                }, "required": ["rise", "top_width"] } },
                 "summary": summary_prop(),
             }), &["id", "summary"]),
         }),
@@ -760,6 +793,7 @@ impl Server {
             })(),
             "add_shape_part" => self.add_shape_part(args),
             "delete_items" => self.delete_items(args),
+            "set_tower" => self.set_tower(args),
             "face_to_part" => (|| {
                 let (id, before) = self.load(args)?;
                 let mut p = before.clone();
@@ -1213,6 +1247,18 @@ impl Server {
                     }
                 }
                 "rename" => part.name = arg_str(op, "name").map_err(at)?.to_string(),
+                "round_corner" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let r = arg_f64(op, "radius")?.ok_or_else(|| at("missing `radius`".into()))?;
+                    let segs = arc_segments(op).map_err(at)?;
+                    tectora_core::edit::arcs::round_corner(part, i, r, segs).map_err(at)?;
+                }
+                "bend_wall" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let b = arg_f64(op, "bulge")?.ok_or_else(|| at("missing `bulge`".into()))?;
+                    let segs = arc_segments(op).map_err(at)?;
+                    tectora_core::edit::arcs::bend_wall(part, i, b, segs).map_err(at)?;
+                }
                 other => return Err(at(format!("unknown op `{other}`"))),
             }
         }
@@ -1544,6 +1590,93 @@ impl Server {
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
     }
 
+    /// `set_tower`: adds a tower from a preset, or changes tower `index`;
+    /// fields given override the preset or the tower's own.
+    fn set_tower(&self, args: &Value) -> ToolResult {
+        use tectora_core::edit::towers::{TowerPreset, preset, set_tower};
+        use tectora_core::tower::{TowerShape, TowerTier};
+        let (id, before) = self.load(args)?;
+        let mut p = before.clone();
+        let index: Option<usize> = opt(args, "index")?;
+        let mut t = match index {
+            Some(i) => p.towers.get(i).cloned().ok_or_else(|| {
+                format!("tower {i} does not exist (the job has {})", p.towers.len())
+            })?,
+            None => {
+                let center = point(args, "center")?.ok_or("missing `center` [x, y]")?;
+                let width = arg_f64(args, "width")?.ok_or("missing `width`")?;
+                let base = arg_f64(args, "base_height")?.ok_or("missing `base_height`")?;
+                let kind: TowerPreset = opt(args, "preset")?.unwrap_or(TowerPreset::Pyramid);
+                preset(kind, center, width, base)
+            }
+        };
+        if index.is_some() {
+            if let Some(kind) = opt::<TowerPreset>(args, "preset")? {
+                // A preset on an existing tower replaces its profile, sized
+                // to its width (`tiers` below still wins).
+                let fresh = preset(kind, t.center, t.width, t.base_height);
+                t.shape = fresh.shape;
+                t.sides = fresh.sides;
+                t.corner_radius = fresh.corner_radius;
+                t.tiers = fresh.tiers;
+            }
+            if let Some(c) = point(args, "center")? {
+                t.center = c;
+            }
+            if let Some(w) = arg_f64(args, "width")? {
+                t.width = w;
+            }
+            if let Some(b) = arg_f64(args, "base_height")? {
+                t.base_height = b;
+            }
+        }
+        if let Some(shape) = opt::<TowerShape>(args, "shape")? {
+            t.shape = shape;
+        }
+        if args.get("depth").is_some() {
+            t.depth = arg_f64(args, "depth")?;
+        }
+        if let Some(n) = opt::<u32>(args, "sides")? {
+            t.sides = n;
+        }
+        if let Some(r) = arg_f64(args, "corner_radius")? {
+            t.corner_radius = r;
+        }
+        if let Some(r) = arg_f64(args, "rotation_deg")? {
+            t.rotation_deg = r;
+        }
+        if let Some(l) = opt::<String>(args, "label")? {
+            t.label = l;
+        }
+        if let Some(tiers) = opt::<Vec<Value>>(args, "tiers")? {
+            t.tiers = tiers
+                .iter()
+                .enumerate()
+                .map(|(k, v)| {
+                    let at = |m: String| format!("tier {k}: {m}");
+                    Ok(TowerTier {
+                        rise: arg_f64(v, "rise")?.ok_or_else(|| at("missing `rise`".into()))?,
+                        top_width: arg_f64(v, "top_width")?
+                            .ok_or_else(|| at("missing `top_width`".into()))?,
+                        bulge: arg_f64(v, "bulge")?.unwrap_or(0.0),
+                        material: opt::<u8>(v, "material")?
+                            .unwrap_or(tectora_core::tower::DEFAULT_TOWER_MATERIAL),
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+        }
+        let i = set_tower(&mut p, index, t)?;
+        let r = self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+        let calc = p.towers[i].calculate();
+        Ok(json!({
+            "saved": r,
+            "index": i,
+            "roof_area_m2": calc.as_ref().map(|c| round(c.roof_area(), 2)),
+            "wall_area_m2": calc.as_ref().map(|c| round(c.wall_area(), 2)),
+            "top_height_m": calc.as_ref().map(|c| round(c.top_height, 3)),
+        }))
+    }
+
     fn delete_items(&self, args: &Value) -> ToolResult {
         let (id, before) = self.load(args)?;
         let mut p = before.clone();
@@ -1574,6 +1707,7 @@ impl Server {
                 "roof_opening" => take(&mut p.roof_openings, i, &kind)?,
                 "manual_line" => take(&mut p.manual_lines, i, &kind)?,
                 "manual_face" => take(&mut p.manual_faces, i, &kind)?,
+                "tower" => take(&mut p.towers, i, &kind)?,
                 other => return Err(format!("unknown kind `{other}`")),
             }
         }

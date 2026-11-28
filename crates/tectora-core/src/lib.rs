@@ -40,6 +40,7 @@ pub mod settings;
 pub mod snapshot;
 pub mod store;
 mod straighten;
+pub mod tower;
 pub mod union;
 pub mod walls;
 pub mod wing_split;

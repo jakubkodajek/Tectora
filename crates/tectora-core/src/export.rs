@@ -175,16 +175,11 @@ fn cut_rows(project: &Project, face: &crate::roof::RoofFace, total: f64) -> Vec<
     let (up, tan) = crate::openings::slope(face);
     let sec = (1.0 + tan * tan).sqrt();
     let mut rows = Vec::new();
-    for (item, c) in project
-        .chimneys
-        .iter()
-        .chain(&project.roof_openings)
-        .enumerate()
-    {
-        if c.corners.len() < 3 {
+    for (item, corners) in cutouts(project).into_iter().enumerate() {
+        if corners.len() < 3 {
             continue;
         }
-        let cut = outline.intersection(&MultiPolygon::new(vec![crate::union::to_geo(&c.corners)]));
+        let cut = outline.intersection(&MultiPolygon::new(vec![crate::union::to_geo(&corners)]));
         let a = cut.unsigned_area();
         if a < 1e-9 {
             continue;
@@ -214,9 +209,28 @@ fn cut_rows(project: &Project, face: &crate::roof::RoofFace, total: f64) -> Vec<
     rows
 }
 
+/// The outlines a face's deduction rows are matched with: the chimneys,
+/// the roof openings, then the shaft of every tower that calculates (cut
+/// out like a chimney, `openings::with_tower_shafts`).
+fn cutouts(project: &Project) -> Vec<Vec<crate::geom::Point2>> {
+    project
+        .chimneys
+        .iter()
+        .chain(&project.roof_openings)
+        .map(|c| c.corners.clone())
+        .chain(project.towers.iter().map(|t| {
+            if t.problems().is_empty() {
+                t.footprint()
+            } else {
+                Vec::new()
+            }
+        }))
+        .collect()
+}
+
 /// One row of [`cut_rows`].
 struct Cut {
-    /// Index in the project's chimneys followed by its roof openings;
+    /// Index in [`cutouts`] (chimneys, roof openings, tower shafts);
     /// `None` for the rest of the face's deductions in one row.
     item: Option<usize>,
     area: f64,
@@ -315,7 +329,55 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             holes: Vec::new(),
             windows: Vec::new(),
         });
+    // The next roof number: after the dormers' roof when there is one.
+    let mut roof_no = if dormer_faces.is_empty() {
+        dormer_roof - 1
+    } else {
+        dormer_roof
+    };
     dormer_faces.extend(manual);
+    // Towers: each roof tier (and a flat top) is a face of its own roof,
+    // numbered after the dormers' (`Z<n>.<tier>`), with its lines.
+    for r in crate::tower::results(project).into_iter().flatten() {
+        roof_no += 1;
+        let mut k = 0;
+        for t in r
+            .tiers
+            .iter()
+            .filter(|t| t.kind == crate::tower::TierKind::Roof)
+        {
+            k += 1;
+            dormer_faces.push(ListFace {
+                name: format!("Z{roof_no}.{k:02}"),
+                // A tier leaning outward (over 90°, under a cornice) is
+                // listed with its slope from the horizontal.
+                pitch: t.pitch_deg.min(180.0 - t.pitch_deg),
+                area: t.area,
+                rafter: None,
+                material: t.material,
+                holes: Vec::new(),
+                windows: Vec::new(),
+            });
+        }
+        if let Some(cap) = &r.cap {
+            k += 1;
+            dormer_faces.push(ListFace {
+                name: format!("Z{roof_no}.{k:02}"),
+                pitch: 0.0,
+                area: cap.area,
+                rafter: None,
+                material: cap.material,
+                holes: Vec::new(),
+                windows: Vec::new(),
+            });
+        }
+        for l in &r.lines {
+            lines.push(ListLine {
+                code: l.code.to_string(),
+                length: l.length,
+            });
+        }
+    }
     Collected {
         lines,
         faces,
@@ -912,7 +974,7 @@ pub fn plan_sheet_named_of(
     // P3a and P3c). Deductions without an outline of their own (the roof
     // under a dormer, a joined roof) stay in the face's area, so the face
     // labels less the cut-out labels add up to the total at the foot.
-    let n_cutouts = project.chimneys.len() + project.roof_openings.len();
+    let n_cutouts = cutouts(project).len();
     let mut cutout_area = vec![0.0; n_cutouts];
     let mut face_shown: Vec<Vec<f64>> = Vec::with_capacity(geos.len());
     for g in geos {
@@ -943,14 +1005,12 @@ pub fn plan_sheet_named_of(
     // Cut-out outlines on the page: no face label goes inside one.
     let mut cut_boxes: Vec<[f64; 4]> = Vec::new();
 
-    // Chimneys and roof openings.
-    for (i, ch) in project
-        .chimneys
-        .iter()
-        .chain(&project.roof_openings)
-        .enumerate()
-    {
-        let pts: Vec<[f64; 2]> = ch.corners.iter().map(|p| map(p.x, p.y)).collect();
+    // Chimneys, roof openings and tower shafts.
+    for (i, corners) in cutouts(project).iter().enumerate() {
+        if corners.len() < 3 {
+            continue;
+        }
+        let pts: Vec<[f64; 2]> = corners.iter().map(|p| map(p.x, p.y)).collect();
         outline(&mut shapes, &pts, MUTED, 0.8, false);
         cut_boxes.push(bbox(&pts));
         if let Some(a) = cutout_area.get(i).filter(|a| **a > 1e-9) {
@@ -987,6 +1047,39 @@ pub fn plan_sheet_named_of(
             format!("{}m²", num(f.area(), d)),
             format!("{}°", num(f.pitch_deg, 2)),
         ));
+    }
+    // Towers: the outline of every tier from above, one label with the
+    // tower's roof area and its lowest tier's pitch.
+    for r in crate::tower::results(project).into_iter().flatten() {
+        let mut base: Option<Vec<[f64; 2]>> = None;
+        for t in &r.tiers {
+            for ring in [t.rings.first(), t.rings.last()].into_iter().flatten() {
+                let pts: Vec<[f64; 2]> = ring.iter().map(|p| map(p[0], p[1])).collect();
+                if pts.len() >= 3 {
+                    outline(&mut shapes, &pts, INK, 0.6, false);
+                    base.get_or_insert(pts);
+                }
+            }
+        }
+        for l in r.lines.iter().filter(|l| l.code == "G") {
+            let pts: Vec<[f64; 2]> = l.points.iter().map(|p| map(p[0], p[1])).collect();
+            for w in pts.windows(2) {
+                shapes.push(Shape::Line {
+                    a: w[0],
+                    b: w[1],
+                    color: INK,
+                    width: 0.6,
+                    dashed: false,
+                });
+            }
+        }
+        if let (Some(pts), Some(t0)) = (base, r.tiers.first()) {
+            face_labels.push((
+                pts,
+                format!("{}m²", num(r.roof_area(), d)),
+                format!("{}°", num(t0.pitch_deg, 2)),
+            ));
+        }
     }
     for (g, shown) in geos.iter().zip(&face_shown) {
         for (f, a) in g.faces.iter().zip(shown) {

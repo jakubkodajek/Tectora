@@ -515,7 +515,7 @@ fn quantities_of(geos: &[RoofGeometry], project: &Project) -> Value {
             .collect::<Vec<_>>(),
     });
     // With more than one material: the lines each one's offer needs.
-    let by_line = tectora_core::quantities::lines_by_material_of(geos);
+    let by_line = tectora_core::quantities::lines_by_material_in(geos, project);
     if by_line.len() > 1 {
         q["lines_by_material_m"] = by_line
             .into_iter()

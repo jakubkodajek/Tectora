@@ -76,6 +76,7 @@ pub fn roof_totals_of(
         total.add(&part_quantities(geo));
     }
     total.add(&manual_quantities(project));
+    total.add(&crate::tower::quantities(project));
     total
 }
 
@@ -121,6 +122,9 @@ pub fn area_by_pitch_in(geos: &[crate::roof::RoofGeometry], project: &Project) -
         if a != 0.0 {
             *by.entry(key(f.pitch_deg)).or_default() += a;
         }
+    }
+    for (pitch, a) in crate::tower::area_by_pitch(project) {
+        *by.entry(key(pitch)).or_default() += a;
     }
     by.into_iter()
         .map(|(p, a)| (p as f64 / 100.0, (a * 100.0).round() / 100.0))
@@ -233,6 +237,9 @@ pub fn dacad_line_totals_of(
     for line in project.manual_lines.iter().filter(|l| l.counted()) {
         *totals.entry(line.code.clone()).or_default() += line.length();
     }
+    for (code, len) in crate::tower::line_totals(project) {
+        *totals.entry(code.to_string()).or_default() += len;
+    }
     for v in totals.values_mut() {
         *v = (*v * 100.0).round() / 100.0;
     }
@@ -247,12 +254,28 @@ pub fn dacad_line_totals_of(
 /// as drawn: DACAD's corrections around openings (`minus_lines`) and lines
 /// added by hand are only in [`dacad_line_totals`].
 pub fn lines_by_material(project: &Project) -> Vec<(u8, std::collections::BTreeMap<String, f64>)> {
-    lines_by_material_of(&crate::openings::generate_project(project))
+    lines_by_material_in(&crate::openings::generate_project(project), project)
 }
 
-/// [`lines_by_material`] of roofs already calculated.
+/// [`lines_by_material`] of roofs already calculated, with the towers'
+/// lines ([`crate::tower::lines_by_material`]).
+pub fn lines_by_material_in(
+    geos: &[crate::roof::RoofGeometry],
+    project: &Project,
+) -> Vec<(u8, std::collections::BTreeMap<String, f64>)> {
+    lines_by_material_with(geos, crate::tower::lines_by_material(project))
+}
+
+/// The lines of the calculated roofs alone per material (no towers).
 pub fn lines_by_material_of(
     geos: &[crate::roof::RoofGeometry],
+) -> Vec<(u8, std::collections::BTreeMap<String, f64>)> {
+    lines_by_material_with(geos, Vec::new())
+}
+
+fn lines_by_material_with(
+    geos: &[crate::roof::RoofGeometry],
+    extra: Vec<(u8, &'static str, f64)>,
 ) -> Vec<(u8, std::collections::BTreeMap<String, f64>)> {
     let faces: Vec<&crate::roof::RoofFace> = geos.iter().flat_map(|g| &g.faces).collect();
     let mut by: std::collections::BTreeMap<u8, std::collections::BTreeMap<String, f64>> =
@@ -276,6 +299,12 @@ pub fn lines_by_material_of(
                 .entry(line.dacad_code().to_string())
                 .or_default() += line.length();
         }
+    }
+    for (mat, code, len) in extra {
+        *by.entry(mat)
+            .or_default()
+            .entry(code.to_string())
+            .or_default() += len;
     }
     by.into_iter()
         .map(|(m, mut lines)| {

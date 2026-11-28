@@ -541,6 +541,115 @@ pub fn offset_wall(
     Ok(next)
 }
 
+/// The tower dialog's OK: tower `index` replaced, or `tower` added
+/// (`edit::towers::set_tower`, the MCP tool set_tower); a tower with
+/// problems is `refused` with the first one.
+pub fn set_tower(
+    project: &Project,
+    index: Option<usize>,
+    tower: crate::tower::Tower,
+) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let mut next = project.clone();
+    let i = crate::model::guarded(|| crate::edit::towers::set_tower(&mut next, index, tower))
+        .map_err(CommandError::internal)?
+        .map_err(refused)?;
+    check_input(&next)?;
+    Ok(serde_json::json!({ "project": next, "index": i }))
+}
+
+/// A new tower from a preset (`edit::towers::preset`), for the tower
+/// dialog's start and its preset buttons.
+pub fn tower_preset(
+    kind: crate::edit::towers::TowerPreset,
+    center: crate::geom::Point2,
+    width: f64,
+    base_height: f64,
+) -> Result<crate::tower::Tower, CommandError> {
+    let t = crate::edit::towers::preset(kind, center, width, base_height);
+    if let Some((code, msg)) = t.problems().first() {
+        return Err(CommandError::out_of_range(format!("{msg} ({code})")));
+    }
+    Ok(t)
+}
+
+/// A tower's roof as the dialog previews it (areas, lines, rings), or
+/// `refused` with its first problem.
+pub fn tower_preview(tower: &crate::tower::Tower) -> Result<Value, CommandError> {
+    if let Some((code, msg)) = tower.problems().first() {
+        return Err(refused(format!("{msg} ({code})")));
+    }
+    let r = crate::model::guarded(|| tower.calculate())
+        .map_err(CommandError::internal)?
+        .ok_or_else(|| refused("the tower cannot be calculated".into()))?;
+    Ok(serde_json::json!({
+        "result": r,
+        "roof_area": r.roof_area(),
+        "wall_area": r.wall_area(),
+    }))
+}
+
+/// A curved wall operation of the plan: `round_corner` (radius) or
+/// `bend_wall` (bulge) on part `part` (`edit::arcs`, the MCP tool
+/// edit_walls' operations of the same names).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ArcEdit {
+    RoundCorner {
+        index: usize,
+        radius: f64,
+        #[serde(default)]
+        segments: Option<usize>,
+    },
+    BendWall {
+        index: usize,
+        bulge: f64,
+        #[serde(default)]
+        segments: Option<usize>,
+    },
+}
+
+/// Applies `edit` to part `part`; `refused` with the reason when the arc
+/// does not fit or the outline would cross itself.
+pub fn arc_edit(project: &Project, part: usize, edit: ArcEdit) -> Result<Project, CommandError> {
+    check_input(project)?;
+    let mut next = project.clone();
+    let done = crate::model::guarded(|| {
+        let Some(p) = next.parts.get_mut(part) else {
+            return Err(format!("part {part} does not exist"));
+        };
+        match edit {
+            ArcEdit::RoundCorner {
+                index,
+                radius,
+                segments,
+            } => crate::edit::arcs::round_corner(p, index, radius, segments),
+            ArcEdit::BendWall {
+                index,
+                bulge,
+                segments,
+            } => crate::edit::arcs::bend_wall(p, index, bulge, segments),
+        }
+    })
+    .map_err(CommandError::internal)?;
+    done.map_err(refused)?;
+    let before: std::collections::HashSet<_> = project
+        .problems()
+        .into_iter()
+        .map(|p| (p.item, p.index, p.code))
+        .collect();
+    if let Some(p) = next.problems().into_iter().find(|p| {
+        p.item == crate::model::ProblemItem::Part && !before.contains(&(p.item, p.index, p.code))
+    }) {
+        return Err(refused(format!(
+            "the arc would make the outline invalid: {}",
+            next.describe(&p)
+        )));
+    }
+    check_input(&next)?;
+    Ok(next)
+}
+
 /// The checks of a save from the editor (HUNTC-003): the limits, and no roof
 /// window the write makes unusable or larger than its face
 /// (`edit::check_windows_write`); `before` is the job as it was.

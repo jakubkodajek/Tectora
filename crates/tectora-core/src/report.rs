@@ -8,6 +8,29 @@ use crate::Project;
 use crate::quantities::{dacad_line_totals_of, manual_quantities, part_quantities};
 use crate::roof::RoofQuantities;
 
+/// One tower in the report: its roof ([`crate::tower::TowerResult`], `null`
+/// for a tower with problems), the roof area and the area of its vertical
+/// walls, and where its shaft meets the roofs.
+pub fn tower_report(
+    t: &crate::tower::Tower,
+    r: Option<&crate::tower::TowerResult>,
+    geos: &[crate::roof::RoofGeometry],
+) -> Value {
+    match r {
+        None => json!({ "label": t.label, "result": null }),
+        Some(r) => {
+            let shaft = crate::tower::shaft(t, geos);
+            json!({
+                "label": t.label,
+                "result": r,
+                "roof_area": r.roof_area(),
+                "wall_area": r.wall_area(),
+                "shaft": shaft,
+            })
+        }
+    }
+}
+
 /// Roof geometry and quantities for every part, the area of each
 /// hand-drawn face (`manual_faces`, already in the totals), plus totals. A part the
 /// engine could not take has empty geometry; `problems` says why, and a
@@ -34,6 +57,16 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
         .collect();
     // Lines and faces added by hand (DACAD: Dachlinieneingabe, Neue Dachfläche).
     total.add(&manual_quantities(project));
+    // Towers and turrets (`tower`): their roofs in the totals, each one's
+    // tiers, lines and shaft to list and draw.
+    let tower_results = crate::tower::results(project);
+    total.add(&crate::tower::quantities_of(&tower_results));
+    let towers: Vec<Value> = project
+        .towers
+        .iter()
+        .zip(&tower_results)
+        .map(|(t, r)| tower_report(t, r.as_ref(), geos))
+        .collect();
     // Each hand-drawn face's area, to list beside the parts' (already in
     // the totals; display only).
     let manual_faces: Vec<Value> = project
@@ -44,6 +77,7 @@ pub fn calc_of(project: &Project, geos: &[crate::roof::RoofGeometry]) -> Value {
     let mut out = json!({
         "parts": parts,
         "manual_faces": manual_faces,
+        "towers": towers,
         "totals": total,
         "codes": dacad_line_totals_of(geos, project),
         "problems": project.problems(),

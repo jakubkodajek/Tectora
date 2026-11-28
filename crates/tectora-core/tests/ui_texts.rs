@@ -120,12 +120,19 @@ fn calc_error_kinds() -> Vec<String> {
 fn problem_items() -> Vec<String> {
     use ProblemItem as I;
     let all = |k: I| match k {
-        I::Part | I::Dormer | I::Chimney | I::Opening | I::Window => k,
+        I::Part | I::Dormer | I::Chimney | I::Opening | I::Window | I::Tower => k,
     };
-    [I::Part, I::Dormer, I::Chimney, I::Opening, I::Window]
-        .into_iter()
-        .map(|k| name(all(k)))
-        .collect()
+    [
+        I::Part,
+        I::Dormer,
+        I::Chimney,
+        I::Opening,
+        I::Window,
+        I::Tower,
+    ]
+    .into_iter()
+    .map(|k| name(all(k)))
+    .collect()
 }
 
 /// The text from `at` to the brace that closes the first `{` after it.
@@ -182,6 +189,7 @@ fn problem_codes() -> BTreeSet<String> {
     let problems = body(&model, "pub fn problems(&self) -> Vec<Problem>");
     let mut codes: BTreeSet<String> = EdgeDef::PROBLEMS
         .iter()
+        .chain(tectora_core::tower::Tower::PROBLEMS.iter())
         .map(|(c, _)| c.to_string())
         .collect();
     for line in problems.lines().filter(|l| l.contains("Problem::of(")) {

@@ -156,6 +156,16 @@ fn map_chimney(c: &Chimney, m: Power) -> Chimney {
     }
 }
 
+/// A tower moves with its axis and turns with the map; its shapes are
+/// symmetric, so a mirror only maps its turn.
+fn map_tower(t: &crate::tower::Tower, m: Power) -> crate::tower::Tower {
+    let mut t = t.clone();
+    t.center = m.apply(t.center);
+    let deg = m.angle(t.rotation_deg.to_radians()).to_degrees();
+    t.rotation_deg = round_to(deg.rem_euclid(360.0), 3);
+    t
+}
+
 /// A roof window is placed by its anchor point; the face it lands on gives its slope.
 fn map_window(w: &RoofWindow, m: Power) -> RoofWindow {
     let p = m.apply(Point2::new(w.x, w.y));
@@ -386,6 +396,7 @@ pub enum ItemKind {
     RoofOpening,
     ManualLine,
     ManualFace,
+    Tower,
 }
 
 impl ItemKind {
@@ -397,6 +408,7 @@ impl ItemKind {
             ItemKind::RoofOpening => p.roof_openings.len(),
             ItemKind::ManualLine => p.manual_lines.len(),
             ItemKind::ManualFace => p.manual_faces.len(),
+            ItemKind::Tower => p.towers.len(),
         }
     }
 }
@@ -422,6 +434,7 @@ pub fn item_centre(p: &Project, it: ItemRef) -> Option<Point2> {
             Point2::new((l.a[0] + l.b[0]) / 2.0, (l.a[1] + l.b[1]) / 2.0)
         }
         ItemKind::ManualFace => centre(p.manual_faces[it.index].points.clone()),
+        ItemKind::Tower => p.towers[it.index].center,
     }))
 }
 
@@ -486,6 +499,10 @@ pub fn transform_items(
                     let f = map_face(&p.manual_faces[i], mk);
                     put(&mut p.manual_faces, i, f, copies)
                 }
+                ItemKind::Tower => {
+                    let t = map_tower(&p.towers[i], mk);
+                    put(&mut p.towers, i, t, copies)
+                }
             };
             out.push(ItemRef {
                 kind: it.kind,
@@ -514,6 +531,7 @@ fn kind_name(k: ItemKind) -> &'static str {
         ItemKind::RoofOpening => "roof_opening",
         ItemKind::ManualLine => "manual_line",
         ItemKind::ManualFace => "manual_face",
+        ItemKind::Tower => "tower",
     }
 }
 

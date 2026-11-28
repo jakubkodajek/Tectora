@@ -159,6 +159,33 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
                 .map_err(err)
                 .map(|p| to_json(p).unwrap_or(Value::Null))
         }),
+        "set_tower" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let index: Option<usize> = arg(a, "index").map_err(bad)?;
+            let tower = arg(a, "tower").map_err(bad)?;
+            commands::set_tower(&p, index, tower).map_err(err)
+        }),
+        "tower_preset" => (|| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let kind = arg(a, "kind").map_err(bad)?;
+            let center = arg(a, "center").map_err(bad)?;
+            let width = arg(a, "width").map_err(bad)?;
+            let base = arg(a, "baseHeight").map_err(bad)?;
+            commands::tower_preset(kind, center, width, base)
+                .map_err(err)
+                .map(|t| to_json(t).unwrap_or(Value::Null))
+        })(),
+        "tower_preview" => arg::<tectora_core::tower::Tower>(a, "tower")
+            .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))
+            .and_then(|t| commands::tower_preview(&t).map_err(err)),
+        "arc_edit" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let part = arg(a, "part").map_err(bad)?;
+            let edit = arg(a, "edit").map_err(bad)?;
+            commands::arc_edit(&p, part, edit)
+                .map_err(err)
+                .map(|p| to_json(p).unwrap_or(Value::Null))
+        }),
         "check_dormer" => project().and_then(|p| {
             let index = arg::<usize>(a, "index")
                 .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;

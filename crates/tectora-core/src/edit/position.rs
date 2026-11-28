@@ -106,7 +106,7 @@ fn outline(project: &Project, bare: &[RoofGeometry], it: ItemRef) -> Option<Vec<
         ItemKind::Chimney => project.chimneys.get(it.index)?.corners.clone(),
         ItemKind::RoofOpening => project.roof_openings.get(it.index)?.corners.clone(),
         ItemKind::Window => window_outline(bare, project.windows.get(it.index)?),
-        ItemKind::ManualLine | ItemKind::ManualFace => return None,
+        ItemKind::ManualLine | ItemKind::ManualFace | ItemKind::Tower => return None,
     };
     let finite = pts.iter().all(|p| p.x.is_finite() && p.y.is_finite());
     (pts.len() >= 2 && finite).then_some(pts)
@@ -268,7 +268,7 @@ pub fn check_item(project: &Project, it: ItemRef) -> Result<(), String> {
         ItemKind::Chimney => project.chimneys.len(),
         ItemKind::RoofOpening => project.roof_openings.len(),
         ItemKind::Window => project.windows.len(),
-        ItemKind::ManualLine | ItemKind::ManualFace => {
+        ItemKind::ManualLine | ItemKind::ManualFace | ItemKind::Tower => {
             return Err(
                 "only dormers, chimneys, roof windows and openings are placed on a face".into(),
             );
@@ -490,7 +490,7 @@ fn shift(project: &mut Project, bare: &[RoofGeometry], it: ItemRef, d: Point2) {
                 w.y += d.y;
             }
         }
-        ItemKind::ManualLine | ItemKind::ManualFace => {}
+        ItemKind::ManualLine | ItemKind::ManualFace | ItemKind::Tower => {}
     }
     if let Some((from, to)) = from_to {
         follow_roof(project, &[(it, from, to)], |p| {

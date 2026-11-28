@@ -18,7 +18,9 @@ use crate::geom::{Point2, signed_area};
 /// - 3: fields added to version 2 without a bump (e.g. `parts[].height`,
 ///   written by 0.8.0 as version 2) and unknown top-level keys kept
 ///   (`Project::extra`). Releases up to 0.8.0 refuse a version 3 file.
-pub const SCHEMA_VERSION: u32 = 3;
+/// - 4: `towers`. Releases up to 0.11 refuse a version 4 file (they would
+///   keep the towers as unknown keys and calculate the roof without them).
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Pitch at or above this value (degrees) means a vertical gable wall.
 pub const GABLE_PITCH_DEG: f64 = 89.999;
@@ -46,6 +48,10 @@ pub struct Project {
     /// Holes cut into the roof (DACAD: Öffnung), as convex plan polygons.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roof_openings: Vec<Chimney>,
+    /// Towers and turrets standing through the roof, each with its own
+    /// roof of stacked tiers ([`crate::tower`]; no DACAD counterpart).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub towers: Vec<crate::tower::Tower>,
     /// Lines drawn by hand on the calculated roof (DACAD: Dachlinieneingabe).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub manual_lines: Vec<ManualLine>,
@@ -208,6 +214,7 @@ impl Project {
             chimneys: Vec::new(),
             windows: Vec::new(),
             roof_openings: Vec::new(),
+            towers: Vec::new(),
             manual_lines: Vec::new(),
             manual_faces: Vec::new(),
             flat_roof: false,
@@ -307,6 +314,11 @@ impl Project {
                 out.push(Problem::of(ProblemItem::Window, wi, "bad_size"));
             }
         }
+        for (ti, t) in self.towers.iter().enumerate() {
+            for (code, _) in t.problems() {
+                out.push(Problem::of(ProblemItem::Tower, ti, code));
+            }
+        }
         out.sort_by_key(|p| (p.item, p.index, p.edge));
         out
     }
@@ -327,11 +339,18 @@ impl Project {
             ProblemItem::Chimney => format!("chimney index {n}"),
             ProblemItem::Opening => format!("roof opening index {n}"),
             ProblemItem::Window => format!("window index {n}"),
+            ProblemItem::Tower => format!("tower index {n}"),
         };
         let what = EdgeDef::PROBLEMS
             .iter()
             .find(|(c, _)| *c == p.code)
             .map(|(_, m)| *m)
+            .or_else(|| {
+                crate::tower::Tower::PROBLEMS
+                    .iter()
+                    .find(|(c, _)| *c == p.code)
+                    .map(|(_, m)| *m)
+            })
             .unwrap_or(match p.code {
                 "too_few_edges" => "needs at least 3 edges",
                 "zero_length_wall" => {
@@ -444,6 +463,12 @@ impl Project {
             over("chimneys", self.chimneys.len(), MAX_OBJECTS),
             over("roof windows", self.windows.len(), MAX_OBJECTS),
             over("roof openings", self.roof_openings.len(), MAX_OBJECTS),
+            over("towers", self.towers.len(), crate::tower::MAX_TOWERS),
+            over(
+                "tiers of one tower",
+                self.towers.iter().map(|t| t.tiers.len()).max().unwrap_or(0),
+                crate::tower::MAX_TIERS,
+            ),
             over("hand-drawn lines", self.manual_lines.len(), MAX_OBJECTS),
             over("hand-drawn faces", self.manual_faces.len(), MAX_OBJECTS),
         ];
@@ -702,7 +727,7 @@ pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 }
 
 /// What a problem found by [`Project::problems`] is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProblemItem {
     Part,
@@ -710,6 +735,7 @@ pub enum ProblemItem {
     Chimney,
     Opening,
     Window,
+    Tower,
 }
 
 /// One input the roof engine cannot work with.
@@ -1057,7 +1083,7 @@ fn migrate(v: &mut serde_json::Value) -> serde_json::Result<()> {
         )));
     }
     // 1 -> 2: adds the optional `result_snapshot`; 2 -> 3: adds the other
-    // optional fields listed at [`SCHEMA_VERSION`]. Every new field is
+    // optional fields listed at [`SCHEMA_VERSION`]; 3 -> 4: `towers`. Every new field is
     // optional, so there is nothing to convert; the bump makes older
     // releases refuse what this one writes.
     obj.insert("schema_version".into(), SCHEMA_VERSION.into());

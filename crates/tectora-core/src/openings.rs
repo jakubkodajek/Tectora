@@ -56,10 +56,12 @@ pub fn core_runs() -> u64 {
 pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     CORE_RUNS.with(|n| n.set(n.get() + 1));
     if project.flat_roof {
-        return crate::flat::generate_project(project);
+        return crate::flat::generate_project(&with_tower_shafts(project));
     }
     let (clean, slots, ids) = cleaned(project);
-    let mut geos = generate_valid(&clean);
+    // The towers' shafts are cut out of the roofs like chimneys; the
+    // checks below see the project's own objects only.
+    let mut geos = generate_valid(&with_tower_shafts(&clean));
     let warnings = crate::check::check(&clean.parts, &geos);
     for (geo, w) in geos.iter_mut().zip(warnings) {
         geo.warnings.extend(w);
@@ -128,6 +130,28 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             }
         })
         .collect()
+}
+
+/// `project` with the shaft of every tower without problems added after
+/// its chimneys, as a convex plan polygon: a tower's shaft meets the roof
+/// as a chimney does (DACAD's chimney rules: its plan area / cos(pitch) is
+/// deducted and the abutment lines WV, WH and WS are added). A tower
+/// standing beside the roofs cuts nothing.
+pub fn with_tower_shafts(project: &Project) -> std::borrow::Cow<'_, Project> {
+    if project.towers.is_empty() {
+        return std::borrow::Cow::Borrowed(project);
+    }
+    let mut p = project.clone();
+    for t in project.towers.iter().filter(|t| t.problems().is_empty()) {
+        let corners = t.footprint();
+        if corners.len() >= 3 {
+            p.chimneys.push(Chimney {
+                corners,
+                height: t.base_height,
+            });
+        }
+    }
+    std::borrow::Cow::Owned(p)
 }
 
 /// Index in the cleaned project of each part, and its edge count when it

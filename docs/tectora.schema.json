@@ -410,6 +410,123 @@
       ],
       "type": "object"
     },
+    "Tower": {
+      "description": "A tower or turret standing through the roof (see the module docs).",
+      "properties": {
+        "base_height": {
+          "description": "Height where the tower's roof starts (top of the shaft), m above\nground.",
+          "format": "double",
+          "type": "number"
+        },
+        "center": {
+          "$ref": "#/$defs/Point2",
+          "description": "Plan point of the tower's axis."
+        },
+        "corner_radius": {
+          "description": "Radius of the rounded corners of a rectangle or polygon at the base,\nm (scales with the plan up the roof).",
+          "format": "double",
+          "type": "number"
+        },
+        "depth": {
+          "description": "Depth of a rectangular shaft, m (across the tower's x axis); `None`\nfor a square.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "rotation_deg": {
+          "description": "Turn of the tower's x axis from the plan's x axis, degrees\ncounter-clockwise.",
+          "format": "double",
+          "type": "number"
+        },
+        "shape": {
+          "$ref": "#/$defs/TowerShape",
+          "default": "rectangle"
+        },
+        "sides": {
+          "description": "Sides of a polygonal shaft.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tiers": {
+          "default": [],
+          "description": "The roof profile, bottom tier first.",
+          "items": {
+            "$ref": "#/$defs/TowerTier"
+          },
+          "type": "array"
+        },
+        "width": {
+          "description": "Width of the shaft, m (rectangle: along the tower's x axis; polygon:\nacross the flats; circle: diameter).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "center",
+        "width",
+        "base_height"
+      ],
+      "type": "object"
+    },
+    "TowerShape": {
+      "description": "Plan shape of a tower.",
+      "oneOf": [
+        {
+          "const": "rectangle",
+          "description": "`width` along the tower's x axis, `depth` across; corners rounded by\n`corner_radius`.",
+          "type": "string"
+        },
+        {
+          "const": "polygon",
+          "description": "Regular polygon with `sides` sides, `width` across the flats, one\nside parallel to the tower's x axis; corners rounded by\n`corner_radius`.",
+          "type": "string"
+        },
+        {
+          "const": "circle",
+          "description": "Circle of diameter `width`.",
+          "type": "string"
+        }
+      ]
+    },
+    "TowerTier": {
+      "description": "One tier of a tower's roof profile, from the top of the tier below (or\nthe tower's base) up.",
+      "properties": {
+        "bulge": {
+          "description": "Curvature of the tier's profile: the arc's height over its chord,\nm; positive bulges outward (onion), negative inward (bell). At most\nhalf the chord (a semicircle).",
+          "format": "double",
+          "type": "number"
+        },
+        "material": {
+          "default": 2,
+          "description": "Roof material, numbered as on walls (1 tiles, 2 sheet metal, …).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rise": {
+          "description": "Height the tier rises, m (0 for a flat ledge).",
+          "format": "double",
+          "type": "number"
+        },
+        "top_width": {
+          "description": "Width of the plan at the top of the tier, m, measured like the\ntower's `width` (0 = the tier ends in a point).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "rise",
+        "top_width"
+      ],
+      "type": "object"
+    },
     "WallSource": {
       "description": "A wall record of an imported DACAD file.",
       "properties": {
@@ -539,6 +656,13 @@
       "format": "uint32",
       "minimum": 0,
       "type": "integer"
+    },
+    "towers": {
+      "description": "Towers and turrets standing through the roof, each with its own\nroof of stacked tiers ([`crate::tower`]; no DACAD counterpart).",
+      "items": {
+        "$ref": "#/$defs/Tower"
+      },
+      "type": "array"
     },
     "windows": {
       "default": [],

@@ -168,7 +168,7 @@ fn calc(
     let lines_by_type = q::dacad_line_totals_of(&geos, project);
     let totals = q::roof_totals_of(&geos, project);
     let area_by_pitch = q::area_by_pitch_in(&geos, project);
-    let by_line_material = q::lines_by_material_of(&geos);
+    let by_line_material = q::lines_by_material_in(&geos, project);
     // Warnings that belong to no building, as MCP `calc` (ERR-1901).
     let job = tectora_core::check::job_warnings(project, &geos);
     let parts: Vec<_> = project
