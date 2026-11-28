@@ -1072,13 +1072,17 @@ const DESTRUCTIVE: &[&str] = &[
     "discard_bug_report",
 ];
 
+/// Tools that reach outside this computer: they upload a bug report to the
+/// developers' relay (`openWorldHint`).
+const SENDS: &[&str] = &["create_bug_report", "send_bug_reports"];
+
 /// MCP tool annotations (spec 2025-06-18, `ToolAnnotations`). Clients use
 /// them to group tools for their permission prompts: Claude Desktop offers
 /// "Always allow" per group of read-only and write tools, so a user can stop
 /// the prompts for everything that only reads. A tool reads only when it
 /// takes no `summary` (every write needs one, `AGENTS.md`). Everything is
-/// local, except that a bug report is sent to the developers (the tool says so
-/// in its description; the hint stays false for every tool).
+/// local, except the tools in [`SENDS`], which upload a bug report to the
+/// developers and say so with `openWorldHint`.
 fn annotations(name: &str, tool: &Value) -> Value {
     let writes = tool["inputSchema"]["properties"].get("summary").is_some();
     let mut title: String = name.replace('_', " ");
@@ -1088,7 +1092,7 @@ fn annotations(name: &str, tool: &Value) -> Value {
     let mut a = json!({
         "title": title,
         "readOnlyHint": !writes,
-        "openWorldHint": false,
+        "openWorldHint": SENDS.contains(&name),
     });
     if writes {
         a["destructiveHint"] = json!(DESTRUCTIVE.contains(&name));
@@ -2811,12 +2815,21 @@ mod tests {
         assert_eq!(tool("update_edges")["readOnlyHint"], false);
         assert_eq!(tool("update_edges")["destructiveHint"], false);
         assert_eq!(tool("delete_project")["destructiveHint"], true);
+        // Exactly the two tools that upload a report reach outside.
+        let open: Vec<&str> = r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["annotations"]["openWorldHint"] == true)
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(open, ["create_bug_report", "send_bug_reports"]);
         assert!(
             r["result"]["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|t| t["annotations"]["openWorldHint"] == false)
+                .all(|t| t["annotations"]["openWorldHint"].is_boolean())
         );
     }
 

@@ -319,7 +319,7 @@ export function onProjectsChanged(cb: (ids: string[]) => void): Promise<Unlisten
 }
 
 /** Fires with the counts of the bug report outbox when they change (it only refreshes a count, never writes). */
-export function watchReportOutbox(cb: (c: { waiting: number; failed: number; local: number }) => void): Promise<UnlistenFn> {
+export function onReportOutbox(cb: (c: { waiting: number; failed: number; local: number }) => void): Promise<UnlistenFn> {
   return listen<{ waiting: number; failed: number; local: number }>("report-outbox", (e) => cb(e.payload));
 }
 

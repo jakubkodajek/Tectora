@@ -234,6 +234,7 @@ describe("the writer gate covers every entry point outside the editor's refusal 
       "App.svelte:onProjectsChanged": "reloads the library list, writes nothing",
       "App.svelte:onLiveStatus": "follow mode: leaves only through mayLeave (openId list below)",
       "App.svelte:onSettingsChanged": "the folder switched outside this window: libraryChanged, listed below",
+      "App.svelte:onReportOutbox": "refreshes the outbox count of waiting reports, writes nothing",
       "Editor.svelte:onProjectsChanged": "an outside save: the reload waits for a drag or core action (defer)",
       "startup.ts:onOpenProject": "a file opened from the system: openJob, which asks mayLeave",
       "startup.ts:onOpenFailed": "shows why a file could not be opened, writes nothing",

@@ -11,7 +11,7 @@
   import { refreshOutbox } from "./lib/reportqueue";
   import { report } from "./lib/report.svelte";
   import Toasts from "./lib/Toasts.svelte";
-  import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, watchReportOutbox, onSettingsChanged } from "./lib/api";
+  import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onReportOutbox, onSettingsChanged } from "./lib/api";
   import { startOpening } from "./lib/startup";
   import { anyWriterOpen } from "./lib/dragsession";
   import { t } from "./lib/i18n.svelte";
@@ -186,7 +186,7 @@
     // The bug reports that wait to be sent: read now and when the app says the
     // queue changed (sent, queued, discarded). Never a notice.
     refreshOutbox();
-    const unOutbox = watchReportOutbox(() => refreshOutbox());
+    const unOutbox = onReportOutbox(() => refreshOutbox());
     // A .tectora / .tectorajob file opened from the system (double-click).
     const openFile = (id: string) => {
       refresh();
