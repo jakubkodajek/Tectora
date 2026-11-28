@@ -43,6 +43,7 @@ stdin/stdout and opens no window (`app/src-tauri/src/main.rs`).
 | `crates/tectora-core` | everything about roofs and jobs; pure and deterministic | `serde`, `geo`, `schemars`, `zip`, `dirs` |
 | `crates/tectora-mcp` | MCP server: tool schemas, dispatch, `guide.md` for AI clients | core |
 | `crates/tectora-cli` | the `tectora` binary (clap) | core, mcp |
+| `crates/tectora-relay` | HTTP client for the bug-report relay (one POST, redirects followed, one deadline); no roof code | `reqwest`, `base64` |
 | `app/src-tauri` | Tauri commands over the core, folder watcher, single instance, file associations | core, mcp, `notify`, Tauri plugins |
 | `app/src` | Svelte 5 + TypeScript UI, three.js 3D, translations, theme tokens | Tauri API only |
 | `tests/fixtures` | DACAD's own outputs the core is checked against | |
@@ -217,6 +218,7 @@ same moment do not drop each other's change.
 | `*.tectorajob` | ZIP: `manifest.json`, `project.tectora`, `history.jsonl`, `preview.svg`, `files/` | core `bundle` |
 | `.activity/<id>.jsonl`, `.activity/live.json` | change log with previous versions; current AI activity | core `store`, MCP |
 | `settings.json` | user settings, unknown keys kept | core `settings` |
+| `<config>/reports/outbox/*.zip` and sidecars, `sent.jsonl` | bug reports waiting to be sent or sent (ZIP with `report.json`) | core `outbox`, `bugreport` |
 
 All of them are untrusted input: ids, sizes and coordinate ranges are checked
 before anything is calculated or written, and calculations run inside
@@ -229,6 +231,47 @@ minutes. It is counted, not timed, and the same on every machine. PDF drawings (
 process of the same executable with a heap cap and a time limit
 (`tectora-mcp/src/worker.rs`), because the PDF reader itself has no limit
 on inflated streams or nested forms.
+
+## Bug reports: outbox and relay
+
+"Report a bug" (app) and `create_bug_report` (MCP) build a ZIP in
+`tectora-core::bugreport` (job bundle, `report.json`, plan SVG, 3D PNG, redacted
+log tails, `manifest.json` with `left_out`). The ZIP is written into the outbox
+and never sent by the builder itself:
+
+```mermaid
+sequenceDiagram
+    participant U as App button / MCP tool
+    participant O as core::outbox (config folder)
+    participant R as tectora-relay
+    participant G as Apps Script relay (owner's account)
+    U->>O: create: ZIP + sidecar, state waiting (or local without a relay)
+    O-->>U: sent / waiting / failed (send-now answers at once)
+    O->>R: drain (background thread, or send-now): one POST, key, meta
+    R->>G: POST (302 followed with GET)
+    G->>G: Drive file in the owner's folder, GitHub issue from meta
+    G-->>R: ok, issue url / error code
+    R-->>O: Receipt or Retry / Permanent
+    O->>O: sent.jsonl line, or backoff in the sidecar
+```
+
+- Location: `<config>/reports/outbox/` (`settings::config_dir()`); sent
+  reports are listed in `sent.jsonl` (lock around append and trim). The
+  `reports_dir` setting no longer exists.
+- States: `waiting` (retried with backoff, at most 6 h apart), `sent`,
+  `failed` (permanent refusal, shown with its code and "Save as"), `local`
+  (made by a build without a relay key; uploaded only by an explicit Send
+  now). The drain stops at the first offline error and never blocks the
+  commands: `create_bug_report` and send-now use `try_lock`, a busy drain
+  queues the report as waiting.
+- The relay (`integrations/report-relay/Code.gs`) checks the key, size and
+  day/minute limits, keeps the report id idempotent, writes the ZIP to Drive
+  and opens one issue from the allow-listed `meta`. Customer data reaches the
+  issue only when the user ticked it.
+- Endpoint and key come from `option_env!` (`TECTORA_REPORT_URL`,
+  `TECTORA_REPORT_KEY`, GitHub Actions secrets) and are checked by
+  `tectora-relay` `Config::checked`; `examples/check-config.rs` checks them
+  in the release workflow. Decision: ADR-0008.
 
 ## Development and CI
 

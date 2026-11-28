@@ -31,6 +31,9 @@ mod drawings;
 #[cfg(test)]
 mod input_tests;
 mod more;
+#[cfg(test)]
+mod relay_tests;
+pub mod reports;
 mod worker;
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -45,6 +48,10 @@ pub struct Server {
     calc_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// How long a write waits for its calculations (tests shorten it).
     commit_timeout: std::time::Duration,
+    /// Where bug reports wait until they are sent.
+    outbox: tectora_core::outbox::Outbox,
+    /// The relay reports are sent to; `None` = this build cannot send.
+    relay: Option<tectora_relay::Config>,
 }
 
 /// Longest a write waits for the calculations behind its answer (window
@@ -1019,6 +1026,21 @@ fn edge_change_props() -> Value {
     p
 }
 
+/// A short reason for the log from a tool's error text: its leading
+/// `code:` when it has one, else `error`. Never the text itself, which may
+/// name jobs and paths.
+fn error_code(e: &str) -> String {
+    match e.split_once(':') {
+        Some((c, _))
+            if (2..=32).contains(&c.len())
+                && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+        {
+            c.to_string()
+        }
+        _ => "error".into(),
+    }
+}
+
 fn summary_prop() -> Value {
     json!({ "type": "string", "description": "One sentence for the user on what you changed and why (shown in the app)." })
 }
@@ -1047,14 +1069,20 @@ const DESTRUCTIVE: &[&str] = &[
     "update_settings",
     "clear_roof",
     "delete_items",
+    "discard_bug_report",
 ];
+
+/// Tools that reach outside this computer: they upload a bug report to the
+/// developers' relay (`openWorldHint`).
+const SENDS: &[&str] = &["create_bug_report", "send_bug_reports"];
 
 /// MCP tool annotations (spec 2025-06-18, `ToolAnnotations`). Clients use
 /// them to group tools for their permission prompts: Claude Desktop offers
 /// "Always allow" per group of read-only and write tools, so a user can stop
 /// the prompts for everything that only reads. A tool reads only when it
 /// takes no `summary` (every write needs one, `AGENTS.md`). Everything is
-/// local: no tool reaches the internet.
+/// local, except the tools in [`SENDS`], which upload a bug report to the
+/// developers and say so with `openWorldHint`.
 fn annotations(name: &str, tool: &Value) -> Value {
     let writes = tool["inputSchema"]["properties"].get("summary").is_some();
     let mut title: String = name.replace('_', " ");
@@ -1064,7 +1092,7 @@ fn annotations(name: &str, tool: &Value) -> Value {
     let mut a = json!({
         "title": title,
         "readOnlyHint": !writes,
-        "openWorldHint": false,
+        "openWorldHint": SENDS.contains(&name),
     });
     if writes {
         a["destructiveHint"] = json!(DESTRUCTIVE.contains(&name));
@@ -1301,7 +1329,26 @@ impl Server {
             client: "AI".into(),
             calc_busy: Default::default(),
             commit_timeout: COMMIT_CALC_TIMEOUT,
+            outbox: tectora_core::outbox::Outbox::open_default(),
+            relay: tectora_relay::Config::baked(),
         }
+    }
+
+    /// A server with its own report outbox folder and relay (tests, the
+    /// preview): nothing is read from the environment.
+    pub fn with_relay(
+        store: Store,
+        outbox_root: &std::path::Path,
+        relay: Option<tectora_relay::Config>,
+    ) -> Self {
+        let mut s = Self::new(store);
+        s.outbox = tectora_core::outbox::Outbox::at(outbox_root);
+        s.relay = relay;
+        s
+    }
+
+    pub fn set_relay(&mut self, relay: Option<tectora_relay::Config>) {
+        self.relay = relay;
     }
 
     /// Parts from which a job may take long enough to need the deadline of
@@ -1766,8 +1813,11 @@ impl Server {
                 ));
             }
             if let Some(m) = schema_mismatch(&schema, args, "") {
+                // Only a write has changed or not changed anything.
+                let writes = schema["properties"].get("summary").is_some();
                 return Err(format!(
-                    "{m} (`{name}`'s input schema); nothing was changed"
+                    "{m} (`{name}`'s input schema){}",
+                    if writes { "; nothing was changed" } else { "" }
                 ));
             }
         }
@@ -2471,6 +2521,11 @@ impl Server {
                         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() }],
                     }),
                     Err(e) => {
+                        // The tool's name only: what it was given may be the user's.
+                        tectora_core::applog::line(
+                            "WARN",
+                            &format!("tool {name} failed: {}", error_code(&e)),
+                        );
                         json!({ "content": [{ "type": "text", "text": e }], "isError": true })
                     }
                 })
@@ -2559,6 +2614,8 @@ pub fn run_stdio(store: Store) -> io::Result<()> {
     if worker::run_if_worker() {
         return Ok(());
     }
+    tectora_core::applog::init("mcp");
+    tectora_core::applog::install_panic_hook();
     let mut server = Server::new(store);
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
@@ -2758,12 +2815,21 @@ mod tests {
         assert_eq!(tool("update_edges")["readOnlyHint"], false);
         assert_eq!(tool("update_edges")["destructiveHint"], false);
         assert_eq!(tool("delete_project")["destructiveHint"], true);
+        // Exactly the two tools that upload a report reach outside.
+        let open: Vec<&str> = r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["annotations"]["openWorldHint"] == true)
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(open, ["create_bug_report", "send_bug_reports"]);
         assert!(
             r["result"]["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|t| t["annotations"]["openWorldHint"] == false)
+                .all(|t| t["annotations"]["openWorldHint"].is_boolean())
         );
     }
 
@@ -3965,7 +4031,68 @@ mod tests {
     /// Tests that read or write the settings file (through
     /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
     /// other's half-written defaults.
-    static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// BUG-2 (fix round 1): the MCP log carries the reason of a failed tool
+    /// but no job name, also while a report about that job is queued. (The
+    /// reports-folder parts of this test went with `reports_dir`, ADR 0008.)
+    #[test]
+    fn the_log_has_codes_but_no_job_names() {
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("tectora-mcp-r1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("logs")).unwrap();
+        unsafe {
+            std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg"));
+            std::env::set_var("TECTORA_LOG_DIR", base.join("logs"));
+        }
+        tectora_core::applog::init("mcp");
+        let mut s = Server::with_relay(
+            Store::new(base.join("lib")).unwrap(),
+            &base.join("reports"),
+            None,
+        );
+        let id = {
+            let r = s
+                .call_tool(
+                    "create_project",
+                    &json!({ "name": "Tajny-Zakaznik-Dum", "summary": "s",
+                    "parts": [{ "points": [[0, 0], [10, 0], [10, 8], [0, 8]] }] }),
+                )
+                .unwrap();
+            r["id"].as_str().unwrap().to_string()
+        };
+        let made = s
+            .call_tool(
+                "create_bug_report",
+                &json!({ "description": "d", "id": id, "summary": "Report" }),
+            )
+            .unwrap();
+        assert!(made["file_name"].is_string(), "{made}");
+        // A failed tool leaves its reason, no arguments, no job names.
+        let line = s
+            .respond_line(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_project","arguments":{"id":"gibt-es-nicht"}}}"#)
+            .unwrap();
+        assert_eq!(line["result"]["isError"], true, "{line}");
+        let log = std::fs::read_to_string(base.join("logs").join("mcp.log")).unwrap();
+        let failed = log
+            .lines()
+            .find(|l| l.contains("tool get_project failed"))
+            .expect(&log);
+        let reason = failed
+            .split("failed")
+            .nth(1)
+            .unwrap_or("")
+            .trim_start_matches(':')
+            .trim();
+        assert!(!reason.is_empty(), "no reason in {failed:?}");
+        let lower = log.to_lowercase();
+        for secret in ["tajny-zakaznik", "gibt-es-nicht"] {
+            assert!(!lower.contains(secret), "the log names {secret}: {log}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
 
     #[test]
     fn a_file_outside_the_job_folders_waits_for_the_user() {

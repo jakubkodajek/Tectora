@@ -52,6 +52,7 @@ const CALLS: Record<string, Entry> = {
   "settings.svelte.ts:getSettings": { action: "read once at start-up, before any settings event" },
   "Home.svelte:listDeleted": { guard: /trashReads\.current\(/ },
   "JobPanel.svelte:listAttachments": { guard: /fileReads\.current\(/ },
+  "ReportDialog.svelte:listAttachments": { action: "read once when the dialog opens, to show the drawings' count and size" },
   "ExportDialog.svelte:exportPreview": { guard: /previews\.current\(/ },
   "exportlist.ts:exportPreview": { action: "the wrapper the Export dialog calls; its call is guarded there" },
   "Editor.svelte:loadProject": { guard: /async function loadOnce/ },

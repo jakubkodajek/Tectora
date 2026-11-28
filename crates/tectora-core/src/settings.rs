@@ -290,6 +290,8 @@ impl Settings {
         match serde_json::from_slice::<Self>(&bytes) {
             Ok(mut s) => {
                 s.roof_defaults = s.roof_defaults.repaired();
+                // The reports folder is gone (ADR 0008): an older file's key is dropped.
+                s.extra.remove("reports_dir");
                 (s, None)
             }
             Err(e) => (Self::default(), Some(format!("{}: {e}", path.display()))),
@@ -593,10 +595,9 @@ impl Settings {
         next.validate()?;
         for key in ["projects_dir", "drawings_dir"] {
             if prepare && patch.contains_key(key) {
-                let dir = if key == "projects_dir" {
-                    next.projects_dir()
-                } else {
-                    next.drawings_dir()
+                let dir = match key {
+                    "projects_dir" => next.projects_dir(),
+                    _ => next.drawings_dir(),
                 };
                 prepare_dir(&dir)?;
             }
@@ -1703,5 +1704,71 @@ mod tests {
             prepare_dir(Path::new("rel")),
             Err(SettingsError::NotAbsolute)
         );
+    }
+
+    // ---- bug reports are sent, not written to a folder (plan-delivery D8) ----
+    // The `reports_dir` setting is gone (ADR 0008); these replace its tests.
+
+    #[test]
+    fn reports_dir_is_not_an_editable_or_folder_key_and_not_described() {
+        assert!(!EDITABLE_KEYS.contains(&"reports_dir"));
+        assert!(!FOLDER_KEYS.contains(&"reports_dir"));
+        assert_eq!(EDITABLE_KEYS.len(), 6);
+        assert_eq!(FOLDER_KEYS.len(), 2);
+        let described = Settings::default().describe();
+        assert!(
+            !described["effective"]
+                .as_object()
+                .unwrap()
+                .contains_key("reports_dir"),
+            "{described}"
+        );
+        assert!(
+            !serde_json::to_value(Settings::default())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("reports_dir")
+        );
+    }
+
+    #[test]
+    fn a_settings_file_that_still_has_reports_dir_loads_and_saves_without_it() {
+        let d = tmp("reports-dir-gone");
+        let path = d.join(SETTINGS_FILE);
+        fs::write(
+            &path,
+            r#"{ "locale": "de", "reports_dir": "/x", "follow_ai": false }"#,
+        )
+        .unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(
+            s.locale.as_deref(),
+            Some("de"),
+            "the rest of the file loads"
+        );
+        assert!(!s.follow_ai);
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(!text.contains("reports_dir"), "{text}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn patching_reports_dir_is_refused_as_an_unknown_key() {
+        let d = tmp("reports-dir-patch");
+        let own = d.join("drive");
+        let base = Settings::default();
+        let patch = serde_json::json!({ "reports_dir": own.to_string_lossy() });
+        assert_eq!(
+            base.patched(&patch).unwrap_err(),
+            SettingsError::InvalidValue("key")
+        );
+        assert_eq!(
+            base.patched_by_ai(&patch, "Claude", "Reports to the drive")
+                .unwrap_err(),
+            SettingsError::InvalidValue("key")
+        );
+        assert!(!own.exists(), "refusing creates no folder");
+        let _ = fs::remove_dir_all(&d);
     }
 }

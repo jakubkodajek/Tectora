@@ -3,9 +3,11 @@
 //! Everything here is pure and deterministic so the desktop app, the CLI
 //! and the MCP server all share exactly the same behaviour.
 
+pub mod applog;
 pub mod assistants;
 pub mod breakdown;
 mod budget;
+pub mod bugreport;
 pub mod bundle;
 pub mod check;
 pub mod commands;
@@ -32,6 +34,7 @@ pub mod nfc;
 mod nfc_pairs;
 mod nfc_singletons;
 pub mod openings;
+pub mod outbox;
 pub mod quantities;
 pub mod raised;
 pub mod report;

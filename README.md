@@ -19,13 +19,15 @@ English and German.
   [docs/tectora.schema.json](docs/tectora.schema.json).
 - `crates/tectora-mcp` — MCP server for AI clients (Claude, Gemini, …); see
   [docs/ai-integration.md](docs/ai-integration.md).
+- `crates/tectora-relay` — HTTP client for the bug-report relay (Apps Script, see [docs/bug-reports.md](docs/bug-reports.md)).
 - `crates/tectora-cli` — the `tectora` binary (`info`, `calc`, `mcp`, `schema`, `export-job`, `import-job`).
 - `app/` — the desktop app: job library, DACAD-style editor (plan + 3D and
   front / back / side / top views, roof definition bar, standard roofs and
   regular polygons, dormers, chimneys, roof windows, openings, calculation
   helpers, round roofs, flat roofs, hand-drawn roof lines and faces, roof
   materials, move / rotate / mirror / copy of parts) and live review of AI
-  changes.
+  changes. A "Report a bug" button builds a ZIP for the owner; reports
+  are queued and sent through the owner's relay (ADR-0008).
 - `tests/fixtures` — DACAD's own results the core is checked against.
 
 ## Build and test

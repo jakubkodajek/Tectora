@@ -1,6 +1,7 @@
 // Turns errors from the Rust commands (and anything else that throws) into
 // a translated message for the user plus the original text for "Details".
 
+import { KNOWN_ERRORS } from "./bugreport";
 import { numberLocale, t } from "./i18n.svelte";
 import { isDefaultPartName } from "./partname";
 import type { CalcError, Problem, Project } from "./types";
@@ -37,7 +38,11 @@ export type Action =
   | "status"
   | "storeResult"
   | "settings"
-  | "move";
+  | "move"
+  | "report"
+  | "reportSave"
+  | "reportShow"
+  | "reportDiscard";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -140,10 +145,12 @@ export function describeError(e: unknown, action?: Action): Described {
   const unknownKeys = code === "too_many" && /unknown keys/.test(err.detail ?? "");
   // A job file in another encoding is intact text, not a damaged file (store.rs `read_text`).
   const notText = code === "unreadable" && notUtf8(err.detail);
+  // A report's own codes have their own texts (the queue, its size limit).
+  const reportText = (action === "report" || action === "reportSave" || action === "reportDiscard") && KNOWN_ERRORS.includes(err.code);
   return {
     code: err.code,
-    title: t(action ? `err.action.${action}` : "err.title"),
-    message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : unknownKeys ? t("err.unknown_keys") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
+    title: t(action === "report" ? "err.ctx.report" : action === "reportDiscard" ? "err.ctx.reportDiscard" : action === "reportSave" ? "err.ctx.reportSave" : action === "reportShow" ? "err.ctx.reportShow" : action ? `err.action.${action}` : "err.title"),
+    message: settings ? t(`settings.err.${err.code}`) : reportText ? t(`report.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : unknownKeys ? t("err.unknown_keys") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };
 }

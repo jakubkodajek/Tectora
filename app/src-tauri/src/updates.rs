@@ -68,7 +68,7 @@ pub async fn update_check(
     if checked.is_none() {
         let answer = check(&app)
             .await
-            .inspect_err(|e| eprintln!("tectora: checking for an update failed: {e}"))?;
+            .inspect_err(|e| log_err!("tectora: checking for an update failed: {e}"))?;
         *checked = Some(answer);
     }
     Ok(match checked.as_ref() {
@@ -131,7 +131,7 @@ pub async fn update_install(
         )
         .await
         .inspect_err(|e| {
-            eprintln!(
+            log_err!(
                 "tectora: downloading version {} failed: {e}",
                 update.version
             )
@@ -139,13 +139,14 @@ pub async fn update_install(
     // Installing may wait for a password dialog on macOS, which needs the
     // main thread free.
     tauri::async_runtime::spawn_blocking(move || {
-        eprintln!(
+        log_err!(
             "tectora: installing version {} over {}",
-            update.version, update.current_version
+            update.version,
+            update.current_version
         );
         // On Windows the installer takes over and the app ends here.
         update.install(&bytes).inspect_err(|e| {
-            eprintln!("tectora: installing version {} failed: {e}", update.version)
+            log_err!("tectora: installing version {} failed: {e}", update.version)
         })?;
         app.restart()
     })

@@ -1542,7 +1542,7 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     write_atomic_bytes(path, contents.as_bytes())
 }
 
-fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic_bytes(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
@@ -2191,7 +2191,7 @@ pub(crate) fn slug_of(name: &str) -> String {
 }
 
 /// File-name friendly id derived from a project name.
-fn slug(name: &str) -> String {
+pub(crate) fn slug(name: &str) -> String {
     // Composed first: a name from macOS may come decomposed (HUNTIO-007).
     let mut s: String = crate::library::fold(name)
         .chars()

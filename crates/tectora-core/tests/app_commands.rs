@@ -23,6 +23,7 @@ fn read(rel: &str) -> String {
 const PREVIEW_STUBS: &[&str] = &[
     "open_attachment",
     "open_folder",
+    "show_bug_report",
     "update_install",
     "take_pending_open",
     "startup_warnings",
@@ -342,4 +343,161 @@ fn no_app_command_calculates_a_roof_outside_the_work_bound() {
         "roof calculations outside the bound:\n{}",
         bad.join("\n")
     );
+}
+
+// ---- bug reports go through the relay (plan-delivery D11, ADR 0008) ----
+
+const REPORT_COMMANDS: [&str; 7] = [
+    "create_bug_report",
+    "bug_report_name",
+    "show_bug_report",
+    "bug_report_outbox",
+    "send_bug_reports",
+    "save_queued_bug_report",
+    "discard_bug_report",
+];
+
+#[test]
+fn the_report_commands_are_in_the_app_and_answered_by_the_bridge() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let bridge = read("crates/tectora-core/examples/ui_bridge.rs");
+    let commands = tauri_commands(&lib);
+    let arms = bridge_arms(&bridge);
+    for c in REPORT_COMMANDS {
+        assert!(
+            commands.iter().any(|x| x == c),
+            "{c} is not in generate_handler!"
+        );
+        assert!(arms.contains_key(c), "the bridge does not answer {c}");
+        assert!(lib.contains(&format!("fn {c}(")), "no fn {c}");
+    }
+}
+
+#[test]
+fn the_report_commands_that_use_the_network_or_the_disk_run_off_the_main_thread() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    for c in [
+        "create_bug_report",
+        "bug_report_outbox",
+        "send_bug_reports",
+        "save_queued_bug_report",
+        "discard_bug_report",
+    ] {
+        let at = lib
+            .find(&format!("fn {c}("))
+            .unwrap_or_else(|| panic!("no fn {c}"));
+        let before: Vec<&str> = lib[..at].lines().rev().take(3).collect();
+        assert!(
+            before
+                .iter()
+                .any(|l| l.contains("#[tauri::command(async)]")),
+            "{c} must be #[tauri::command(async)], saw {before:?}"
+        );
+    }
+}
+
+#[test]
+fn the_reports_folder_is_gone_from_the_app_and_the_bridge() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let bridge = read("crates/tectora-core/examples/ui_bridge.rs");
+    let at = lib.find("fn open_folder(").expect("fn open_folder");
+    let body = &lib[at..at + lib[at..].find("\n}\n").expect("end of open_folder")];
+    assert!(
+        !body.contains("\"reports\""),
+        "open_folder still accepts \"reports\""
+    );
+    for (name, src) in [("lib.rs", &lib), ("ui_bridge.rs", &bridge)] {
+        assert!(
+            !src.contains("reports_dir"),
+            "{name} still mentions reports_dir"
+        );
+        assert!(!src.contains("ensure_library_reports"), "{name}");
+    }
+}
+
+// ---- fix round 2 (target/work/bug-report/fix-r2.md) ----
+
+/// The text of `fn name` up to the closing brace at column 0 (or the next
+/// item); the sources are read, not compiled (WebKitGTK).
+fn fn_text(src: &str, name: &str) -> String {
+    let at = src
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("no fn {name}"));
+    let rest = &src[at..];
+    let end = rest.find("\n}\n").map_or(rest.len(), |e| e + 3);
+    rest[..end].to_string()
+}
+
+/// ERR-002: Send in the dialog and Send now never wait behind the
+/// background drain: `try_lock`, and the report is queued as waiting.
+#[test]
+fn sending_a_report_never_blocks_behind_the_background_drain() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    for c in ["create_bug_report", "send_bug_reports"] {
+        let body = fn_text(&lib, c);
+        assert!(
+            body.contains("try_lock"),
+            "{c} must use try_lock on the drain lock"
+        );
+        assert!(
+            !body.contains("drain_lock.lock()"),
+            "{c} waits for the drain lock with a blocking lock()"
+        );
+    }
+}
+
+/// ERR-007: the background drain survives a poisoned lock and a panic in one
+/// pass, and a thread that cannot start is logged.
+#[test]
+fn the_background_drain_survives_a_poisoned_lock_a_panic_and_a_failed_spawn() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let body = fn_text(&lib, "start_report_drain");
+    assert!(
+        body.contains("Poisoned") || body.contains("into_inner"),
+        "a poisoned drain lock ends the thread's work for good"
+    );
+    assert!(
+        body.contains("catch_unwind"),
+        "a panic in one pass ends the thread"
+    );
+    assert!(
+        !body.contains("let _ = std::thread::Builder"),
+        "a spawn failure is dropped without a log line"
+    );
+    assert!(
+        body.contains("applog"),
+        "nothing is logged by the drain thread"
+    );
+}
+
+/// ERR-001 / UI-003: `failed` reaches the UI as `failed`, in the app and in
+/// the preview bridge, never as `waiting`.
+#[test]
+fn a_failed_report_is_reported_as_failed_by_the_app_and_the_bridge() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let bridge = read("crates/tectora-core/examples/ui_bridge.rs");
+    let app = fn_text(&lib, "create_bug_report");
+    assert!(
+        app.contains("\"failed\"")
+            || lib.contains("fn result_state")
+                && fn_text(&lib, "result_state").contains("\"failed\""),
+        "create_bug_report maps `failed` to something else"
+    );
+    assert!(
+        fn_text(&bridge, "report_state").contains("\"failed\""),
+        "the bridge's report_state maps `failed` to `waiting`"
+    );
+}
+
+/// ARCH-002: the preview and the end-to-end run never use the user's own
+/// outbox (their reports would be `local` there and could be sent later).
+#[test]
+fn the_preview_bridge_and_the_e2e_use_a_scratch_config_folder() {
+    let preview = read("app/scripts/preview.mjs");
+    assert!(
+        preview.contains("TECTORA_CONFIG_DIR"),
+        "preview.mjs does not set a scratch TECTORA_CONFIG_DIR for the bridge"
+    );
+    let serve = read("app/e2e/serve.mjs");
+    assert!(serve.contains("TECTORA_CONFIG_DIR"));
 }

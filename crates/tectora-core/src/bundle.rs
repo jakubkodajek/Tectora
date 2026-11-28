@@ -24,15 +24,15 @@ pub const EXTENSION: &str = "tectorajob";
 const FORMAT: &str = "tectora-job";
 const FORMAT_VERSION: u32 = 1;
 /// Largest attached file read from a bundle, bytes.
-const MAX_ENTRY: u64 = crate::store::MAX_ATTACHMENT;
+pub(crate) const MAX_ENTRY: u64 = crate::store::MAX_ATTACHMENT;
 /// Largest project or change log in a bundle, bytes.
-const MAX_TEXT_ENTRY: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_TEXT_ENTRY: u64 = 16 * 1024 * 1024;
 /// Most attached files a bundle may carry.
-const MAX_FILES: usize = 200;
+pub(crate) const MAX_FILES: usize = 200;
 /// Largest total size of the attached files of one bundle, bytes. Together
 /// with the limits above this keeps a small ZIP from filling the disk
 /// (an entry can inflate about 1000:1).
-const MAX_FILES_TOTAL: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_FILES_TOTAL: u64 = 512 * 1024 * 1024;
 /// Largest bundle file opened: the attached files, the project, its log
 /// and the rest of the ZIP at their limits.
 const MAX_BUNDLE: u64 = MAX_FILES_TOTAL + 4 * MAX_TEXT_ENTRY;
@@ -283,22 +283,29 @@ pub fn with_extension(path: &Path) -> PathBuf {
 
 /// The rules of [`export`] for its destination.
 fn check_dest(store: &Store, dest: &Path) -> Result<(), FileError> {
+    check_dest_ext(store, dest, EXTENSION)
+}
+
+/// [`check_dest`] for a file type other than a job bundle (`ext` without
+/// the dot): a plain file name with that ending, outside the library's own
+/// folders.
+pub(crate) fn check_dest_ext(store: &Store, dest: &Path, ext: &str) -> Result<(), FileError> {
     let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let has_ext = dest
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION));
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext));
     // A name of only spaces and dots before the extension is no name on
     // Windows, which drops them (ARCH-205 item 2).
     let stem = name
-        .get(..name.len().saturating_sub(EXTENSION.len() + 1))
+        .get(..name.len().saturating_sub(ext.len() + 1))
         .unwrap_or("")
         .trim_matches([' ', '.']);
     if !has_ext || stem.is_empty() || !crate::store::valid_file_name(name) {
         return Err(FileError::new(
             "invalid_name",
             format!(
-                "{}: a job bundle must be a plain file name ending in .{EXTENSION}",
+                "{}: the file must be a plain file name ending in .{ext}",
                 dest.display()
             ),
         ));
@@ -328,7 +335,7 @@ fn check_dest(store: &Store, dest: &Path) -> Result<(), FileError> {
         return Err(FileError::new(
             "invalid_name",
             format!(
-                "{}: a job bundle cannot be written into the library's own folders; choose another folder",
+                "{}: the file cannot be written into the library's own folders; choose another folder",
                 dest.display()
             ),
         ));
@@ -423,7 +430,7 @@ fn write_bundle(
 
 /// The newest whole lines of the change log `bytes` that together take at
 /// most `max` bytes (all of it when it fits).
-fn newest_lines(bytes: &[u8], max: usize) -> &[u8] {
+pub(crate) fn newest_lines(bytes: &[u8], max: usize) -> &[u8] {
     if bytes.len() <= max {
         return bytes;
     }
@@ -437,7 +444,7 @@ fn newest_lines(bytes: &[u8], max: usize) -> &[u8] {
 
 /// Reads entry `name`, at most `max` bytes (its declared size is checked
 /// first, the bytes actually inflated as they are read).
-fn read_entry<R: Read + std::io::Seek>(
+pub(crate) fn read_entry<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &str,
     max: u64,

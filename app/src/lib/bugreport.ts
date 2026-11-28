@@ -1,0 +1,349 @@
+// Helpers of the bug report (crates/tectora-core/src/bugreport.rs): the
+// request the core takes, the size caps the core enforces (so a report is
+// never refused for a picture), and the plan as a standalone SVG file.
+import { t } from "./i18n.svelte";
+import { recentActions, recentNotices } from "./reportlog";
+
+export const MAX_DESCRIPTION = 5000;
+/** The core's cap for the 3D picture, bytes. */
+export const MAX_PNG = 8 * 1024 * 1024;
+/** Longest side of a picture that had to be scaled down, px. */
+export const PNG_SIDE = 2000;
+/** Most elements of the plan the standalone SVG is built from. */
+export const MAX_PLAN_NODES = 6000;
+
+export interface Include {
+  job: boolean;
+  customer: boolean;
+  files: boolean;
+  history: boolean;
+  snapshot: boolean;
+  log: boolean;
+}
+
+export interface UiState {
+  locale: string;
+  theme: string;
+  screen: string;
+  layout: string;
+  window: number[];
+  webgl: boolean;
+}
+
+/** A part of the report the UI could not take, with a reason code of the core (`bugreport::REASONS`). */
+export interface LeftOut {
+  part: string;
+  reason: string;
+}
+
+export interface ReportInput {
+  description: string;
+  jobId: string | null;
+  include: Include;
+  planSvg: string | null;
+  modelPng: Uint8Array | null;
+  editorProject: string | null;
+  ui: UiState;
+  /** What the UI could not picture (the core copies only the plan and the 3D picture). */
+  leftOut?: LeftOut[];
+  /** The optional name of the reporter, remembered on this computer. */
+  reporterName?: string;
+}
+
+/** The request of the core's `bugreport::Request`. */
+export interface ReportRequest {
+  description: string;
+  job_id: string | null;
+  include: Include;
+  source: "app";
+  reporter: string;
+  local_stamp: string;
+  client: { ui: UiState; actions: unknown[]; notices: unknown[]; left_out: LeftOut[]; user_name?: string };
+  editor_project: string | null;
+  plan_svg: string | null;
+  model_png: number[] | null;
+}
+
+const two = (n: number) => String(n).padStart(2, "0");
+
+/** `YYYYMMDD-HHMMSS` in the user's local time, for the file name. */
+export function reportStamp(d: Date = new Date()): string {
+  return `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+}
+
+export function buildRequest(i: ReportInput): ReportRequest {
+  const hasJob = !!i.jobId;
+  const include: Include = {
+    job: hasJob && i.include.job,
+    customer: hasJob && i.include.customer,
+    files: hasJob && i.include.files,
+    history: hasJob && i.include.history,
+    snapshot: i.include.snapshot,
+    log: i.include.log,
+  };
+  return {
+    description: i.description.length > MAX_DESCRIPTION ? i.description.slice(0, MAX_DESCRIPTION) : i.description,
+    job_id: hasJob ? i.jobId : null,
+    include,
+    source: "app",
+    reporter: "user",
+    local_stamp: reportStamp(),
+    // Steps and notices are part of the technical record.
+    client: {
+      ui: i.ui,
+      actions: include.log ? recentActions() : [],
+      notices: include.log ? recentNotices() : [],
+      left_out: include.snapshot ? (i.leftOut ?? []) : [],
+      ...(cleanReporterName(i.reporterName ?? "") ? { user_name: cleanReporterName(i.reporterName ?? "") } : {}),
+    },
+    editor_project: hasJob && include.job ? i.editorProject : null,
+    plan_svg: include.snapshot ? i.planSvg : null,
+    model_png: include.snapshot && i.modelPng ? Array.from(i.modelPng) : null,
+  };
+}
+
+/**
+ * A picture within the core's cap: as it is when it fits, else scaled down
+ * by `rescale` (at most [`PNG_SIDE`] px on the long side), else dropped.
+ */
+export async function fitPng(
+  png: Uint8Array,
+  rescale: (maxSide: number) => Promise<Uint8Array | null>,
+): Promise<Uint8Array | null> {
+  if (png.length <= MAX_PNG) return png;
+  try {
+    const smaller = await rescale(PNG_SIDE);
+    return smaller && smaller.length <= MAX_PNG ? smaller : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A PNG scaled to at most `maxSide` px on its long side, through a canvas. */
+export async function rescalePng(png: Uint8Array, maxSide: number): Promise<Uint8Array | null> {
+  const bitmap = await createImageBitmap(new Blob([png as BlobPart], { type: "image/png" }));
+  const k = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * k));
+  canvas.height = Math.max(1, Math.round(bitmap.height * k));
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+  return blob ? new Uint8Array(await blob.arrayBuffer()) : null;
+}
+
+/**
+ * The plan as a file that opens on its own: `xmlns` present and every
+ * `var(--token)` replaced by the value `resolve` gives (else the variable's
+ * own fallback, else `none`).
+ */
+export function standalonePlanSvg(svg: string, resolve: (name: string) => string): string {
+  let out = svg.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/g, (_m, name: string, fallback?: string) => {
+    const v = resolve(name).trim();
+    return v || (fallback ?? "").trim() || "none";
+  });
+  if (!/^\s*<svg[^>]*\sxmlns=/.test(out)) out = out.replace(/^\s*<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+  return out.trimStart();
+}
+
+const INLINED = [
+  "fill",
+  "fill-opacity",
+  "stroke",
+  "stroke-width",
+  "stroke-opacity",
+  "stroke-dasharray",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "opacity",
+  "font-family",
+  "font-size",
+  "font-weight",
+  "text-anchor",
+  "visibility",
+  "display",
+] as const;
+
+/**
+ * The plan view's SVG as the user sees it, as a standalone file: the
+ * computed look of every element is written into its `style`, theme
+ * variables are resolved. Null when the plan has more than
+ * [`MAX_PLAN_NODES`] elements (the core's own preview is in the report
+ * anyway).
+ */
+export function serializePlan(svg: SVGSVGElement): string | null {
+  const from = [svg, ...svg.querySelectorAll("*")];
+  if (from.length > MAX_PLAN_NODES) return null;
+  const copy = svg.cloneNode(true) as SVGSVGElement;
+  const to = [copy, ...copy.querySelectorAll("*")];
+  from.forEach((el, i) => {
+    const cs = getComputedStyle(el);
+    const style = INLINED.map((p) => `${p}:${cs.getPropertyValue(p)}`).join(";");
+    to[i]?.setAttribute("style", style);
+  });
+  const box = svg.getBoundingClientRect();
+  if (!copy.getAttribute("viewBox") && box.width > 0) copy.setAttribute("viewBox", `0 0 ${Math.round(box.width)} ${Math.round(box.height)}`);
+  const root = getComputedStyle(document.documentElement);
+  return standalonePlanSvg(copy.outerHTML, (name) => root.getPropertyValue(name));
+}
+
+const PARTS = ["files", "history", "log", "plan", "model", "preview", "editor_project", "job"];
+const REASONS = ["too_large", "too_many", "unreadable", "unavailable", "invalid", "failed", "timeout", "too_many_nodes", "no_webgl"];
+
+/**
+ * A line for what the report left out, in the user's language: the part and
+ * why. An entry of an older core (a plain string) gives the part it names;
+ * an unknown reason gives the part alone.
+ */
+export function leftOutText(e: LeftOut | string): string {
+  if (typeof e === "string") {
+    const part = PARTS.find((p) => e.includes(p)) ?? "job";
+    return `${t(`report.part.${part}`)}: ${t("report.left.failed")}`;
+  }
+  const part = PARTS.includes(e.part) ? t(`report.part.${e.part}`) : e.part;
+  return REASONS.includes(e.reason) ? `${part}: ${t(`report.left.${e.reason}`)}` : part;
+}
+
+
+// ------------------------------------------------------------ sending
+
+/** What the core returns for a finished report (`ReportResult` in the app). */
+export interface ReportResult {
+  /** `sent`, `waiting` (queued, sent later), `failed` (refused for good), `local` (this build cannot send) or `saved` (Save as). */
+  state: "sent" | "waiting" | "failed" | "local" | "saved";
+  /** The code of the refusal when `state` is `failed`. */
+  last_error?: string;
+  file_name: string;
+  size: number;
+  left_out: LeftOut[];
+  issue_url?: string;
+  path?: string;
+}
+
+export interface ToastPlan {
+  kind: "info" | "error";
+  title: string;
+  message: string;
+  closeDialog: boolean;
+  clearDraft: boolean;
+  /** Save as: the file the toast offers to show in its folder. */
+  showPath?: string;
+}
+
+/** What to tell the user about a finished report. No issue link ever: colleagues have no access to it. */
+export function reportToast(r: ReportResult): ToastPlan {
+  const left = r.left_out.length ? t("report.leftOut", { what: r.left_out.map(leftOutText).join(", ") }) : "";
+  if (r.state === "saved") {
+    return {
+      kind: "info",
+      title: t("report.done"),
+      message: [r.file_name, t("report.passOn"), left].filter(Boolean).join("\n"),
+      closeDialog: true,
+      clearDraft: true,
+      showPath: r.path,
+    };
+  }
+  if (r.state === "failed") {
+    const code = r.last_error ?? "";
+    const why = code && KNOWN_ERRORS.includes(code) ? `${t(`report.err.${code}`)} (${code})` : code;
+    return {
+      kind: "error",
+      title: t("report.failed"),
+      message: [why, t("report.failedHint", { saveAs: t("report.saveAs") }), left].filter(Boolean).join("\n"),
+      closeDialog: true,
+      clearDraft: true,
+    };
+  }
+  const title = r.state === "sent" ? t("report.sent") : r.state === "waiting" ? t("report.queued") : t("report.sendOff");
+  return { kind: "info", title, message: left, closeDialog: true, clearDraft: true };
+}
+
+/** What a failed report asks of the dialog: it stays and keeps the text; `hint` is an extra line for codes that need one. */
+export function reportFailure(code: string): { closeDialog: false; clearDraft: false; hint: string | null } {
+  const hint = code === "too_large" ? t("report.tooLargeHint") : code === "outbox_full" ? t("report.err.outbox_full") : null;
+  return { closeDialog: false, clearDraft: false, hint };
+}
+
+/** The dialog's buttons: Send first when this build can send, else Save as alone. */
+export function dialogLayout(sendable: boolean): { infoKey: string; primary: "send" | "saveAs"; secondary: "saveAs" | null } {
+  return sendable
+    ? { infoKey: "report.sendInfo", primary: "send", secondary: "saveAs" }
+    : { infoKey: "report.sendOff", primary: "saveAs", secondary: null };
+}
+
+export const MAX_REPORTER_NAME = 80;
+const NAME_KEY = "tectora.reporterName";
+
+/** Control and bidi characters removed, trimmed, cut at [`MAX_REPORTER_NAME`]. */
+export function cleanReporterName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const kept = name.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202E\u2060-\u206F\uFEFF]/g, "");
+  return Array.from(kept.trim()).slice(0, MAX_REPORTER_NAME).join("").trim();
+}
+
+interface NameStorage {
+  getItem(k: string): string | null;
+  setItem(k: string, v: string): void;
+  removeItem(k: string): void;
+}
+
+/** The name remembered on this computer; empty when none or when the storage fails. */
+export function loadReporterName(storage: NameStorage): string {
+  try {
+    return cleanReporterName(storage.getItem(NAME_KEY) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+export function saveReporterName(storage: NameStorage, name: string): void {
+  try {
+    const n = cleanReporterName(name);
+    if (n) storage.setItem(NAME_KEY, n);
+    else storage.removeItem(NAME_KEY);
+  } catch {
+    // A storage that refuses: the name is simply not remembered.
+  }
+}
+
+/** A queued report as the outbox list gets it. */
+export interface OutboxEntry {
+  file_name: string;
+  state: string;
+  created_ms: number;
+  job_id: string | null;
+  job_name?: string | null;
+  last_error: string | null;
+  size?: number;
+}
+
+export const KNOWN_ERRORS = ["offline", "rate_limited", "bad_key", "server", "outbox_full", "relay_auth", "bad_answer", "bad_request", "too_large", "io", "unreadable", "busy"];
+
+/** What Send now tells: how many went, and why the others did not. */
+export function sendNowToast(r: { sent: number; waiting: number; failed: number; last_error?: string }): ToastPlan {
+  const parts: string[] = [];
+  if (r.sent > 0) parts.push(t("report.outbox.sentNow", { count: r.sent }));
+  const notSent = r.waiting + r.failed > 0 || r.sent === 0;
+  if (notSent) {
+    const code = r.last_error ?? "";
+    parts.push(t("report.outbox.sendNowFailed", { code: code || "?" }));
+    if (code && KNOWN_ERRORS.includes(code)) parts.push(t(`report.err.${code}`));
+  }
+  return {
+    kind: r.sent === 0 ? "error" : "info",
+    title: parts[0],
+    message: parts.slice(1).join("\n"),
+    closeDialog: false,
+    clearDraft: false,
+  };
+}
+
+/** The texts of one row of the outbox list. */
+export function outboxRowText(e: OutboxEntry): { job: string; state: string; error: { code: string; text: string | null } | null } {
+  const state = ["waiting", "failed", "local"].includes(e.state) ? t(`report.state.${e.state}`) : e.state;
+  const code = e.last_error;
+  return {
+    job: e.job_name || e.job_id || t("report.outbox.noJob"),
+    state,
+    error: code ? { code, text: KNOWN_ERRORS.includes(code) ? t(`report.err.${code}`) : null } : null,
+  };
+}

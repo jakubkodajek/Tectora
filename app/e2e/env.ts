@@ -87,6 +87,14 @@ process.env.TECTORA_E2E_DIR ??= slot.dir;
 process.env.TECTORA_E2E_PORT ??= String(slot.vitePort);
 process.env.TECTORA_E2E_BRIDGE_PORT ??= String(slot.bridgePort);
 
+// The relay the report tests play (fixtures.ts `relay`): a fixed port per slot,
+// handed to the bridge and the MCP server as the run-time override that debug
+// builds honour (plan-delivery D14, ADR 0008).
+export const RELAY_PORT = 7990 + SLOT;
+export const RELAY_KEY = "e2e-relay-key-0123456789";
+process.env.TECTORA_REPORT_URL ??= `http://127.0.0.1:${RELAY_PORT}/macros/s/E2E/exec`;
+process.env.TECTORA_REPORT_KEY ??= RELAY_KEY;
+
 export const E2E_DIR = path.resolve(REPO_DIR, process.env.TECTORA_E2E_DIR!);
 /** The job library the ui_bridge and the MCP server work on. */
 export const LIBRARY_DIR = path.join(E2E_DIR, "library");

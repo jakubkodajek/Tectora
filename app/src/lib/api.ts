@@ -1,4 +1,6 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
+import type { OutboxEntry, ReportRequest, ReportResult } from "./bugreport";
+import { logAction } from "./reportlog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
 import type { HostSlope } from "./dormers";
@@ -73,6 +75,32 @@ export interface StandardParams {
   pitchDeg: number;
   eaveHeight: number;
   overhang: number;
+}
+
+/**
+ * `invoke` that notes the command in the report log: its name, whether it
+ * worked, the error code and how long it took. Never its arguments.
+ */
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const t0 = performance.now();
+  try {
+    const r = await tauriInvoke<T>(cmd, args);
+    logAction({ kind: "command", name: cmd, ok: true, ms: performance.now() - t0 });
+    return r;
+  } catch (e) {
+    // A bare string is the code itself (open_folder answers "not_writable").
+    const code = typeof e === "string" ? e : e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
+    logAction({ kind: "command", name: cmd, ok: false, code, ms: performance.now() - t0 });
+    throw e;
+  }
+}
+
+/** The queue of bug reports, as the app answers it. */
+export interface BugReportOutbox {
+  /** False in a build without a relay: reports can only be saved as files. */
+  sendable: boolean;
+  counts: { waiting: number; failed: number; local: number };
+  reports: OutboxEntry[];
 }
 
 export const api = {
@@ -249,6 +277,20 @@ export const api = {
   /** Writes the plan sheet as PDF or SVG (by the path's extension). */
   exportPlanFile: (project: Project, stamp: string, path: string, lineNames: Record<string, string> = {}) =>
     invoke<void>("export_plan_file", { project, stamp, path, lineNames }),
+  /** Queues a bug report and sends it, or writes it to `path` (Save as). */
+  createBugReport: (request: ReportRequest, path: string | null) => invoke<ReportResult>("create_bug_report", { request, path }),
+  /** The default file name of a report, for the Save as dialog. */
+  bugReportName: (jobName: string | null, stamp: string) => invoke<string>("bug_report_name", { jobName, stamp }),
+  /** Shows a saved report in Finder / Explorer. */
+  showBugReport: (path: string) => invoke<void>("show_bug_report", { path }),
+  /** The reports that wait to be sent, their counts and whether this build can send. */
+  bugReportOutbox: () => invoke<BugReportOutbox>("bug_report_outbox"),
+  /** Tries to send everything that waits, now. */
+  sendBugReports: () => invoke<{ sent: number; waiting: number; failed: number; last_error?: string }>("send_bug_reports"),
+  /** Save as of a queued report; it stays queued. */
+  saveQueuedBugReport: (name: string, path: string) => invoke<ReportResult>("save_queued_bug_report", { name, path }),
+  /** Removes a queued report that was not sent. */
+  discardBugReport: (name: string) => invoke<void>("discard_bug_report", { name }),
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
@@ -274,6 +316,11 @@ export function onOpenProject(cb: (id: string) => void): Promise<UnlistenFn> {
 /** Fires with the ids of project files that changed on disk. */
 export function onProjectsChanged(cb: (ids: string[]) => void): Promise<UnlistenFn> {
   return listen<string[]>("projects-changed", (e) => cb(e.payload));
+}
+
+/** Fires with the counts of the bug report outbox when they change (it only refreshes a count, never writes). */
+export function onReportOutbox(cb: (c: { waiting: number; failed: number; local: number }) => void): Promise<UnlistenFn> {
+  return listen<{ waiting: number; failed: number; local: number }>("report-outbox", (e) => cb(e.payload));
 }
 
 /** Fires when an AI agent reports what it is doing. */

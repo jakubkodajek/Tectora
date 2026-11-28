@@ -104,7 +104,7 @@ impl From<tauri::Error> for AppError {
 pub fn guard<T>(f: impl FnOnce() -> Result<T, AppError>) -> Result<T, AppError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
         let msg = panic_message(&*payload);
-        eprintln!("tectora: internal error: {msg}");
+        log_err!("tectora: internal error: {msg}");
         Err(AppError::new("internal").detail(msg))
     })
 }

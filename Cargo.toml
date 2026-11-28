@@ -5,6 +5,7 @@ members = [
     "crates/tectora-mcp",
     "crates/tectora-cli",
     "crates/tectora-drawing",
+    "crates/tectora-relay",
     "app/src-tauri",
 ]
 

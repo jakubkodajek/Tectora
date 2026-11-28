@@ -4,7 +4,9 @@
 import { test as base, expect, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import { BRIDGE_URL, CONFIG_DIR, FILES_DIR, LIBRARY_DIR } from "./env";
+import http from "node:http";
+import zlib from "node:zlib";
+import { BRIDGE_URL, CONFIG_DIR, FILES_DIR, LIBRARY_DIR, RELAY_PORT } from "./env";
 import { Mcp } from "./mcp";
 
 export { expect };
@@ -152,7 +154,108 @@ export class App {
   }
 }
 
-type Fixtures = { app: App; mcp: Mcp };
+/** What one upload to the relay fixture looked like. */
+export interface Upload {
+  body: { v: number; key: string; id: string; file_name: string; size: number; meta: Record<string, any>; zip_b64: string };
+  /** The ZIP's entries by name (stored and deflated entries). */
+  zip: Map<string, Buffer>;
+}
+
+/** The entries of a ZIP, read from its central directory. */
+export function unzip(buf: Buffer): Map<string, Buffer> {
+  const out = new Map<string, Buffer>();
+  let end = buf.length - 22;
+  while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
+  if (end < 0) throw new Error("not a zip");
+  const count = buf.readUInt16LE(end + 10);
+  let at = buf.readUInt32LE(end + 16);
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(at) !== 0x02014b50) throw new Error("bad central directory");
+    const method = buf.readUInt16LE(at + 10);
+    const size = buf.readUInt32LE(at + 20);
+    const n = buf.readUInt16LE(at + 28);
+    const m = buf.readUInt16LE(at + 30);
+    const k = buf.readUInt16LE(at + 32);
+    const local = buf.readUInt32LE(at + 42);
+    const name = buf.subarray(at + 46, at + 46 + n).toString("utf8");
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const data = buf.subarray(start, start + size);
+    out.set(name, method === 8 ? zlib.inflateRawSync(data) : Buffer.from(data));
+    at += 46 + n + m + k;
+  }
+  return out;
+}
+
+/**
+ * The relay of the report tests: a Node `http` server on the run's relay
+ * port that answers like Apps Script (POST -> 302 -> GET -> JSON). `refuse()`
+ * closes the port (connection refused, the app is "offline"), `accept()`
+ * opens it again. `hold()` makes the next upload wait until `release()` so a
+ * test can look at the dialog while a send is under way. Waits are on
+ * promises (`nextUpload`), never on time.
+ */
+export class Relay {
+  readonly uploads: Upload[] = [];
+  private server: http.Server | null = null;
+  private waiters: ((u: Upload) => void)[] = [];
+  private gate: Promise<void> | null = null;
+  private open!: () => void;
+  private connections = new Set<import("node:net").Socket>();
+  /** The answer's `error`, or null for success. */
+  answer: { ok: false; error: string; retry_after_s?: number } | null = null;
+
+  async accept() {
+    if (this.server) return;
+    const server = http.createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      if (req.method === "POST") {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        const upload: Upload = { body, zip: unzip(Buffer.from(body.zip_b64, "base64")) };
+        if (this.gate) await this.gate;
+        if (!this.answer) {
+          this.uploads.push(upload);
+          const w = this.waiters.shift();
+          w?.(upload);
+        }
+        res.writeHead(302, { Location: "/macros/echo?k=1", Connection: "close" }).end();
+      } else {
+        const payload = this.answer ?? { ok: true, file_id: "E2EFILE", issue_url: "https://github.com/jakubkodajek/Tectora/issues/1" };
+        res.writeHead(200, { "Content-Type": "application/json", Connection: "close" }).end(JSON.stringify(payload));
+      }
+    });
+    server.on("connection", (s) => {
+      this.connections.add(s);
+      s.on("close", () => this.connections.delete(s));
+    });
+    await new Promise<void>((ok, bad) => server.once("error", bad).listen(RELAY_PORT, "127.0.0.1", ok));
+    this.server = server;
+  }
+
+  async refuse() {
+    const s = this.server;
+    if (!s) return;
+    this.server = null;
+    for (const c of this.connections) c.destroy();
+    await new Promise<void>((r) => s.close(() => r()));
+  }
+
+  /** Resolves with the next upload that arrives (or the one already there that was not awaited). */
+  nextUpload(): Promise<Upload> {
+    return new Promise((r) => this.waiters.push(r));
+  }
+
+  hold() {
+    this.gate = new Promise<void>((r) => (this.open = r));
+  }
+
+  release() {
+    this.open?.();
+    this.gate = null;
+  }
+}
+
+type Fixtures = { app: App; mcp: Mcp; relay: Relay };
 
 export const test = base.extend<Fixtures>({
   app: async ({ page }, use, testInfo) => {
@@ -168,6 +271,13 @@ export const test = base.extend<Fixtures>({
     if (testInfo.status === testInfo.expectedStatus) {
       expect(app.errors, "page or console errors during the test").toEqual([]);
     }
+  },
+  relay: async ({}, use) => {
+    const r = new Relay();
+    await r.accept();
+    await use(r);
+    r.release();
+    await r.refuse();
   },
   mcp: async ({}, use) => {
     const m = await Mcp.start("Claude");

@@ -234,6 +234,7 @@ describe("the writer gate covers every entry point outside the editor's refusal 
       "App.svelte:onProjectsChanged": "reloads the library list, writes nothing",
       "App.svelte:onLiveStatus": "follow mode: leaves only through mayLeave (openId list below)",
       "App.svelte:onSettingsChanged": "the folder switched outside this window: libraryChanged, listed below",
+      "App.svelte:onReportOutbox": "refreshes the outbox count of waiting reports, writes nothing",
       "Editor.svelte:onProjectsChanged": "an outside save: the reload waits for a drag or core action (defer)",
       "startup.ts:onOpenProject": "a file opened from the system: openJob, which asks mayLeave",
       "startup.ts:onOpenFailed": "shows why a file could not be opened, writes nothing",
@@ -273,7 +274,7 @@ describe("the writer gate covers every entry point outside the editor's refusal 
       const inside = actions.filter((a) => a.startsWith(`${file}:`)).length;
       expect(outside, `${file}: a toast action outside notify(`).toBe(inside);
     }
-    expect(actions.sort()).toEqual(["App.svelte:ai.followOpen", "Editor.svelte:snap.refreshedShow", "Home.svelte:home.restore", "JobPanel.svelte:snap.store"]);
+    expect(actions.sort()).toEqual(["App.svelte:ai.followOpen", "Editor.svelte:snap.refreshedShow", "Home.svelte:home.restore", "JobPanel.svelte:snap.store", "ReportDialog.svelte:report.show", "ReportOutbox.svelte:report.show"]);
     const toasts = stripComments(files["Toasts.svelte"]);
     const run = definition(toasts, "runAction");
     expect(run && gateFirst(run), "Toasts runAction asks the gate before anything else").toBe(true);

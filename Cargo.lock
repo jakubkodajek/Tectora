@@ -1395,6 +1395,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -3752,6 +3753,7 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",
@@ -5025,6 +5027,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "tectora-relay",
  "thiserror 2.0.21",
  "toml_edit 0.25.17+spec-1.1.0",
  "zip",
@@ -5047,6 +5050,18 @@ dependencies = [
  "serde_json",
  "tectora-core",
  "tectora-drawing",
+ "tectora-relay",
+]
+
+[[package]]
+name = "tectora-relay"
+version = "0.11.0"
+dependencies = [
+ "base64 0.23.1",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "url",
 ]
 
 [[package]]
