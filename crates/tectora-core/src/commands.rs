@@ -633,18 +633,8 @@ pub fn arc_edit(project: &Project, part: usize, edit: ArcEdit) -> Result<Project
     })
     .map_err(CommandError::internal)?;
     done.map_err(refused)?;
-    let before: std::collections::HashSet<_> = project
-        .problems()
-        .into_iter()
-        .map(|p| (p.item, p.index, p.code))
-        .collect();
-    if let Some(p) = next.problems().into_iter().find(|p| {
-        p.item == crate::model::ProblemItem::Part && !before.contains(&(p.item, p.index, p.code))
-    }) {
-        return Err(refused(format!(
-            "the arc would make the outline invalid: {}",
-            next.describe(&p)
-        )));
+    if let Some(e) = crate::edit::arcs::outline_spoiled(project, &next) {
+        return Err(refused(e));
     }
     check_input(&next)?;
     Ok(next)
@@ -800,6 +790,31 @@ mod tests {
             crate::snapshot::take_checked(&p),
             Err(crate::snapshot::Refused::NoBuilding)
         );
+    }
+
+    /// Audit ARCH-004 / MATH-011: towers alone are figures to offer, and
+    /// Clear removes them with the rest.
+    #[test]
+    fn a_job_of_towers_only_has_figures_and_clear_removes_them() {
+        let mut p = hip();
+        p.parts.clear();
+        p.dormers.clear();
+        p.chimneys.clear();
+        p.windows.clear();
+        p.roof_openings.clear();
+        p.towers.push(crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Cone,
+            crate::geom::Point2::new(0.0, 0.0),
+            3.0,
+            8.0,
+        ));
+        assert!(take_snapshot(&p).is_ok());
+        assert_eq!(
+            crate::quantities::RoofCoverage::of(&p, 0),
+            crate::quantities::RoofCoverage::Complete
+        );
+        assert!(crate::edit::clear_roof(&mut p));
+        assert!(p.towers.is_empty());
     }
 
     /// Audit 2026-11-21 TEST-203: hand-drawn faces alone are figures to

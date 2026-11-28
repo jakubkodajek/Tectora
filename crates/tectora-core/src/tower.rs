@@ -132,6 +132,12 @@ pub const DEFAULT_TOWER_MATERIAL: u8 = 2;
 
 /// Most tiers of one tower.
 pub const MAX_TIERS: usize = 24;
+/// The most tiers of all towers of a job together: with the points a ring
+/// is drawn with, what bounds the size of a calculation's answer (audit
+/// ARCH-001: 50 towers of 24 curved tiers answered 119 MB).
+pub const MAX_TIERS_TOTAL: usize = 120;
+/// The most points of a ring drawn for the editor.
+pub const MAX_DRAW_POINTS: usize = 64;
 /// Most towers of one job.
 pub const MAX_TOWERS: usize = 50;
 /// Fewest and most sides of a polygonal tower.
@@ -153,6 +159,12 @@ pub const FINE_ARC_SUBSTEPS: usize = 128;
 /// shaft's cut in the roof (1/32 of a turn).
 pub const DRAW_ARC_STEP: f64 = PI / 16.0;
 pub const DRAW_ARC_SUBSTEPS: usize = 12;
+
+/// The shortest edge of the shaft's cut in the roof, m (well above the
+/// core's 2 cm point merge).
+pub const MIN_SHAFT_EDGE: f64 = 0.1;
+/// The most corners of the shaft's cut in the roof.
+pub const MAX_SHAFT_CORNERS: usize = 32;
 
 /// Heights and widths closer than this are the same, m.
 const EPS: f64 = 1e-9;
@@ -275,7 +287,7 @@ impl Tower {
         ("tower_flat_bulge", "a flat tier cannot be curved"),
         (
             "tower_bulge",
-            "a curve may be at most half its chord and must not cross the tower's axis",
+            "a curve may be at most half its chord and must stay within its tier's heights and not cross the tower's axis",
         ),
     ];
 
@@ -347,7 +359,7 @@ impl Tower {
         if out.is_empty() && self.profiles(FINE_ARC_SUBSTEPS).is_none() {
             out.push((
                 "tower_bulge",
-                "a curve may be at most half its chord and must not cross the tower's axis",
+                "a curve may be at most half its chord and must stay within its tier's heights and not cross the tower's axis",
             ));
         }
         out
@@ -414,7 +426,11 @@ impl Tower {
             } else {
                 arc_points((h, z), (h1, z1), t.bulge, substeps)?
             };
-            if pts.iter().any(|&(ph, _)| ph < -1e-9) {
+            // Never across the axis, and never above or below the tier's
+            // own heights: a dome would end in a dimple over its top, a
+            // bell dip into the shaft (audit MATH-007).
+            let (lo, hi) = (z.min(z1) - 1e-6, z.max(z1) + 1e-6);
+            if pts.iter().any(|&(ph, pz)| ph < -1e-9 || pz < lo || pz > hi) {
                 return None;
             }
             out.push(pts.into_iter().map(|(ph, pz)| (ph.max(0.0), pz)).collect());
@@ -431,11 +447,46 @@ impl Tower {
     }
 
     /// The shaft's plan outline, counter-clockwise, as it is cut out of the
-    /// roof (arcs at [`DRAW_ARC_STEP`]).
+    /// roof like a chimney: a convex polygon the core takes (corners at
+    /// least [`MIN_SHAFT_EDGE`] apart, at most [`MAX_SHAFT_CORNERS`]) with
+    /// the shaft's true plan area (scaled about the axis, so a round
+    /// shaft's hole is not the inscribed polygon's, audit MATH-002/004).
     pub fn footprint(&self) -> Vec<Point2> {
-        self.outline(DRAW_ARC_STEP)
-            .map(|o| o.points.iter().map(|&p| self.place(p, 1.0)).collect())
-            .unwrap_or_default()
+        let Some(fine) = self.outline(FINE_ARC_STEP) else {
+            return Vec::new();
+        };
+        let Some(o) = self.outline(DRAW_ARC_STEP) else {
+            return Vec::new();
+        };
+        let mut pts = o.points;
+        // Drop corners closer than the minimum to the last one kept (tiny
+        // rounded corners, small round shafts): the core merges points
+        // within 2 cm and the polygon would turn non-convex.
+        let mut kept: Vec<Point2> = Vec::with_capacity(pts.len());
+        for &p in &pts {
+            if kept.last().is_none_or(|q| q.distance(p) >= MIN_SHAFT_EDGE) {
+                kept.push(p);
+            }
+        }
+        while kept.len() > 3 && kept[0].distance(kept[kept.len() - 1]) < MIN_SHAFT_EDGE {
+            kept.pop();
+        }
+        if kept.len() >= 3 {
+            pts = kept;
+        }
+        if pts.len() > MAX_SHAFT_CORNERS {
+            let n = pts.len();
+            pts = (0..MAX_SHAFT_CORNERS)
+                .map(|i| pts[i * n / MAX_SHAFT_CORNERS])
+                .collect();
+        }
+        let a = crate::geom::signed_area(&pts).abs();
+        let k = if a > 0.0 {
+            (fine.area() / a).sqrt()
+        } else {
+            1.0
+        };
+        pts.iter().map(|&p| self.place(p, k)).collect()
     }
 
     /// The tower's highest point, m above ground.
@@ -451,7 +502,16 @@ impl Tower {
             return None;
         }
         let fine = self.outline(FINE_ARC_STEP)?;
-        let draw = self.outline(DRAW_ARC_STEP)?;
+        let mut draw = self.outline(DRAW_ARC_STEP)?;
+        // At most MAX_DRAW_POINTS points a ring: what the editor draws is
+        // sent with every calculation (audit ARCH-001).
+        // Only arcs are thinned: a shape with sharp corners has at most 64.
+        if draw.points.len() > MAX_DRAW_POINTS && draw.sharp.is_empty() {
+            let n = draw.points.len();
+            draw.points = (0..MAX_DRAW_POINTS)
+                .map(|i| draw.points[i * n / MAX_DRAW_POINTS])
+                .collect();
+        }
         let fine_profiles = self.profiles(FINE_ARC_SUBSTEPS)?;
         let draw_profiles = self.profiles(DRAW_ARC_SUBSTEPS)?;
         let half = self.width / 2.0;
@@ -554,7 +614,7 @@ impl Tower {
                     if ((b.pitch_deg - tr.pitch_deg).abs() > 0.5 || b.area == 0.0)
                         && bottom_h > EPS =>
                 {
-                    lines.push(self.ring_line("K", i, bottom_h, bottom_z, &draw, half, perimeter))
+                    lines.push(self.ring_line("c", i, bottom_h, bottom_z, &draw, half, perimeter))
                 }
                 _ => {}
             }
@@ -567,7 +627,7 @@ impl Tower {
                     }
                     // The flat top.
                     None if tr.rise_positive() => {
-                        lines.push(self.ring_line("K", i, top_h, top_z, &draw, half, perimeter))
+                        lines.push(self.ring_line("c", i, top_h, top_z, &draw, half, perimeter))
                     }
                     _ => {}
                 }
@@ -716,7 +776,7 @@ pub struct TowerCap {
     pub ring: Vec<[f64; 3]>,
 }
 
-/// A roof line of a tower: a closed ring (eave T, pitch break K, Pult P) or
+/// A roof line of a tower: a closed ring (eave T, pitch break c, Pult P) or
 /// a hip G up a sharp corner.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TowerLine {
@@ -756,7 +816,7 @@ pub fn quantities_of(results: &[Option<TowerResult>]) -> crate::roof::RoofQuanti
         for l in &r.lines {
             match l.code {
                 "T" => q.eave_length += l.length,
-                "K" => q.knick_length += l.length,
+                "c" => q.knick_length += l.length,
                 "P" => q.pult_length += l.length,
                 "G" => {
                     q.hip_length += l.length;
@@ -810,7 +870,7 @@ pub fn lines_by_material(project: &crate::Project) -> Vec<(u8, &'static str, f64
         for l in &r.lines {
             let own = m(l.tier);
             out.push((own, l.code, l.length));
-            if l.code == "K"
+            if l.code == "c"
                 && l.tier > 0
                 && r.tiers.get(l.tier).is_some_and(|x| {
                     (x.bottom_height - l.points.first().map_or(0.0, |p| p[2])).abs() < 1e-9
@@ -913,12 +973,30 @@ pub fn shaft(t: &Tower, geos: &[crate::roof::RoofGeometry]) -> Shaft {
         }
         bottom.push([p.x, p.y, z.min(t.base_height)]);
     }
+    // The walls from the roof up to the base, the roof height sampled
+    // every 5 cm along each side (a ridge or hip under the shaft runs
+    // between its corners: audit MATH-008), just outside the shaft.
+    let height = |p: Point2| -> f64 {
+        let (dx, dy) = (p.x - t.center.x, p.y - t.center.y);
+        let l = dx.hypot(dy).max(1e-9);
+        let q = Point2::new(p.x + dx / l * 0.05, p.y + dy / l * 0.05);
+        roof_height_at(geos, q).unwrap_or(0.0).min(t.base_height)
+    };
     let mut wall_area = 0.0;
     for i in 0..n {
-        let (a, b) = (bottom[i], bottom[(i + 1) % n]);
-        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
-        let h = t.base_height - (a[2] + b[2]) / 2.0;
-        wall_area += len * h.max(0.0);
+        let (a, b) = (fp[i], fp[(i + 1) % n]);
+        let len = a.distance(b);
+        let k = ((len / 0.05).ceil() as usize).clamp(1, 400);
+        let mut sum = 0.0;
+        let mut prev = t.base_height - height(a);
+        for j in 1..=k {
+            let s = j as f64 / k as f64;
+            let h =
+                t.base_height - height(Point2::new(a.x + (b.x - a.x) * s, a.y + (b.y - a.y) * s));
+            sum += (prev + h) / 2.0;
+            prev = h;
+        }
+        wall_area += len * sum / k as f64;
     }
     Shaft {
         bottom,
@@ -1104,7 +1182,7 @@ mod tests {
         assert!(close(r.tiers[0].area, 4.0 * 3.0 * 2f64.sqrt(), 1e-12));
         assert!(close(r.cap.as_ref().unwrap().area, 4.0, 1e-12));
         assert!(close(r.roof_area(), 12.0 * 2f64.sqrt() + 4.0, 1e-12));
-        let k: Vec<_> = r.lines.iter().filter(|l| l.code == "K").collect();
+        let k: Vec<_> = r.lines.iter().filter(|l| l.code == "c").collect();
         assert_eq!(k.len(), 1);
         assert!(close(k[0].length, 8.0, 1e-12));
     }
@@ -1154,7 +1232,7 @@ mod tests {
         assert!(close(r.tiers[1].area, 2.0 * PI * r0 * (r0 - z1), 1e-4));
         // The chords differ, so a pitch break (a seam of the cover) is
         // listed where the tiers meet.
-        assert_eq!(r.lines.iter().filter(|l| l.code == "K").count(), 1);
+        assert_eq!(r.lines.iter().filter(|l| l.code == "c").count(), 1);
     }
 
     #[test]

@@ -1311,7 +1311,7 @@ fn in_host_planes(inner: &RoofGeometry, host: &RoofGeometry) -> bool {
         })
 }
 
-/// [`WarningKind::ObjectsOverlap`]: the windows, chimneys, openings and
+/// [`WarningKind::ObjectsOverlap`]: the windows, chimneys, openings, tower shafts and
 /// dormers of `project` that lie on top of each other in plan (a dormer
 /// with its front wall), as
 /// `(part, warning)` on the building nearest to the first of each pair,
@@ -1351,6 +1351,10 @@ pub fn overlapping_objects(
     }
     for c in project.chimneys.iter().chain(&project.roof_openings) {
         shapes.push(c.corners.clone());
+    }
+    // A tower's shaft is cut out like a chimney (audit MATH-005).
+    for t in project.towers.iter().filter(|t| t.problems().is_empty()) {
+        shapes.push(t.footprint());
     }
     // A dormer is stored as its front wall (how far it runs back is the
     // calculation's result): it counts as a strip `DORMER_STRIP` deep

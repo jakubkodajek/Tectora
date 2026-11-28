@@ -2450,7 +2450,8 @@ impl Store {
             result_differs: false,
             too_complex: false,
             refused: false,
-            faces: project.manual_faces.len(),
+            // Towers count like hand-drawn faces: a roof of their own.
+            faces: project.manual_faces.len() + project.towers.len(),
         };
         Ok((summary, project))
     }

@@ -469,6 +469,11 @@ impl Project {
                 self.towers.iter().map(|t| t.tiers.len()).max().unwrap_or(0),
                 crate::tower::MAX_TIERS,
             ),
+            over(
+                "tiers of all towers",
+                self.towers.iter().map(|t| t.tiers.len()).sum(),
+                crate::tower::MAX_TIERS_TOTAL,
+            ),
             over("hand-drawn lines", self.manual_lines.len(), MAX_OBJECTS),
             over("hand-drawn faces", self.manual_faces.len(), MAX_OBJECTS),
         ];

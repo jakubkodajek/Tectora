@@ -38,12 +38,33 @@ pub fn default_segments(r: f64, sweep: f64) -> usize {
     ((sweep.abs().to_degrees() / step).ceil() as usize).clamp(2, MAX_ARC_SEGMENTS)
 }
 
+/// The shortest wall an arc may have, m. The roof core merges points
+/// within 2 cm and takes walls under about 10 cm with visible error (audit
+/// MATH-003: at r = 0.1 m the roof was 0.49 m² too large, no warning).
+pub const MIN_ARC_WALL: f64 = 0.1;
+
+/// The walls of an arc of `sweep` radians on radius `r`: the given count,
+/// or DACAD's steps with fewer walls where they would be shorter than
+/// [`MIN_ARC_WALL`]; refused when even that leaves a wall too short.
 fn segments_or_default(segments: Option<usize>, r: f64, sweep: f64) -> Result<usize, String> {
-    match segments {
-        None => Ok(default_segments(r, sweep)),
-        Some(n) if (2..=MAX_ARC_SEGMENTS).contains(&n) => Ok(n),
-        Some(n) => Err(format!("an arc has 2 to {MAX_ARC_SEGMENTS} walls, not {n}")),
+    let chord = |n: usize| 2.0 * r * (sweep.abs() / (2.0 * n as f64)).sin();
+    let n = match segments {
+        None => {
+            let mut n = default_segments(r, sweep);
+            while n > 2 && chord(n) < MIN_ARC_WALL {
+                n -= 1;
+            }
+            n
+        }
+        Some(n) if (2..=MAX_ARC_SEGMENTS).contains(&n) => n,
+        Some(n) => return Err(format!("an arc has 2 to {MAX_ARC_SEGMENTS} walls, not {n}")),
+    };
+    if chord(n) < MIN_ARC_WALL {
+        return Err(format!(
+            "the arc's walls would be shorter than {MIN_ARC_WALL} m: give a larger radius or fewer walls"
+        ));
     }
+    Ok(n)
 }
 
 fn p3(p: Point2) -> Point2 {
@@ -150,11 +171,12 @@ pub fn round_corner(
     }
     let half = theta / 2.0;
     let t = radius / half.tan();
-    // Each wall keeps at least a centimetre.
-    if t > l1 - 0.01 || t > l2 - 0.01 {
+    // Each wall keeps at least MIN_ARC_WALL, or ends exactly at the arc
+    // is not allowed either: a zero-length wall is a problem.
+    if t > l1 - MIN_ARC_WALL || t > l2 - MIN_ARC_WALL {
         return Err(format!(
             "the radius is too large for the walls at the corner (at most {:.3} m)",
-            ((l1.min(l2) - 0.01).max(0.0)) * half.tan()
+            ((l1.min(l2) - MIN_ARC_WALL).max(0.0)) * half.tan()
         ));
     }
     let t1 = Point2::new(p.x + e1.x * t, p.y + e1.y * t);
@@ -210,6 +232,30 @@ pub fn round_corner(
         e.source = None;
     }
     Ok(segs)
+}
+
+/// Why an arc made an outline invalid: the first problem of a building in
+/// `after` that `before` did not have (an outline crossing itself, a wall
+/// too short); `None` when there is none. The editor's command and MCP
+/// `edit_walls` both refuse such an arc (audit ARCH-005).
+pub fn outline_spoiled(before: &crate::Project, after: &crate::Project) -> Option<String> {
+    let had: std::collections::HashSet<_> = before
+        .problems()
+        .into_iter()
+        .map(|p| (p.item, p.index, p.code))
+        .collect();
+    after
+        .problems()
+        .into_iter()
+        .find(|p| {
+            p.item == crate::model::ProblemItem::Part && !had.contains(&(p.item, p.index, p.code))
+        })
+        .map(|p| {
+            format!(
+                "the arc would make the outline invalid: {}",
+                after.describe(&p)
+            )
+        })
 }
 
 #[cfg(test)]
@@ -304,5 +350,29 @@ mod tests {
         // Plan with the overhang, over cos 30°: a little under the square's
         // (11 × 11) / cos 30° = 139.7 m².
         assert!(a > 130.0 && a < 139.7, "{a}");
+    }
+
+    #[test]
+    fn an_arc_never_makes_walls_the_core_cannot_take() {
+        // Audit MATH-003 / ARCH-005: r = 0.012 saved five zero-length walls
+        // over MCP; r = 0.05 and 0.1 gave wrong areas.
+        for r in [0.012, 0.05, 0.1, 0.2] {
+            let mut part = square(10.0);
+            match round_corner(&mut part, 1, r, None) {
+                Ok(_) => {
+                    let pts = part.outline();
+                    let n = pts.len();
+                    for k in 0..n {
+                        let l = pts[k].distance(pts[(k + 1) % n]);
+                        assert!(l >= MIN_ARC_WALL - 1e-3, "r {r}: wall {k} is {l} m");
+                    }
+                }
+                Err(e) => assert!(e.contains("shorter than"), "r {r}: {e}"),
+            }
+        }
+        let mut part = square(10.0);
+        assert!(round_corner(&mut part, 1, 0.012, None).is_err());
+        assert!(round_corner(&mut part, 1, 1.0, Some(64)).is_err());
+        assert!(bend_wall(&mut square(0.12), 0, 0.06, None).is_err());
     }
 }

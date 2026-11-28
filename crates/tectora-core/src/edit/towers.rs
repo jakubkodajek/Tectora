@@ -71,9 +71,12 @@ pub fn preset(kind: TowerPreset, center: Point2, width: f64, base_height: f64) -
         }
         TowerPreset::Onion => {
             t.shape = TowerShape::Circle;
+            // The bulb in two curved tiers (a single arc would rise above
+            // its top: audit MATH-007).
             t.tiers = vec![
                 tier(0.25 * w, 1.15 * w, 0.0),
-                tier(0.45 * w, 0.25 * w, 0.2 * w),
+                tier(0.25 * w, 0.75 * w, 0.06 * w),
+                tier(0.25 * w, 0.25 * w, 0.06 * w),
                 tier(0.5 * w, 0.0, 0.0),
             ];
         }
@@ -105,7 +108,7 @@ pub fn set_tower(
         return Err(format!("{msg} ({code})"));
     }
     let mut tower = tower;
-    tower.label = super::clean_line(&tower.label, 200);
+    tower.label = super::clean_line(&tower.label, super::MAX_LABEL_CHARS);
     match index {
         None => {
             if project.towers.len() >= crate::tower::MAX_TOWERS {
@@ -159,5 +162,23 @@ mod tests {
         let e = set_tower(&mut p, None, bad).unwrap_err();
         assert!(e.contains("tower_size"), "{e}");
         assert_eq!(p.towers.len(), 1);
+    }
+
+    #[test]
+    fn a_received_tower_label_is_cleaned_like_a_part_name() {
+        // Audit ARCH-002.
+        let mut p = Project::new("t");
+        let mut t = preset(TowerPreset::Cone, Point2::new(0.0, 0.0), 2.0, 9.0);
+        t.label = format!("a\nb\u{202e}c{}", "x".repeat(5000));
+        p.towers.push(t);
+        crate::edit::clean_received(&mut p, "t");
+        let l = &p.towers[0].label;
+        assert!(!l.contains('\n') && !l.contains('\u{202e}'), "{l:?}");
+        assert!(
+            l.chars().count() <= super::super::MAX_LABEL_CHARS,
+            "{}",
+            l.chars().count()
+        );
+        assert!(crate::edit::check_texts_change(None, &p).is_ok());
     }
 }

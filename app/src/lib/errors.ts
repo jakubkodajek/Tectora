@@ -250,6 +250,7 @@ export function arcReason(detail: string): string | null {
   m = detail.match(/the radius is too large for the walls at the corner \(at most ([\d.]+) m\)/);
   if (m) return t("arc.err.radiusMax", { max: f(m[1]) });
   if (/the walls at the corner run straight on/.test(detail)) return t("arc.err.straight");
+  if (/the arc's walls would be shorter than/.test(detail)) return t("arc.err.tooShort");
   if (/(the wall|a wall at the corner) has no length/.test(detail)) return t("arc.err.noLength");
   if (/the arc would make the outline invalid/.test(detail)) return t("arc.err.invalid");
   return null;

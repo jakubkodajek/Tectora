@@ -57,7 +57,7 @@ roof on that polygon. A semicircular end is a bent wall with the bulge half
 its length (a conical hip). A cone on a round building may be either a part
 (DACAD's way) or a tower; the tower is the one the editor offers.
 
-A tower's roof joins the totals, line totals (T, K, P, G), area by material
+A tower's roof joins the totals, line totals (T, c, P, G), area by material
 and by pitch, the price-sheet list (one roof per tower after the building
 and dormer roofs, one face per roof tier, tiers leaning outward listed by
 their slope from the horizontal) and the plan sheet. Its vertical tiers and

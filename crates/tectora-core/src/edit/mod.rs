@@ -157,7 +157,7 @@ pub(crate) fn is_marker(e: &EdgeDef) -> bool {
 }
 
 /// Removes everything drawn (parts, dormers, chimneys, roof windows, roof
-/// openings, hand-drawn lines and faces) and leaves an empty canvas, as the
+/// openings, hand-drawn lines and faces, towers) and leaves an empty canvas, as the
 /// editor's Clear. The job data, notes, roof options and the stored result
 /// stay. Returns whether anything was removed.
 pub fn clear_roof(project: &mut Project) -> bool {
@@ -167,7 +167,8 @@ pub fn clear_roof(project: &mut Project) -> bool {
         && project.windows.is_empty()
         && project.roof_openings.is_empty()
         && project.manual_lines.is_empty()
-        && project.manual_faces.is_empty());
+        && project.manual_faces.is_empty()
+        && project.towers.is_empty());
     project.parts.clear();
     project.dormers.clear();
     project.chimneys.clear();
@@ -175,6 +176,7 @@ pub fn clear_roof(project: &mut Project) -> bool {
     project.roof_openings.clear();
     project.manual_lines.clear();
     project.manual_faces.clear();
+    project.towers.clear();
     had
 }
 
@@ -686,6 +688,11 @@ pub fn check_texts_change(before: Option<&Project>, after: &Project) -> Result<(
             check_label("face label", &f.label)?;
         }
     }
+    for t in &after.towers {
+        if !had(before, |b| &b.towers, |x| &x.label, &t.label) {
+            check_label("tower label", &t.label)?;
+        }
+    }
     Ok(())
 }
 
@@ -708,7 +715,7 @@ pub fn clean_line(text: &str, max: usize) -> String {
 /// a write is held to, by removing what they forbid and cutting what is
 /// too long, so the job opens and stays editable (ARCH-201): job name
 /// (`fallback` when nothing visible is left), number, customer, address,
-/// notes, the names of parts, materials and hand-drawn lines and faces,
+/// notes, the names of parts, materials, towers and hand-drawn lines and faces,
 /// the hand-drawn lines' codes and the stored result's engine version.
 pub fn clean_received(project: &mut Project, fallback: &str) {
     project.name = clean_line(&project.name, MAX_JOB_TEXT_CHARS);
@@ -739,6 +746,9 @@ pub fn clean_received(project: &mut Project, fallback: &str) {
     }
     for f in &mut project.manual_faces {
         f.label = clean_line(&f.label, MAX_LABEL_CHARS);
+    }
+    for t in &mut project.towers {
+        t.label = clean_line(&t.label, MAX_LABEL_CHARS);
     }
     // The stored result's text; its size is checked with the job's limits
     // (ARCH-303).

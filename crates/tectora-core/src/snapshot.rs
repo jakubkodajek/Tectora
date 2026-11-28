@@ -167,8 +167,8 @@ fn r2(v: f64) -> f64 {
 /// `Err(Refused::Internal)` instead of aborting the caller.
 pub fn take_checked(project: &Project) -> Result<ResultSnapshot, Refused> {
     project.check_limits().map_err(Refused::OutOfRange)?;
-    // No building and no hand-drawn face: no figures to offer (UX-102).
-    if project.parts.is_empty() && project.manual_faces.is_empty() {
+    // No building, hand-drawn face or tower: no figures to offer (UX-102).
+    if project.parts.is_empty() && project.manual_faces.is_empty() && project.towers.is_empty() {
         return Err(Refused::NoBuilding);
     }
     // Input the calculation leaves out (a building with a wall shorter than

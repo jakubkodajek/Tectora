@@ -459,6 +459,11 @@ fn busy_project() -> Project {
         9.0,
     ));
     project.towers[0].rotation_deg = 12.5;
+    // Odd sides: a mirror turns it half round (audit MATH-010).
+    let mut tri = project.towers[0].clone();
+    tri.sides = 3;
+    tri.center = Point2::new(c.x - 0.6, c.y + 0.5);
+    project.towers.push(tri);
     // A direction marker on the main part.
     let mut marker = project.parts[0].edges[1].clone();
     marker.direction_rad = Some(0.7);

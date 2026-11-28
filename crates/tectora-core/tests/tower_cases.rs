@@ -184,14 +184,32 @@ fn the_turret_cuts_its_shaft_out_of_the_ridge_and_adds_its_roof() {
         zs.iter().all(|&z| z <= ridge + 1e-6 && z >= lowest - 1e-6),
         "{zs:?}"
     );
-    // Shaft walls: perimeter × (17 − mean roof height around it), the
-    // mean being between the lowest point and the ridge.
     let wall = f(&shaft["wall_area"]);
     let perimeter = 4.0 * (4.36 - 1.6) + 2.0 * std::f64::consts::PI * 0.8;
     assert!(
         wall > perimeter * (17.0 - ridge) && wall < perimeter * (17.0 - lowest),
         "{wall}"
     );
+}
+
+/// Audit MATH-008: a square shaft 4 × 4 m on the ridge: the front and back
+/// walls stand on the roof 2 m below the ridge's plan line, the sides run
+/// over the ridge (mean roof height halfway). Exact, but for the 5 cm
+/// the roof is read outside the shaft.
+#[test]
+fn the_shaft_walls_follow_the_roof_over_the_ridge() {
+    let mut p = host();
+    let mut t = Tower::pyramid(Point2::new(15.0, 6.0), 4.0, 17.0, 3.0);
+    t.label = String::new();
+    p.towers.push(t);
+    let v = calc(&p);
+    let tan = PITCH.to_radians().tan();
+    let ridge = EAVE + 6.0 * tan;
+    let front = ridge - 2.05 * tan;
+    let sides_mean = ridge - 1.025 * tan;
+    let exact = 2.0 * 4.0 * (17.0 - front) + 2.0 * 4.0 * (17.0 - sides_mean);
+    let wall = f(&v["towers"][0]["shaft"]["wall_area"]);
+    assert!((wall - exact).abs() < 0.01 * exact, "{wall} vs {exact}");
 }
 
 #[test]
@@ -251,4 +269,147 @@ fn the_price_sheet_list_has_the_turrets_faces_lines_and_shaft_hole() {
     let alone = list_summary(&host(), &ListOptions::new("t", "28.11.2026 10:00"));
     let t0 = alone.lines.iter().find(|l| l.code == "T").unwrap().length;
     assert!((t - t0 - eaves).abs() < 1e-3, "{t} vs {t0} + {eaves}");
+}
+
+/// Audit MATH-002/004: the hole of a shaft with a tiny corner radius, a
+/// small round shaft or a many-sided one is its true plan area over the
+/// cosine of the pitch, and the building keeps the standard calculation.
+#[test]
+fn every_shaft_is_cut_by_its_true_plan_area() {
+    let alone = calc(&host());
+    let parts = |v: &Value| -> f64 {
+        v["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| f(&p["quantities"]["roof_area"]))
+            .sum()
+    };
+    let base = parts(&alone);
+    let mut cases: Vec<(String, Tower)> = Vec::new();
+    for r in [1e-9, 1e-7, 1e-4, 1e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.5] {
+        let mut t = Tower::pyramid(Point2::new(15.0, 3.0), 2.0, 14.0, 1.5);
+        t.corner_radius = r;
+        cases.push((format!("radius {r}"), t));
+    }
+    for w in [0.2, 0.3, 0.5, 2.0, 4.0] {
+        let mut t = Tower::pyramid(Point2::new(15.0, 3.0), w, 14.0, 1.5);
+        t.shape = TowerShape::Circle;
+        cases.push((format!("circle {w}"), t));
+        let mut p = Tower::pyramid(Point2::new(15.0, 3.0), w, 14.0, 1.5);
+        p.shape = TowerShape::Polygon;
+        p.sides = 64;
+        cases.push((format!("64-gon {w}"), p));
+    }
+    let cos = PITCH.to_radians().cos();
+    for (name, t) in cases {
+        assert!(t.problems().is_empty(), "{name}: {:?}", t.problems());
+        let plan = t.calculate().unwrap().base_area;
+        let mut p = host();
+        p.towers.push(t);
+        let v = calc(&p);
+        let cut = base - parts(&v);
+        let hole = plan / cos;
+        assert!(
+            (cut - hole).abs() < 0.005 * hole + 1e-3,
+            "{name}: cut {cut} m², expected {hole} m²"
+        );
+        let warnings = serde_json::to_string(&v["parts"][0]["geometry"]["warnings"]).unwrap();
+        assert!(
+            !warnings.contains("not_calculated_by_core"),
+            "{name}: {warnings}"
+        );
+    }
+}
+
+/// Audit ARCH-001: towers at the limits give an answer the editor can
+/// take, and more tiers than that are refused before calculating.
+#[test]
+fn towers_at_the_limits_give_a_bounded_answer() {
+    let mut t = Tower::pyramid(Point2::new(15.0, 6.0), 3.0, 20.0, 1.0);
+    t.shape = TowerShape::Polygon;
+    t.sides = 64;
+    t.corner_radius = 0.2;
+    t.tiers = (0..tectora_core::tower::MAX_TIERS)
+        .map(|i| {
+            let w = 3.0 - 0.12 * (i + 1) as f64;
+            tier(0.5, w, if i % 2 == 0 { 0.05 } else { -0.05 })
+        })
+        .collect();
+    assert!(t.problems().is_empty(), "{:?}", t.problems());
+    let mut p = host();
+    let n = tectora_core::tower::MAX_TIERS_TOTAL / tectora_core::tower::MAX_TIERS;
+    for _ in 0..n {
+        p.towers.push(t.clone());
+    }
+    assert!(p.check_limits().is_ok());
+    let size = serde_json::to_string(&calc(&p)).unwrap().len();
+    assert!(size < 8_000_000, "{size} bytes");
+    p.towers.push(t);
+    let e = p.check_limits().unwrap_err();
+    assert!(e.contains("tiers of all towers"), "{e}");
+}
+
+/// Audit MATH-010: a mirrored building's tower is the mirror image of the
+/// tower, also for a shape symmetric about one axis only (a triangle).
+#[test]
+fn a_mirrored_towers_shaft_is_the_mirror_image() {
+    use tectora_core::edit::transform::{PlanMap, transform_part};
+    for sides in [3u32, 4, 5, 8] {
+        let mut t = Tower::pyramid(Point2::new(15.0, 3.0), 2.0, 14.0, 1.5);
+        t.shape = TowerShape::Polygon;
+        t.sides = sides;
+        t.rotation_deg = 10.0;
+        let mut p = host();
+        p.towers.push(t.clone());
+        let m = PlanMap::Mirror {
+            centre: Point2::new(15.0, 6.0),
+            deg: 0.0,
+        };
+        transform_part(&mut p, 0, m, 0);
+        let got = p.towers[0].footprint();
+        let want: Vec<Point2> = t.footprint().iter().map(|&q| m.apply(q)).collect();
+        for w in &want {
+            assert!(
+                got.iter().any(|g| g.distance(*w) < 1e-3),
+                "{sides} sides: {w:?} not in {got:?}"
+            );
+        }
+    }
+}
+
+/// Audit MATH-001 / TEST-001: a tower's lines land under their own codes
+/// in the job's line totals: eaves T, pitch breaks c (never K, the valley),
+/// hips G, Pult lines P.
+#[test]
+fn the_turrets_lines_are_added_under_their_codes() {
+    let r = turret().calculate().unwrap();
+    let sum = |code: &str| -> f64 {
+        r.lines
+            .iter()
+            .filter(|l| l.code == code)
+            .map(|l| l.length)
+            .sum()
+    };
+    assert!(
+        r.lines
+            .iter()
+            .all(|l| ["T", "c", "P", "G"].contains(&l.code))
+    );
+    assert!(sum("c") > 0.0 && sum("P") > 0.0);
+    let alone = calc(&host());
+    let mut p = host();
+    p.towers.push(turret());
+    let with = calc(&p);
+    let code = |v: &Value, c: &str| v["codes"][c].as_f64().unwrap_or(0.0);
+    for c in ["T", "c", "P", "G"] {
+        assert!(
+            (code(&with, c) - code(&alone, c) - sum(c)).abs() < 0.011,
+            "{c}: {} vs {} + {}",
+            code(&with, c),
+            code(&alone, c),
+            sum(c)
+        );
+    }
+    assert_eq!(code(&with, "K"), code(&alone, "K"));
 }

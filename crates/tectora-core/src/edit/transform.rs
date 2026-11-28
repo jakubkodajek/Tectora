@@ -156,12 +156,18 @@ fn map_chimney(c: &Chimney, m: Power) -> Chimney {
     }
 }
 
-/// A tower moves with its axis and turns with the map; its shapes are
-/// symmetric, so a mirror only maps its turn.
+/// A tower moves with its axis and turns with the map; a mirror maps its
+/// turn, and half a turn more for a shape symmetric about its y axis only.
 fn map_tower(t: &crate::tower::Tower, m: Power) -> crate::tower::Tower {
     let mut t = t.clone();
     t.center = m.apply(t.center);
-    let deg = m.angle(t.rotation_deg.to_radians()).to_degrees();
+    let mut deg = m.angle(t.rotation_deg.to_radians()).to_degrees();
+    // A regular polygon with an odd number of sides is symmetric about its
+    // own y axis only: its mirror image is turned half round (audit
+    // MATH-010).
+    if m.flips() && t.shape == crate::tower::TowerShape::Polygon && t.sides % 2 == 1 {
+        deg += 180.0;
+    }
     t.rotation_deg = round_to(deg.rem_euclid(360.0), 3);
     t
 }

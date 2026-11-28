@@ -120,12 +120,14 @@ export function mapChimney(c: Chimney, m: PlanMap): Chimney {
 }
 
 /**
- * A tower moves with its axis and turns with the map; its shapes are
- * symmetric, so a mirror only maps its turn (tectora-core
+ * A tower moves with its axis and turns with the map; a mirror maps its
+ * turn, and half a turn more for a regular polygon with an odd number of
+ * sides, symmetric about its y axis only (tectora-core
  * `edit::transform::map_tower`).
  */
 export function mapTower(t: Tower, m: PlanMap): Tower {
-  const deg = (m.angle(((t.rotation_deg ?? 0) * Math.PI) / 180) * 180) / Math.PI;
+  let deg = (m.angle(((t.rotation_deg ?? 0) * Math.PI) / 180) * 180) / Math.PI;
+  if (m.flips && t.shape === "polygon" && (t.sides ?? 8) % 2 === 1) deg += 180;
   return { ...clone(t), center: m.apply(t.center), rotation_deg: r3(((deg % 360) + 360) % 360) };
 }
 

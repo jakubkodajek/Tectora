@@ -516,7 +516,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_tower",
-            "description": "Add a tower or turret standing through the roof, or change one (`index`). A tower is a shaft of a plan `shape` (rectangle `width` × `depth`, regular `polygon` with `sides` and `width` across the flats, or `circle` of diameter `width`; rectangles and polygons may have rounded corners `corner_radius`) around `center`, turned by `rotation_deg`, whose own roof starts at `base_height` (m above ground, like eave heights) and is a stack of `tiers` from the bottom up. Each tier rises `rise` m and ends `top_width` wide (measured like `width`; 0 = a point); the plan at every height is the base shape scaled about the centre. `bulge` (m, at most half the tier's chord) curves the tier's profile: positive outward (onion), negative inward (bell). A tier with the same width at bottom and top is a vertical wall (a lantern): listed as wall area, not roof area. `material` per tier as on walls (default 2, sheet metal). The shaft is cut out of the roofs it stands in like a chimney (deduction and abutment lines WV/WH/WS), and the tower's roof adds its area, eaves (T), pitch breaks (K), Pult lines (P) and hips (G) to the totals; calc lists every tower's tiers. Without `tiers`, `preset` gives a profile in proportion to the width: pyramid, octagon, cone, helm (bell-shaped), onion, baroque (helm, onion, lantern, small onion, spire). Read heights from the section drawing: base_height is where the shaft's walls end and the tower's roof begins.",
+            "description": "Add a tower or turret standing through the roof, or change one (`index`). A tower is a shaft of a plan `shape` (rectangle `width` × `depth`, regular `polygon` with `sides` and `width` across the flats, or `circle` of diameter `width`; rectangles and polygons may have rounded corners `corner_radius`) around `center`, turned by `rotation_deg`, whose own roof starts at `base_height` (m above ground, like eave heights) and is a stack of `tiers` from the bottom up. Each tier rises `rise` m and ends `top_width` wide (measured like `width`; 0 = a point); the plan at every height is the base shape scaled about the centre. `bulge` (m, at most half the tier's chord) curves the tier's profile: positive outward (onion), negative inward (bell). A tier with the same width at bottom and top is a vertical wall (a lantern): listed as wall area, not roof area. `material` per tier as on walls (default 2, sheet metal). The shaft is cut out of the roofs it stands in like a chimney (deduction and abutment lines WV/WH/WS), and the tower's roof adds its area, eaves (T), pitch breaks (c), Pult lines (P) and hips (G) to the totals; calc lists every tower's tiers. Without `tiers`, `preset` gives a profile in proportion to the width: pyramid, octagon, cone, helm (bell-shaped), onion, baroque (helm, onion, lantern, small onion, spire). Read heights from the section drawing: base_height is where the shaft's walls end and the tower's roof begins.",
             "inputSchema": schema(json!({
                 "id": id,
                 "index": { "type": "integer", "minimum": 0, "description": "Tower to change; omit to add one." },
@@ -1262,6 +1262,17 @@ impl Server {
                 other => return Err(at(format!("unknown op `{other}`"))),
             }
         }
+        // An arc that makes the outline invalid is refused, as in the
+        // editor (audit ARCH-005).
+        let arcs = ops.iter().any(|o| {
+            matches!(
+                o.get("op").and_then(Value::as_str),
+                Some("round_corner" | "bend_wall")
+            )
+        });
+        if arcs && let Some(e) = tectora_core::edit::arcs::outline_spoiled(&before, &p) {
+            return Err(format!("{e}; nothing was saved"));
+        }
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
     }
 
@@ -1611,15 +1622,6 @@ impl Server {
             }
         };
         if index.is_some() {
-            if let Some(kind) = opt::<TowerPreset>(args, "preset")? {
-                // A preset on an existing tower replaces its profile, sized
-                // to its width (`tiers` below still wins).
-                let fresh = preset(kind, t.center, t.width, t.base_height);
-                t.shape = fresh.shape;
-                t.sides = fresh.sides;
-                t.corner_radius = fresh.corner_radius;
-                t.tiers = fresh.tiers;
-            }
             if let Some(c) = point(args, "center")? {
                 t.center = c;
             }
@@ -1628,6 +1630,16 @@ impl Server {
             }
             if let Some(b) = arg_f64(args, "base_height")? {
                 t.base_height = b;
+            }
+            if let Some(kind) = opt::<TowerPreset>(args, "preset")? {
+                // A preset on an existing tower replaces its profile, sized
+                // to its width, the new one when given in the same call
+                // (audit ARCH-003; `tiers` below still wins).
+                let fresh = preset(kind, t.center, t.width, t.base_height);
+                t.shape = fresh.shape;
+                t.sides = fresh.sides;
+                t.corner_radius = fresh.corner_radius;
+                t.tiers = fresh.tiers;
             }
         }
         if let Some(shape) = opt::<TowerShape>(args, "shape")? {
@@ -3733,7 +3745,14 @@ mod tests {
         let area = r["roof_area_m2"].as_f64().unwrap();
         assert!(area > 1.0, "{r}");
         let t = &s.store.load(&id).unwrap().towers[0];
-        assert_eq!(t.tiers.len(), 3);
+        assert_eq!(t.tiers.len(), 4);
+        let g = call(&mut s, "get_project", json!({ "id": id }));
+        assert_eq!(
+            g["towers"][0]["tiers"].as_array().unwrap().len(),
+            4,
+            "{}",
+            g["towers"]
+        );
         // Change one in place: a cone instead, the rest kept.
         let r = call(
             &mut s,
@@ -3760,6 +3779,25 @@ mod tests {
             gained < cone && gained > cone - 4.0 / 40f64.to_radians().cos() - 0.01,
             "{gained} {cone}"
         );
+    }
+
+    #[test]
+    fn set_tower_sizes_a_preset_to_the_width_given_with_it() {
+        // Audit ARCH-003: the cone was sized to the old width.
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "a", "center": [5, 4], "width": 1, "base_height": 15 }),
+        );
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "b", "index": 0, "preset": "cone", "width": 4 }),
+        );
+        let t = &s.store.load(&id).unwrap().towers[0];
+        assert_eq!(t.width, 4.0);
+        assert!((t.tiers[0].rise - 5.0).abs() < 1e-9, "{:?}", t.tiers);
     }
 
     #[test]
@@ -3806,6 +3844,71 @@ mod tests {
         let c = call(&mut s, "calc", json!({ "id": id }));
         assert!(c["total"]["roof_area_m2"].as_f64().unwrap() > 0.0, "{c}");
         assert_eq!(c["towers"], Value::Null);
+    }
+
+    /// The editor's arc (commands::arc_edit) refuses an arc that makes the
+    /// outline cross itself; does MCP edit_walls answer the same?
+    #[test]
+    fn the_editor_and_edit_walls_agree_on_an_arc_that_crosses_the_outline() {
+        let (mut s, id) = setup();
+        s.call_tool(
+            "edit_walls",
+            &json!({ "id": id, "summary": "a", "part": 0,
+            "operations": [{ "op": "bend_wall", "index": 0, "bulge": -5 }] }),
+        )
+        .unwrap();
+        let p = s.store.load(&id).unwrap();
+        let n = p.parts[0].edges.len();
+        let top = n - 2;
+        let ui = tectora_core::commands::arc_edit(
+            &p,
+            0,
+            tectora_core::commands::ArcEdit::BendWall {
+                index: top,
+                bulge: -5.0,
+                segments: None,
+            },
+        );
+        let mcp = s.call_tool(
+            "edit_walls",
+            &json!({ "id": id, "summary": "b", "part": 0,
+            "operations": [{ "op": "bend_wall", "index": top, "bulge": -5 }] }),
+        );
+        assert_eq!(ui.is_ok(), mcp.is_ok(), "the editor and MCP differ");
+    }
+
+    /// set_tower's own fields: shape, depth, sides, corner radius, turn,
+    /// label, tiers with materials; transform_items and delete_items of a tower.
+    #[test]
+    fn set_tower_takes_every_field_and_towers_are_items() {
+        let (mut s, id) = setup();
+        s.call_tool("set_tower", &json!({ "id": id, "summary": "t", "center": [5, 4], "width": 2, "base_height": 12,
+            "shape": "rectangle", "depth": 1.5, "corner_radius": 0.2, "rotation_deg": 30, "label": "Zvonice",
+            "tiers": [{ "rise": 1, "top_width": 1.2, "material": 3 }, { "rise": 2, "top_width": 0, "bulge": -0.05 }] })).unwrap();
+        let t = s.store.load(&id).unwrap().towers[0].clone();
+        assert_eq!(
+            (t.depth, t.corner_radius, t.rotation_deg, t.label.as_str()),
+            (Some(1.5), 0.2, 30.0, "Zvonice")
+        );
+        assert_eq!(
+            (t.tiers[0].rise, t.tiers[0].top_width, t.tiers[0].material),
+            (1.0, 1.2, 3)
+        );
+        assert_eq!((t.tiers[1].bulge, t.tiers[1].material), (-0.05, 2));
+        s.call_tool("set_tower", &json!({ "id": id, "summary": "t", "index": 0, "shape": "polygon", "sides": 6, "width": 2.4, "center": [5.5, 4] })).unwrap();
+        let t = s.store.load(&id).unwrap().towers[0].clone();
+        assert_eq!(
+            (t.shape, t.sides, t.width, t.center.x),
+            (tectora_core::tower::TowerShape::Polygon, 6, 2.4, 5.5)
+        );
+        s.call_tool("transform_items", &json!({ "id": id, "summary": "m", "items": [{ "kind": "tower", "index": 0 }], "op": "move", "dx": 1, "dy": 0 })).unwrap();
+        assert_eq!(s.store.load(&id).unwrap().towers[0].center.x, 6.5);
+        s.call_tool(
+            "delete_items",
+            &json!({ "id": id, "summary": "d", "items": [{ "kind": "tower", "index": 0 }] }),
+        )
+        .unwrap();
+        assert!(s.store.load(&id).unwrap().towers.is_empty());
     }
 }
 

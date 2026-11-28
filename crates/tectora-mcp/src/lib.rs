@@ -346,7 +346,7 @@ pub fn calc_error(e: &tectora_core::roof::CalcError) -> Value {
 pub(crate) fn export_ready(project: &Project) -> Result<(), String> {
     // No building and no hand-drawn face: no figures, as `store_result`
     // and the CLI say (HUNT-305 item 4).
-    if project.parts.is_empty() && project.manual_faces.is_empty() {
+    if project.parts.is_empty() && project.manual_faces.is_empty() && project.towers.is_empty() {
         return Err("not exported: the job has no building, so there are no figures to export; nothing was written".into());
     }
     let Some(t) = roof_trouble(project) else {
@@ -1870,6 +1870,8 @@ impl Server {
                     "placements": placements,
                     "manual_lines": p.manual_lines,
                     "manual_faces": p.manual_faces,
+                    // Towers as set_tower takes them (audit MATH-009).
+                    "towers": p.towers,
                     "flat_roof": p.flat_roof,
                     "materials": (1..=tectora_core::model::DACAD_MATERIALS).map(|m| json!({ "material": m, "name": p.material_label(m) })).collect::<Vec<_>>(),
                     "files": self.store.attachments(&id).iter().map(|a| a.name.clone()).collect::<Vec<_>>(),

@@ -157,7 +157,8 @@ impl RoofCoverage {
         match RoofCoverage::from_counts(
             project.parts.len(),
             parts_without_roof,
-            project.manual_faces.len(),
+            // A tower is a roof of its own, like a hand-drawn face.
+            project.manual_faces.len() + project.towers.len(),
         ) {
             RoofCoverage::Complete if !project.problems().is_empty() => RoofCoverage::Partial,
             c => c,
