@@ -1019,6 +1019,16 @@ fn edge_change_props() -> Value {
     p
 }
 
+/// A short reason for the log from a tool's error text: its leading
+/// `code:` when it has one, else `error`. Never the text itself, which may
+/// name jobs and paths.
+fn error_code(e: &str) -> String {
+    match e.split_once(':') {
+        Some((c, _)) if (2..=32).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') => c.to_string(),
+        _ => "error".into(),
+    }
+}
+
 fn summary_prop() -> Value {
     json!({ "type": "string", "description": "One sentence for the user on what you changed and why (shown in the app)." })
 }
@@ -1767,8 +1777,11 @@ impl Server {
                 ));
             }
             if let Some(m) = schema_mismatch(&schema, args, "") {
+                // Only a write has changed or not changed anything.
+                let writes = schema["properties"].get("summary").is_some();
                 return Err(format!(
-                    "{m} (`{name}`'s input schema); nothing was changed"
+                    "{m} (`{name}`'s input schema){}",
+                    if writes { "; nothing was changed" } else { "" }
                 ));
             }
         }
@@ -2473,7 +2486,7 @@ impl Server {
                     }),
                     Err(e) => {
                         // The tool's name only: what it was given may be the user's.
-                        tectora_core::applog::line("WARN", &format!("tool {name} failed"));
+                        tectora_core::applog::line("WARN", &format!("tool {name} failed: {}", error_code(&e)));
                         json!({ "content": [{ "type": "text", "text": e }], "isError": true })
                     }
                 })

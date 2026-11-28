@@ -706,7 +706,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_bug_report",
-            "description": "Write a bug report for the developers: one .tectora report ZIP with your description, the job (customer and address included unless `include_customer` is false), its calculation, change history, versions and the app's log. It goes to the user's reports folder (set in the app's Settings; ask for it with update_settings `reports_dir`, which the user must allow) or, without one, to `reports` in the job library. You never name a path. Returns `path`, `file_name`, `size` and the `entries`; tell the user the file name. Attached drawings are left out unless `include_files` is true: include them only when the user agreed.",
+            "description": "Write a bug report for the developers: one report ZIP (.zip) with your description, the job (customer and address included unless `include_customer` is false), its calculation, change history, versions and the app's log. It goes to the user's reports folder (set in the app's Settings; ask for it with update_settings `reports_dir`, which the user must allow) or, without one, to `reports` in the job library. You never name a path. Returns `path`, `file_name`, `size` and the `entries`; tell the user the file name. Attached drawings are left out unless `include_files` is true: include them only when the user agreed.",
             "inputSchema": schema(json!({
                 "description": { "type": "string", "description": "What went wrong and what you expected, at most 5000 characters." },
                 "id": { "type": "string", "description": "The job the report is about; left out: the report holds only the technical record." },
@@ -759,9 +759,17 @@ impl Server {
                 Some(v) => Err(format!("`{key}` must be true or false, not {v}")),
             }
         };
+        // A job that does not open is the case a report is for: only an
+        // id that is no id is refused; the report carries `load_error`.
         let job_id = match args.get("id") {
             None | Some(Value::Null) => None,
-            Some(_) => Some(self.load(args)?.0),
+            Some(_) => {
+                let id = arg_str(args, "id")?.to_string();
+                self.store
+                    .path(&id)
+                    .map_err(|_| format!("`{id}` is not a job id; call list_projects to see the ids"))?;
+                Some(id)
+            }
         };
         let req = Request {
             description,
@@ -784,7 +792,8 @@ impl Server {
         };
         let dir = self.reports_folder(true)?;
         let made = bugreport::create(&self.store, &req, &Dest::Folder(dir))?;
-        tectora_core::applog::line("INFO", &format!("bug report {}", made.file_name));
+        // No file name: it carries the job's name.
+        tectora_core::applog::line("INFO", "bug report written");
         self.live(
             "exported",
             Some(&made.path.display().to_string()),
@@ -811,9 +820,18 @@ impl Server {
                 .ok_or("`limit` must be an integer from 1 to 100")? as usize,
         };
         let dir = self.reports_folder(false)?;
+        let own = tectora_core::settings::Settings::load().reports_dir.is_none();
+        // The library's own folder is made by the first report: not there
+        // yet is an empty list. A folder the user set that is gone (an
+        // unplugged drive) is an error.
+        if own && !dir.exists() {
+            return Ok(json!({ "folder": dir.display().to_string(), "reports": [], "skipped": 0 }));
+        }
+        let l = tectora_core::bugreport::list_checked(&dir, limit)?;
         Ok(json!({
             "folder": dir.display().to_string(),
-            "reports": tectora_core::bugreport::list(&dir, limit),
+            "reports": l.reports,
+            "skipped": l.skipped,
         }))
     }
 
