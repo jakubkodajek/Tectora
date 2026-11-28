@@ -184,6 +184,9 @@ impl SettingsError {
             Self::InvalidValue("pitch_deg") => range("pitch_deg", RoofDefaults::PITCH, "°"),
             Self::InvalidValue("eave_height") => range("eave_height", RoofDefaults::EAVE, " m"),
             Self::InvalidValue("overhang") => range("overhang", RoofDefaults::OVERHANG, " m"),
+            Self::InvalidValue("reports_dir") => {
+                "reports_dir must not be one of the library's own folders (.activity, .files, .trash, files)".into()
+            }
             Self::InvalidValue("locale") => "locale must be cs, sk, en, de or null".into(),
             Self::InvalidValue("key") => "an unknown setting was given; see get_settings for the keys".into(),
             Self::InvalidValue("type") => {
@@ -294,6 +297,12 @@ impl Settings {
         match serde_json::from_slice::<Self>(&bytes) {
             Ok(mut s) => {
                 s.roof_defaults = s.roof_defaults.repaired();
+                // A hand-edited relative or empty folder is no folder: the
+                // reports go where the user chooses instead of into a
+                // folder relative to wherever the app was started.
+                if s.reports_dir.as_ref().is_some_and(|d| !d.is_absolute()) {
+                    s.reports_dir = None;
+                }
                 (s, None)
             }
             Err(e) => (Self::default(), Some(format!("{}: {e}", path.display()))),
@@ -596,6 +605,18 @@ impl Settings {
         let next: Settings =
             serde_json::from_value(doc).map_err(|_| SettingsError::InvalidValue("type"))?;
         next.validate()?;
+        // Reports never go into the library's own folders.
+        if patch.contains_key("reports_dir")
+            && let Some(dir) = &next.reports_dir
+        {
+            let lib = next.projects_dir();
+            let inside = [".activity", ".files", ".trash", "files"]
+                .iter()
+                .any(|d| dir.starts_with(lib.join(d)));
+            if inside {
+                return Err(SettingsError::InvalidValue("reports_dir"));
+            }
+        }
         for key in ["projects_dir", "drawings_dir", "reports_dir"] {
             if prepare && patch.contains_key(key) {
                 let dir = match key {
