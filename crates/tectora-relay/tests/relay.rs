@@ -129,13 +129,10 @@ impl Mock {
                     continue;
                 };
                 s2.lock().unwrap().push(req);
-                match replies.next() {
-                    Some(reply) => {
-                        if !write_answer(&mut stream, reply, &hold) {
-                            break;
-                        }
-                    }
-                    None => {}
+                if let Some(reply) = replies.next()
+                    && !write_answer(&mut stream, reply, &hold)
+                {
+                    break;
                 }
             }
         });
