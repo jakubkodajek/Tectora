@@ -29,7 +29,10 @@ function world(props = {}, opts = {}) {
   );
   const files = [];
   const calls = { folder: 0, fetch: [], triggers: [] };
-  const github = { status: opts.githubStatus ?? 201, issue: 12 };
+  const github = { status: opts.githubStatus ?? 201, issue: 12, failIf: null };
+  const logs = { log: [], error: [], warn: [], info: [] };
+  // Hooks a test sets to make Drive misbehave: (file, text) => throw.
+  const hooks = { setDescription: null };
   const cache = new Map();
   let nextFile = 1;
 
@@ -43,7 +46,11 @@ function world(props = {}, opts = {}) {
       getName() { return this.name; },
       getUrl() { return `https://drive.google.com/file/d/${this.id}/view`; },
       getSize() { return this.bytes.length; },
-      setDescription(d) { this.description = d; return this; },
+      setDescription(d) {
+        hooks.setDescription?.(this, d);
+        this.description = d;
+        return this;
+      },
       getDescription() { return this.description; },
       getBlob() { return { bytes: this.bytes }; },
       setName(n) { this.name = n; return this; },
@@ -67,8 +74,13 @@ function world(props = {}, opts = {}) {
   };
 
   const sandbox = {
-    console,
-    Logger: { log() {} },
+    console: {
+      log: (...a) => logs.log.push(a.join(" ")),
+      info: (...a) => logs.info.push(a.join(" ")),
+      warn: (...a) => logs.warn.push(a.join(" ")),
+      error: (...a) => logs.error.push(a.join(" ")),
+    },
+    Logger: { log: (...a) => logs.log.push(a.join(" ")) },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (k) => (properties.has(k) ? properties.get(k) : null),
@@ -115,7 +127,8 @@ function world(props = {}, opts = {}) {
     UrlFetchApp: {
       fetch: (url, o = {}) => {
         calls.fetch.push({ url, ...o });
-        const status = github.status;
+        const poisoned = github.failIf && o.payload ? github.failIf(JSON.parse(o.payload)) : false;
+        const status = poisoned ? 500 : github.status;
         const body = status === 201 ? { html_url: `https://github.com/jakubkodajek/Tectora/issues/${github.issue}`, number: github.issue } : { message: "boom" };
         return { getResponseCode: () => status, getContentText: () => JSON.stringify(body) };
       },
@@ -135,7 +148,7 @@ function world(props = {}, opts = {}) {
   };
   vm.createContext(sandbox);
   vm.runInContext(CODE, sandbox, { filename: "Code.gs" });
-  return { sandbox, properties, files, calls, github, cache };
+  return { sandbox, properties, files, calls, github, cache, logs, hooks };
 }
 
 function post(w, body, { raw = false } = {}) {
@@ -375,5 +388,131 @@ describe("Code.gs", () => {
     expect(w.calls.triggers.map((t) => t.fn)).toContain("sweep");
     const missing = world({ FOLDER_ID: "" });
     expect(() => missing.sandbox.setup()).toThrow();
+  });
+
+  // ---- fix round 2 (target/work/bug-report/fix-r2.md) ----
+
+  // ERR-003: a GitHub refusal is logged and recorded on the Drive file; the
+  // sweep retries it and says what it did.
+  it("logs a GitHub refusal, records it on the file and lets the sweep retry it", () => {
+    for (const status of [401, 403, 404]) {
+      const w = world({}, { githubStatus: status });
+      const r = post(w, good());
+      expect(r, String(status)).toMatchObject({ ok: true, issue_url: null });
+      expect(w.logs.error.join("\n"), `${status} is not logged with console.error`).toContain(String(status));
+      expect(w.files[0].description).toContain(`issue: error:${status}`);
+      // The sweep retries a refused issue, not only a pending one.
+      w.github.status = 201;
+      w.sandbox.sweep();
+      expect(w.files[0].description, String(status)).toContain("issue: https://github.com/jakubkodajek/Tectora/issues/12");
+    }
+  });
+
+  it("logs a missing token too, and keeps the report", () => {
+    const w = world({ GITHUB_TOKEN: "" });
+    const r = post(w, good());
+    expect(r).toMatchObject({ ok: true, issue_url: null });
+    expect(w.logs.error.length).toBeGreaterThan(0);
+    expect(w.files).toHaveLength(1);
+    expect(w.files[0].description).toMatch(/issue: (pending|error:)/);
+  });
+
+  it("says in its log what the sweep did", () => {
+    const w = world({}, { githubStatus: 500 });
+    post(w, good());
+    w.github.status = 201;
+    w.sandbox.sweep();
+    const log = [...w.logs.log, ...w.logs.info].join("\n");
+    expect(log).toMatch(/sweep/i);
+    expect(log).toMatch(/\b1\b/);
+  });
+
+  // ERR-004 / BUG-6: idempotent by the whole report id.
+  it("does not file a second copy when only the first eight characters of the id match", () => {
+    const w = world();
+    const a = `aaaaaaaa${"0".repeat(24)}`;
+    const b = `aaaaaaaa${"1".repeat(24)}`;
+    expect(post(w, good({ id: a })).ok).toBe(true);
+    const first = post(w, good({ id: b }));
+    expect(first.ok).toBe(true);
+    expect(w.files).toHaveLength(2);
+    const again = post(w, good({ id: b }));
+    expect(again).toMatchObject({ ok: true, duplicate: true, file_id: first.file_id });
+    expect(w.files).toHaveLength(2);
+    expect(w.calls.fetch).toHaveLength(2);
+  });
+
+  it("does not file another copy when the first attempt failed after the file was created", () => {
+    const w = world();
+    let first = true;
+    w.hooks.setDescription = () => {
+      if (first) {
+        first = false;
+        throw new Error("Drive quota");
+      }
+    };
+    const r1 = post(w, good());
+    expect(r1.ok === false || r1.ok === true).toBe(true);
+    const r2 = post(w, good());
+    expect(r2.ok).toBe(true);
+    expect(w.files, "a retry must not leave a second Drive copy").toHaveLength(1);
+    expect(w.calls.fetch.length, "one issue only").toBeLessThanOrEqual(1);
+  });
+
+  // ERR-005: the issue exists; a failing final write must not make a second one.
+  it("answers ok with the issue link when the last description write fails, and the sweep opens no second issue", () => {
+    const w = world();
+    w.hooks.setDescription = (_file, text) => {
+      if (String(text).includes("issue: https://")) throw new Error("Drive hiccup");
+    };
+    const r = post(w, good());
+    expect(r).toMatchObject({ ok: true, issue_url: "https://github.com/jakubkodajek/Tectora/issues/12" });
+    w.hooks.setDescription = null;
+    w.sandbox.sweep();
+    expect(w.calls.fetch, "the report got a second issue").toHaveLength(1);
+  });
+
+  // BUG-5: nothing in meta can make the issue fail, and poison cannot starve the sweep.
+  it("opens the issue whatever the meta values are", () => {
+    const w = world({ MAX_PER_DAY: "1000" });
+    const weird = [
+      { created_ms: 1e300 },
+      { created_ms: -1e300 },
+      { created_ms: "soon" },
+      { created_ms: { a: 1 } },
+      { description: 12345 },
+      { description: { a: 1 } },
+      { description: ["x"] },
+      { reporter: { x: 1 }, job_name: 7, os: [1], install: null, source: {} },
+      { included: "yes", left_out: "no" },
+    ];
+    weird.forEach((m, i) => {
+      w.cache.clear();
+      const r = post(w, good({ ...withId(i + 1), meta: { description: "ok", source: "app", ...m } }));
+      expect(r, JSON.stringify(m)).toMatchObject({ ok: true });
+      expect(String(r.issue_url), `no issue for ${JSON.stringify(m)}`).toMatch(/^https:\/\/github\.com\//);
+    });
+  });
+
+  it("does not let reports that cannot get an issue use up the sweep's limit", () => {
+    const w = world({ MAX_PER_DAY: "1000" }, { githubStatus: 500 });
+    for (let i = 1; i <= 51; i++) {
+      w.cache.clear();
+      post(w, good({ ...withId(i), meta: { description: "POISON", source: "app" } }));
+    }
+    w.cache.clear();
+    const legit = post(w, good({ ...withId(900), meta: { description: "genuine report", source: "app" } }));
+    expect(legit.ok).toBe(true);
+    // Now only the poisoned ones are refused by GitHub.
+    w.github.status = 201;
+    w.github.failIf = (issue) => /POISON/.test(JSON.stringify(issue));
+    w.sandbox.sweep();
+    const genuine = w.files.find((f) => f.id === legit.file_id);
+    expect(genuine.description, "the genuine report never got its issue").toContain("issue: https://");
+  });
+
+  it("stops a sweep before the script's own time limit", () => {
+    const src = CODE;
+    expect(src, "the sweep has no time bound").toMatch(/Date\.now\(\)[^;\n]*(MAX|LIMIT|DEADLINE|budget|elapsed)|(MAX|LIMIT|DEADLINE)[A-Z_]*[^;\n]*Date\.now\(\)/i);
   });
 });

@@ -228,4 +228,77 @@ test.describe("report a bug", () => {
     await expect(settings).not.toContainText(/hlášení chyb/i);
     await expect(settings.locator(".row").filter({ has: page.getByText(/reports/i) })).toHaveCount(0);
   });
+
+  // ---- fix round 2 (target/work/bug-report/fix-r2.md) ----
+
+  test("a report the relay refuses for good is announced as not sent, never as waiting (ERR-001, UI-003)", async ({ app, page, relay }) => {
+    await jobWithCustomer(app, "Odmitnuto");
+    relay.answer = { ok: false, error: "bad_key" };
+    const dlg = await openDialog(page);
+    await dlg.getByLabel(cs("report.what")).fill("klíč už neplatí");
+    await sendButton(dlg).click();
+    const toast = page.locator(".stack .toast").filter({ hasText: cs("report.failed") });
+    await expect(toast).toBeVisible();
+    await expect(toast).toContainText("bad_key");
+    await expect(toast).toContainText(cs("report.err.bad_key"));
+    await expect(page.locator(".stack .toast").filter({ hasText: cs("report.queued") })).toHaveCount(0);
+    await expect(dlg).toHaveCount(0);
+    // The count says that it could not be sent, and the list offers Save as.
+    const count = page.getByRole("button", { name: cs("report.outbox.countFailed", { count: 1, failed: 1 }) });
+    await expect(count).toBeVisible();
+    await count.click();
+    const list = page.getByRole("dialog", { name: cs("report.outbox.title") }).or(page.getByRole("region", { name: cs("report.outbox.title") }));
+    await expect(list).toContainText(cs("report.state.failed"));
+    await expect(list).toContainText(cs("report.err.bad_key"));
+    await expect(list.getByRole("button", { name: cs("report.outbox.saveAs") })).toBeVisible();
+  });
+
+  test("Send now says what happened and gives the focus back to the report button (ERR-010, UI-002)", async ({ app, page, relay }) => {
+    await jobWithCustomer(app, "Poslat-ted");
+    await relay.refuse();
+    const dlg = await openDialog(page);
+    await dlg.getByLabel(cs("report.what")).fill("poslat teď");
+    await sendButton(dlg).click();
+    await expect(indicator(page, 1)).toBeVisible();
+    await indicator(page, 1).click();
+    const list = page.getByRole("dialog", { name: cs("report.outbox.title") }).or(page.getByRole("region", { name: cs("report.outbox.title") }));
+    // Offline: a toast says nothing could be sent and why; the list stays.
+    await list.getByRole("button", { name: cs("report.outbox.sendNow") }).click();
+    await expect(page.locator(".stack .toast").filter({ hasText: cs("report.outbox.sendNowFailed", { code: "offline" }) })).toBeVisible();
+    await expect(list).toBeVisible();
+    // Back online: sent, the list closes by itself, a toast says so.
+    await relay.accept();
+    const upload = relay.nextUpload();
+    await list.getByRole("button", { name: cs("report.outbox.sendNow") }).click();
+    await upload;
+    await expect(page.locator(".stack .toast").filter({ hasText: cs("report.outbox.sentNow", { count: 1 }) })).toBeVisible();
+    await expect(list).toHaveCount(0);
+    await expect(page.getByRole("button", { name: cs("report.button") })).toBeFocused();
+  });
+
+  test("a second press on Discard while the question is open asks once and ends without an error (UI-001)", async ({ app, page, relay }) => {
+    await jobWithCustomer(app, "Dvakrat");
+    await relay.refuse();
+    const dlg = await openDialog(page);
+    await dlg.getByLabel(cs("report.what")).fill("zahodit dvakrát");
+    await sendButton(dlg).click();
+    await indicator(page, 1).click();
+    const list = page.getByRole("dialog", { name: cs("report.outbox.title") }).or(page.getByRole("region", { name: cs("report.outbox.title") }));
+    // The question stays open until the test answers it, as the native one does.
+    await page.evaluate(() => {
+      const e2e = (window as any).__e2e;
+      window.confirm = ((m: unknown) => {
+        e2e.dialogs.push({ kind: "confirm", message: String(m) });
+        return new Promise<boolean>((r) => (e2e.release = r));
+      }) as never;
+    });
+    const discard = list.getByRole("button", { name: cs("report.outbox.discard") });
+    await discard.click();
+    await expect.poll(async () => (await app.dialogs()).filter((d) => d.message === cs("report.outbox.discardAsk")).length).toBe(1);
+    await discard.click({ force: true });
+    await page.evaluate(() => (window as any).__e2e.release(true));
+    await expect(indicator(page, 1)).toHaveCount(0);
+    expect((await app.dialogs()).filter((d) => d.message === cs("report.outbox.discardAsk"))).toHaveLength(1);
+    await expect(page.locator(".stack .toast.error, .stack .toast[data-kind='error']")).toHaveCount(0);
+  });
 });

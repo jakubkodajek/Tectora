@@ -17,7 +17,9 @@ import {
   reportFailure,
   reportToast,
   saveReporterName,
+  sendNowToast,
 } from "./bugreport";
+import { describeError } from "./errors";
 import { outboxIndicator, report, setOutboxCounts } from "./report.svelte";
 
 const original = i18n.locale;
@@ -192,20 +194,35 @@ describe("the optional name field (Q4)", () => {
 });
 
 describe("the outbox indicator (D13)", () => {
-  it("is hidden at zero and ignores reports that are only saved here", () => {
+  it("is hidden at zero", () => {
     setOutboxCounts({ waiting: 0, failed: 0, local: 0 });
-    expect(outboxIndicator().visible).toBe(false);
-    setOutboxCounts({ waiting: 0, failed: 0, local: 4 });
     expect(outboxIndicator().visible).toBe(false);
     expect(outboxIndicator().count).toBe(0);
   });
 
-  it("shows waiting plus failed, with an accessible label", () => {
+  // ARCH-002 / UI-T2 (fix round 2): a report only kept here is reachable
+  // from the count; it is not hidden behind a number that stays zero.
+  it("counts reports that are only kept here, so they can be listed, saved and discarded", () => {
+    setOutboxCounts({ waiting: 0, failed: 0, local: 4 });
+    expect(outboxIndicator().visible).toBe(true);
+    expect(outboxIndicator().count).toBe(4);
+  });
+
+  it("shows every queued report and says how many could not be sent", () => {
     setLocale("en");
     setOutboxCounts({ waiting: 2, failed: 1, local: 5 });
     const i = outboxIndicator();
     expect(i.visible).toBe(true);
-    expect(i.count).toBe(3);
+    expect(i.count).toBe(8);
+    expect(i.failed).toBe(1);
+    expect(i.label).toBe(t("report.outbox.countFailed", { count: 8, failed: 1 }));
+  });
+
+  it("keeps the plain label while nothing failed", () => {
+    setLocale("en");
+    setOutboxCounts({ waiting: 3, failed: 0, local: 0 });
+    const i = outboxIndicator();
+    expect(i.failed).toBe(0);
     expect(i.label).toBe(t("report.outbox.count", { count: 3 }));
     expect(i.label).toBe("Reports waiting to be sent: 3");
   });
@@ -302,6 +319,126 @@ describe("texts (D17)", () => {
   it("has a text for every code the relay and the outbox can give", () => {
     for (const code of ["offline", "rate_limited", "bad_key", "server", "outbox_full"]) {
       for (const [loc, dict] of Object.entries(DICTS)) expect(dict[`report.err.${code}`], `${loc} ${code}`).toBeTruthy();
+    }
+  });
+});
+
+// ---- fix round 2 (target/work/bug-report/fix-r2.md) ----
+
+describe("a report the relay refused for good (ERR-001, UI-003)", () => {
+  const failed = { ...sent, state: "failed" as const, last_error: "bad_key" };
+
+  it("is announced as not sent, with the reason, never as waiting or sent", () => {
+    setLocale("en");
+    const plan = reportToast(failed);
+    expect(plan.kind).toBe("error");
+    const all = `${plan.title}\n${plan.message}`;
+    expect(all).not.toContain(t("report.queued"));
+    expect(all).not.toContain(t("report.sent"));
+    expect(plan.title).toBe(t("report.failed"));
+    expect(all).toContain(t("report.err.bad_key"));
+    expect(all).toContain("bad_key");
+    // The report is safe in the list: the dialog closes and the text is cleared.
+    expect(plan.closeDialog).toBe(true);
+    expect(plan.clearDraft).toBe(true);
+  });
+
+  it("names Save as as the way on", () => {
+    setLocale("en");
+    const plan = reportToast(failed);
+    expect(`${plan.title}\n${plan.message}`).toContain(t("report.saveAs"));
+  });
+
+  it("is in every language a text, never a key", () => {
+    for (const loc of ["cs", "sk", "en", "de"] as const) {
+      setLocale(loc);
+      const p = reportToast(failed);
+      expect(`${p.title}${p.message}`, loc).not.toMatch(/report\.[\w.]+/);
+    }
+  });
+});
+
+describe("the toast of Send now (ERR-010, UI-002)", () => {
+  it("says how many were sent", () => {
+    setLocale("en");
+    const p = sendNowToast({ sent: 2, waiting: 0, failed: 0 });
+    expect(p.kind).toBe("info");
+    expect(`${p.title}\n${p.message}`).toContain(t("report.outbox.sentNow", { count: 2 }));
+  });
+
+  it("says nothing could be sent and why, when nothing went", () => {
+    setLocale("en");
+    const p = sendNowToast({ sent: 0, waiting: 1, failed: 0, last_error: "offline" });
+    expect(p.kind).toBe("error");
+    expect(`${p.title}\n${p.message}`).toContain(t("report.outbox.sendNowFailed", { code: "offline" }));
+    const f = sendNowToast({ sent: 0, waiting: 0, failed: 1, last_error: "bad_key" });
+    expect(f.kind).toBe("error");
+    expect(`${f.title}\n${f.message}`).toContain("bad_key");
+  });
+
+  it("says both when some went and some did not", () => {
+    setLocale("en");
+    const p = sendNowToast({ sent: 1, waiting: 1, failed: 0, last_error: "server" });
+    const all = `${p.title}\n${p.message}`;
+    expect(all).toContain(t("report.outbox.sentNow", { count: 1 }));
+    expect(all).toContain("server");
+  });
+});
+
+describe("texts for every code (ERR-009, ERR-011)", () => {
+  // Every code the relay client, the queue and the commands can give.
+  const codes = ["offline", "rate_limited", "bad_key", "server", "outbox_full", "relay_auth", "bad_answer", "bad_request", "too_large", "io", "unreadable", "busy"];
+
+  it("has a text for each in all four languages", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(codes.filter((c) => !dict[`report.err.${c}`]), loc).toEqual([]);
+    }
+  });
+
+  it("shows that text in an outbox row, not a bare code", () => {
+    setLocale("en");
+    for (const c of codes) {
+      const r = outboxRowText({ file_name: "x", state: "failed", created_ms: 1, job_id: null, last_error: c });
+      expect(r.error?.text, c).toBeTruthy();
+    }
+  });
+
+  it("says the report limit is 20 MB, not the job files' 256 MB", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["report.err.too_large"], loc).toMatch(/20/);
+      expect(dict["report.err.too_large"], loc).not.toMatch(/256/);
+    }
+  });
+
+  it("has its own titles for saving and discarding", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["err.ctx.reportDiscard"], loc).toBeTruthy();
+      expect(dict["err.ctx.reportDiscard"], loc).not.toBe(dict["err.ctx.report"]);
+    }
+  });
+
+  it("explains a full outbox with the report text, not 'unexpected error'", () => {
+    setLocale("en");
+    const d = describeError({ code: "outbox_full" }, "report");
+    expect(d.message).not.toBe(t("err.unknown"));
+    expect(d.message).toContain(t("report.err.outbox_full"));
+  });
+
+  it("does not call a failed discard 'could not be sent'", () => {
+    setLocale("en");
+    const d = describeError({ code: "busy" }, "reportDiscard" as never);
+    expect(d.title).toBe(t("err.ctx.reportDiscard"));
+    expect(d.message).not.toMatch(/saving the job/i);
+  });
+
+  it("has the new texts in all four languages", () => {
+    const keys = ["report.failed", "report.outbox.countFailed", "report.outbox.sentNow", "report.outbox.sendNowFailed"];
+    for (const [loc, dict] of Object.entries(DICTS)) expect(keys.filter((k) => !dict[k]), loc).toEqual([]);
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(dict["report.outbox.countFailed"], loc).toContain("{count}");
+      expect(dict["report.outbox.countFailed"], loc).toContain("{failed}");
+      expect(dict["report.outbox.sendNowFailed"], loc).toContain("{code}");
+      expect(dict["report.outbox.sentNow"], loc).toContain("{count}");
     }
   });
 });

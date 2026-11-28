@@ -725,18 +725,179 @@ fn a_permanent_failure_marks_the_report_failed_and_is_not_retried_without_force(
     assert!(files_in(&root.join("outbox")).is_empty());
 }
 
+/// ARCH-002 (fix round 2): a report made by a build without a relay is never
+/// uploaded by a background drain, whoever runs it later; only an explicit
+/// Send now (`force`) promotes it. (Replaces the round 1 test that also
+/// forbade `force`; the owner's decision, fix-r2.md.)
 #[test]
-fn local_reports_are_never_given_to_the_sender() {
-    let (_d, store, ob) = setup("d4-local");
-    ob.enqueue(&store, &request(None, "20261128-143012", bare()), true)
+fn a_local_report_is_never_sent_by_a_drain_that_is_not_forced() {
+    let (d, store, ob) = setup("d4-local");
+    let q = ob
+        .enqueue(&store, &request(None, "20261128-143012", bare()), true)
         .unwrap();
-    for force in [false, true] {
-        let r = ob.drain(T0, force, &mut |_, _| {
-            panic!("a local report must not be sent")
+    for _ in 0..3 {
+        let r = ob.drain(T0, false, &mut |_, _| {
+            panic!("a local report must not be sent by itself")
         });
         assert_eq!(r.sent, 0);
     }
     assert_eq!(ob.counts().local, 1);
+    assert_eq!(ob.counts().waiting, 0, "a drain does not promote it");
+    assert_eq!(sidecar(&root_of(&d), &q.file_name)["state"], "local");
+    // A later build with a relay opens the same outbox: still nothing by itself.
+    let later = Outbox::at(&root_of(&d));
+    later.drain(T0 + 86_400_000, false, &mut |_, _| {
+        panic!("a local report must not be sent by itself")
+    });
+    assert_eq!(later.counts().local, 1);
+}
+
+#[test]
+fn an_explicit_send_now_sends_a_local_report() {
+    let (_d, store, ob) = setup("d4-local-force");
+    ob.enqueue(&store, &request(None, "20261128-143012", bare()), true)
+        .unwrap();
+    let calls = AtomicUsize::new(0);
+    let r = ob.drain(T0, true, &mut |_, _| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        ok_receipt()
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(r.sent, 1);
+    assert_eq!(ob.counts().local, 0);
+}
+
+/// ARCH-001 (fix round 2): the first offline failure ends the drain; the
+/// other reports are not tried and count no attempt.
+#[test]
+fn a_drain_stops_at_the_first_offline_failure() {
+    let (d, store, ob) = setup("r2-offline");
+    let mut names = Vec::new();
+    for n in 0..4 {
+        names.push(
+            ob.enqueue(&store, &request(None, &stamp(n), bare()), false)
+                .unwrap()
+                .file_name,
+        );
+    }
+    let calls = AtomicUsize::new(0);
+    let r = ob.drain(T0, false, &mut |_, _| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Err(SendFailure::Retry {
+            code: "offline".into(),
+            after_s: None,
+        })
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "one try, then stop");
+    assert_eq!(r.waiting, 4);
+    let attempts: u64 = names
+        .iter()
+        .map(|n| sidecar(&root_of(&d), n)["attempts"].as_u64().unwrap())
+        .sum();
+    assert_eq!(attempts, 1, "the reports not tried count no attempt");
+    assert!(
+        names.iter().all(|n| !lock_path(&root_of(&d), n).exists()),
+        "no claim is left"
+    );
+}
+
+/// BUG-3 (fix round 2): a `next_try_ms` far beyond the longest backoff (a
+/// clock that jumped, a hostile sidecar) does not park the report.
+#[test]
+fn a_next_try_far_in_the_future_counts_as_due() {
+    let (d, store, ob) = setup("r2-clock");
+    let q = ob
+        .enqueue(&store, &request(None, "20261128-143012", bare()), false)
+        .unwrap();
+    let root = root_of(&d);
+    for far in [
+        T0 + 5 * 365 * 24 * 3600 * 1000,
+        T0 + 7 * 3600 * 1000,
+        u64::MAX,
+    ] {
+        let mut s = sidecar(&root, &q.file_name);
+        s["next_try_ms"] = json!(far);
+        write_sidecar(&root, &q.file_name, &s);
+        let calls = AtomicUsize::new(0);
+        ob.drain(T0, false, &mut |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(SendFailure::Retry {
+                code: "server".into(),
+                after_s: None,
+            })
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "next_try_ms {far}");
+        let next = sidecar(&root, &q.file_name)["next_try_ms"]
+            .as_u64()
+            .unwrap();
+        assert!(next <= T0 + 6 * 3600 * 1000, "{next}");
+    }
+}
+
+/// BUG-2 (fix round 2): two processes finishing sends at the same time keep
+/// every line of the sent log.
+#[test]
+fn two_drains_finishing_together_lose_no_sent_line() {
+    let (d, store, ob) = setup("r2-sentlog");
+    for n in 0..40 {
+        ob.enqueue(&store, &request(None, &stamp(n), bare()), false)
+            .unwrap();
+    }
+    let root = root_of(&d);
+    let start = Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let (root, start) = (root.clone(), start.clone());
+            std::thread::spawn(move || {
+                let o = Outbox::at(&root);
+                start.wait();
+                o.drain(T0, false, &mut |_, _| ok_receipt()).sent
+            })
+        })
+        .collect();
+    let sent: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+    assert_eq!(sent, 40, "each report was sent once");
+    let log = fs::read_to_string(root.join("sent.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 40, "one line per sent report");
+    let ids: BTreeSet<&str> = log
+        .lines()
+        .map(|l| l.split("\"id\":\"").nth(1).unwrap().get(..32).unwrap())
+        .collect();
+    assert_eq!(ids.len(), 40);
+    assert!(
+        log.lines()
+            .all(|l| serde_json::from_str::<Value>(l).is_ok()),
+        "no torn line"
+    );
+}
+
+/// BUG-4 (fix round 2): two reports with the same file name, the first
+/// already sent and deleted, are both listed and read back as themselves.
+#[test]
+fn two_sent_reports_with_one_file_name_are_both_listed() {
+    let (_d, store, ob) = setup("r2-samename");
+    let mut ids = Vec::new();
+    for text in ["FIRST-ZQX", "SECOND-ZQX"] {
+        let mut r = request(None, "20261128-143012", bare());
+        r.description = text.into();
+        ids.push(ob.enqueue(&store, &r, false).unwrap().id);
+        assert_eq!(ob.drain(T0, false, &mut |_, _| ok_receipt()).sent, 1);
+    }
+    let l = serde_json::to_value(ob.list(10).unwrap()).unwrap();
+    let rows = l["reports"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{l}");
+    let names: BTreeSet<&str> = rows
+        .iter()
+        .map(|r| r["file_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 2, "two sent reports never share a name: {l}");
+    let mut seen = BTreeSet::new();
+    for n in names {
+        let r = ob.read(n).unwrap();
+        assert_eq!(r["state"], "sent");
+        seen.insert(r["sent"]["id"].as_str().unwrap().to_string());
+    }
+    assert_eq!(seen, ids.into_iter().collect());
 }
 
 #[test]

@@ -33,6 +33,60 @@ enum Reply {
     },
     /// Read the request, then never answer (until the mock is dropped).
     Hang,
+    /// The inner answer after `ms` milliseconds.
+    Delayed(u64, Box<Reply>),
+    /// A 200 that promises 100 000 bytes and sends one byte every `gap_ms`
+    /// milliseconds, until the mock is dropped.
+    Drip { gap_ms: u64 },
+}
+
+fn write_answer(stream: &mut TcpStream, reply: Reply, hold: &Receiver<()>) -> bool {
+    match reply {
+        Reply::Answer {
+            status,
+            headers,
+            body,
+        } => {
+            let mut head = format!(
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+                body.len()
+            );
+            for (k, v) in headers {
+                head.push_str(&format!("{k}: {v}\r\n"));
+            }
+            head.push_str("\r\n");
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            true
+        }
+        Reply::Hang => {
+            // Returns (an error) as soon as the test drops the mock.
+            let _ = hold.recv();
+            false
+        }
+        Reply::Delayed(ms, inner) => {
+            std::thread::sleep(Duration::from_millis(ms));
+            write_answer(stream, *inner, hold)
+        }
+        Reply::Drip { gap_ms } => {
+            let head = "HTTP/1.1 200 X\r\nContent-Type: application/json\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n";
+            if stream.write_all(head.as_bytes()).is_err() {
+                return true;
+            }
+            loop {
+                if matches!(
+                    hold.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)
+                ) {
+                    return false;
+                }
+                if stream.write_all(b" ").is_err() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(gap_ms));
+            }
+        }
+    }
 }
 
 fn redirect(to: &str) -> Reply {
@@ -76,26 +130,10 @@ impl Mock {
                 };
                 s2.lock().unwrap().push(req);
                 match replies.next() {
-                    Some(Reply::Answer {
-                        status,
-                        headers,
-                        body,
-                    }) => {
-                        let mut head = format!(
-                            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-                            body.len()
-                        );
-                        for (k, v) in headers {
-                            head.push_str(&format!("{k}: {v}\r\n"));
+                    Some(reply) => {
+                        if !write_answer(&mut stream, reply, &hold) {
+                            break;
                         }
-                        head.push_str("\r\n");
-                        let _ = stream.write_all(head.as_bytes());
-                        let _ = stream.write_all(&body);
-                    }
-                    Some(Reply::Hang) => {
-                        // Returns (an error) as soon as the test drops the mock.
-                        let _ = hold.recv();
-                        break;
                     }
                     None => {}
                 }
@@ -620,5 +658,145 @@ fn error_texts_never_contain_the_key_or_the_address() {
             assert!(!text.contains(KEY), "{text}");
             assert!(!text.contains("127.0.0.1"), "{text}");
         }
+    }
+}
+
+// ------------------------------------------------- fix round 2
+
+/// Runs `f` on a thread and gives up after `secs`: a test of a deadline must
+/// fail, not hang, when the deadline is missing.
+fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(Duration::from_secs(secs)).ok()
+}
+
+/// ARCH-001 / ERR-002 / BUG-1: an answer that dribbles in one byte at a time
+/// ends at the overall deadline of the send.
+#[test]
+fn a_slow_drip_answer_is_cut_off_at_the_overall_deadline() {
+    let m = Mock::start(vec![
+        redirect("/macros/echo?k=1"),
+        Reply::Drip { gap_ms: 50 },
+    ]);
+    let url = m.url();
+    let t = Timeouts {
+        connect: Duration::from_secs(5),
+        total: Duration::from_millis(900),
+    };
+    let r = within(15, move || upload(&url, "r2-drip", t))
+        .expect("the send must end at its deadline, not follow the drip");
+    let e = r.unwrap_err();
+    assert!(matches!(e, SendError::Offline(_)), "{e:?}");
+    assert_eq!(e.code(), "offline");
+}
+
+/// ARCH-001: the deadline is for the whole exchange, not for each request:
+/// a POST and four redirects that each take half a second do not get five
+/// fresh deadlines.
+#[test]
+fn the_deadline_covers_the_post_and_every_redirect_together() {
+    let hop = |to: &str| Reply::Delayed(500, Box::new(redirect(to)));
+    let m = Mock::start(vec![
+        hop("/macros/echo?h=1"),
+        hop("/macros/echo?h=2"),
+        hop("/macros/echo?h=3"),
+        hop("/macros/echo?h=4"),
+        Reply::Delayed(500, Box::new(answer(200, r#"{"ok":true,"file_id":"F"}"#))),
+    ]);
+    let url = m.url();
+    let t = Timeouts {
+        connect: Duration::from_secs(5),
+        total: Duration::from_millis(1200),
+    };
+    let r = within(20, move || upload(&url, "r2-total", t)).expect("must end");
+    let e = r.expect_err("2.5 s of hops cannot fit a 1.2 s deadline");
+    assert!(matches!(e, SendError::Offline(_)), "{e:?}");
+}
+
+/// ARCH-004: the key never shows in a Debug print of the config.
+#[test]
+fn a_config_debug_print_hides_the_key() {
+    let cfg = Config::checked(REAL, KEY, false).unwrap();
+    let text = format!("{cfg:?} {:#?}", cfg);
+    assert!(!text.contains(KEY), "{text}");
+}
+
+/// ARCH-004: only Apps Script's own hosts are followed, and the probe reads
+/// the key from the environment, not from the command line.
+#[test]
+fn the_redirect_hosts_are_exactly_two_and_the_probe_takes_no_key_argument() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lib = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    assert!(
+        !lib.contains("ends_with(\".googleusercontent.com\")"),
+        "any *.googleusercontent.com host is accepted"
+    );
+    assert!(lib.contains("script.googleusercontent.com"));
+    let probe = std::fs::read_to_string(root.join("examples/probe.rs")).unwrap();
+    assert!(
+        probe.contains("TECTORA_REPORT_KEY"),
+        "the probe reads the key from the environment"
+    );
+    assert!(
+        !probe.contains("plain.get(1)"),
+        "the key is not a command-line argument"
+    );
+}
+
+/// ERR-006 / ARCH-003: the release gate runs the same rules as `Config::checked`
+/// through the `check-config` example: exit 0 for a good pair, non-zero for a
+/// bad one, and neither value is ever printed.
+#[test]
+fn check_config_accepts_a_good_pair_and_refuses_a_bad_one_without_printing_either() {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let bin = dir.join(if cfg!(windows) {
+        "check-config.exe"
+    } else {
+        "check-config"
+    });
+    assert!(
+        bin.is_file(),
+        "no example check-config at {}",
+        bin.display()
+    );
+    let run = |url: &str, key: &str| {
+        let out = std::process::Command::new(&bin)
+            .env("TECTORA_REPORT_URL", url)
+            .env("TECTORA_REPORT_KEY", key)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !text.contains(key) || key.is_empty(),
+            "the key was printed: {text}"
+        );
+        assert!(
+            !text.contains(url) || url.is_empty(),
+            "the URL was printed: {text}"
+        );
+        out.status.success()
+    };
+    assert!(run(REAL, KEY), "a good pair passes");
+    let bad = [
+        (REAL, "short"),
+        (REAL, "key-with-trailing-newline-abc\n"),
+        (REAL, "key with a space inside ok"),
+        ("https://script.google.com/macros/s/AKf/dev", KEY),
+        ("http://script.google.com/macros/s/AKf/exec", KEY),
+        ("https://script.google.com/macros/s/AKf/exec\n", KEY),
+        ("https://evil.example/macros/s/AKf/exec", KEY),
+        ("", KEY),
+        (REAL, ""),
+    ];
+    for (u, k) in bad {
+        assert!(!run(u, k), "{u:?} {k:?} must fail");
     }
 }

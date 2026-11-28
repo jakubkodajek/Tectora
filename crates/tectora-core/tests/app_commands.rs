@@ -414,3 +414,90 @@ fn the_reports_folder_is_gone_from_the_app_and_the_bridge() {
         assert!(!src.contains("ensure_library_reports"), "{name}");
     }
 }
+
+// ---- fix round 2 (target/work/bug-report/fix-r2.md) ----
+
+/// The text of `fn name` up to the closing brace at column 0 (or the next
+/// item); the sources are read, not compiled (WebKitGTK).
+fn fn_text(src: &str, name: &str) -> String {
+    let at = src
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("no fn {name}"));
+    let rest = &src[at..];
+    let end = rest.find("\n}\n").map_or(rest.len(), |e| e + 3);
+    rest[..end].to_string()
+}
+
+/// ERR-002: Send in the dialog and Send now never wait behind the
+/// background drain: `try_lock`, and the report is queued as waiting.
+#[test]
+fn sending_a_report_never_blocks_behind_the_background_drain() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    for c in ["create_bug_report", "send_bug_reports"] {
+        let body = fn_text(&lib, c);
+        assert!(
+            body.contains("try_lock"),
+            "{c} must use try_lock on the drain lock"
+        );
+        assert!(
+            !body.contains("drain_lock.lock()"),
+            "{c} waits for the drain lock with a blocking lock()"
+        );
+    }
+}
+
+/// ERR-007: the background drain survives a poisoned lock and a panic in one
+/// pass, and a thread that cannot start is logged.
+#[test]
+fn the_background_drain_survives_a_poisoned_lock_a_panic_and_a_failed_spawn() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let body = fn_text(&lib, "start_report_drain");
+    assert!(
+        body.contains("Poisoned") || body.contains("into_inner"),
+        "a poisoned drain lock ends the thread's work for good"
+    );
+    assert!(
+        body.contains("catch_unwind"),
+        "a panic in one pass ends the thread"
+    );
+    assert!(
+        !body.contains("let _ = std::thread::Builder"),
+        "a spawn failure is dropped without a log line"
+    );
+    assert!(
+        body.contains("applog"),
+        "nothing is logged by the drain thread"
+    );
+}
+
+/// ERR-001 / UI-003: `failed` reaches the UI as `failed`, in the app and in
+/// the preview bridge, never as `waiting`.
+#[test]
+fn a_failed_report_is_reported_as_failed_by_the_app_and_the_bridge() {
+    let lib = read("app/src-tauri/src/lib.rs");
+    let bridge = read("crates/tectora-core/examples/ui_bridge.rs");
+    let app = fn_text(&lib, "create_bug_report");
+    assert!(
+        app.contains("\"failed\"")
+            || lib.contains("fn result_state")
+                && fn_text(&lib, "result_state").contains("\"failed\""),
+        "create_bug_report maps `failed` to something else"
+    );
+    assert!(
+        fn_text(&bridge, "report_state").contains("\"failed\""),
+        "the bridge's report_state maps `failed` to `waiting`"
+    );
+}
+
+/// ARCH-002: the preview and the end-to-end run never use the user's own
+/// outbox (their reports would be `local` there and could be sent later).
+#[test]
+fn the_preview_bridge_and_the_e2e_use_a_scratch_config_folder() {
+    let preview = read("app/scripts/preview.mjs");
+    assert!(
+        preview.contains("TECTORA_CONFIG_DIR"),
+        "preview.mjs does not set a scratch TECTORA_CONFIG_DIR for the bridge"
+    );
+    let serve = read("app/e2e/serve.mjs");
+    assert!(serve.contains("TECTORA_CONFIG_DIR"));
+}

@@ -57,6 +57,13 @@ fn read_request(s: &mut TcpStream) -> Option<(String, Vec<u8>)> {
 }
 
 fn start_relay() -> Relay {
+    start_relay_answering(
+        r#"{"ok":true,"file_id":"F1","issue_url":"https://github.com/o/r/issues/9"}"#,
+    )
+}
+
+/// A relay whose answer to every upload is `answer` (the JSON of the GET).
+fn start_relay_answering(answer: &'static str) -> Relay {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let uploads = Arc::new(Mutex::new(Vec::new()));
@@ -73,8 +80,7 @@ fn start_relay() -> Relay {
                 }
                 "HTTP/1.1 302 Found\r\nLocation: /macros/echo?k=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
             } else {
-                let b =
-                    r#"{"ok":true,"file_id":"F1","issue_url":"https://github.com/o/r/issues/9"}"#;
+                let b = answer;
                 format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}",
                     b.len()
@@ -533,4 +539,81 @@ fn the_guide_the_docs_and_the_skill_name_all_five_tools() {
         guide.contains("ask the user"),
         "the guide says to ask before sending"
     );
+}
+
+// ------------------------------------------------- fix round 2
+
+/// ERR-001 / ERR-008: a report the relay refuses for good is `failed` with its
+/// code, in the answer, in the list, and in what `send_bug_reports` returns;
+/// the tool text lists every state.
+#[test]
+fn a_refused_report_is_failed_with_its_code_and_never_called_waiting() {
+    let relay = start_relay_answering(r#"{"ok":false,"error":"bad_key"}"#);
+    let (mut s, _root) = server_with(Some(config_for(&relay.url)));
+    let r = report(&mut s, "refused");
+    assert_eq!(r["state"], "failed", "{r}");
+    assert_eq!(r["last_error"], "bad_key", "{r}");
+    let name = r["file_name"].as_str().unwrap().to_string();
+    assert_eq!(state_in_list(&mut s, &name), "failed");
+    let l = s.call_tool("list_bug_reports", &json!({})).unwrap();
+    assert_eq!(l["reports"][0]["last_error"], "bad_key", "{l}");
+    let sent = s
+        .call_tool("send_bug_reports", &json!({ "summary": "Try again" }))
+        .unwrap();
+    assert_eq!(sent["sent"], 0, "{sent}");
+    assert_eq!(sent["failed"], 1, "{sent}");
+    assert_eq!(sent["last_error"], "bad_key", "{sent}");
+    let text = tool("create_bug_report")["description"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    for state in ["sent", "waiting", "failed", "local"] {
+        assert!(
+            text.contains(state),
+            "the description does not list `{state}`: {text}"
+        );
+    }
+}
+
+/// ARCH-002: a local report is not uploaded because a relay appeared; only
+/// the explicit `send_bug_reports` (Send now) sends it.
+#[test]
+fn a_local_report_is_uploaded_only_by_an_explicit_send() {
+    let (mut s, root) = server_with(None);
+    let r = report(&mut s, "made without a relay");
+    assert_eq!(r["state"], "local");
+    let local_name = r["file_name"].as_str().unwrap().to_string();
+    let relay = start_relay();
+    s.set_relay(Some(config_for(&relay.url)));
+    // A new report goes out; the old local one stays.
+    let second = s
+        .call_tool(
+            "create_standard_roof",
+            &json!({ "name": "Zeta", "type": "gable", "length": 12, "width": 8, "pitch_deg": 40, "summary": "start" }),
+        )
+        .unwrap();
+    let r = s
+        .call_tool(
+            "create_bug_report",
+            &json!({ "description": "with a relay", "id": second["id"], "summary": "Report" }),
+        )
+        .unwrap();
+    assert_eq!(r["state"], "sent", "{r}");
+    assert_eq!(
+        relay.uploads.lock().unwrap().len(),
+        1,
+        "the local report was not uploaded"
+    );
+    assert_eq!(state_in_list(&mut s, &local_name), "local");
+    assert!(root.join("outbox").join(&local_name).is_file());
+    // Send now.
+    let sent = s
+        .call_tool(
+            "send_bug_reports",
+            &json!({ "summary": "Send the waiting report" }),
+        )
+        .unwrap();
+    assert_eq!(sent["sent"], 1, "{sent}");
+    assert_eq!(relay.uploads.lock().unwrap().len(), 2);
+    assert_eq!(state_in_list(&mut s, &local_name), "sent");
 }
