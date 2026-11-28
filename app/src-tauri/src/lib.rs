@@ -1163,6 +1163,7 @@ fn save_queued_bug_report(
             left_out: Vec::new(),
             issue_url: None,
             path: Some(path),
+            last_error: None,
         })
     })
 }
