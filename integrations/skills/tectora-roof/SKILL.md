@@ -64,6 +64,9 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    slope or curvature from the section; see the guide, "Towers, turrets
    and curved walls"). Rounded corners and apses are `edit_walls`
    `round_corner` / `bend_wall` on the footprint, not hand-drawn faces.
+   After a tower, check `calc`: `shaft.base_below_roof` (base under the
+   roof), `shaft.roof_failed` (the building under it has no roof) and a
+   roof error whose `towers` names its shaft.
    Where a drawing dimensions a dormer, chimney or window from the eave and
    from a roof edge, place it with `place_item` (`from_eave` along the
    slope, `from_left` or `from_right`) and check it against `placements`
