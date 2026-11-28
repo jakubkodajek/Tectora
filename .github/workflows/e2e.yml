@@ -22,7 +22,9 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # 714 tests on one worker take about 39 min (PR #58, 2026-11-28); 40 cut
+    # PR #59 off at test 627 of 714 with none failed.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
