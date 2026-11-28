@@ -99,6 +99,9 @@ pub struct Settings {
     pub projects_dir: Option<PathBuf>,
     /// Inbox for technical drawings; `None` = `<projects_dir>/drawings`.
     pub drawings_dir: Option<PathBuf>,
+    /// Folder bug reports are saved to (a shared Drive or iCloud folder);
+    /// `None` = the user chooses per report, MCP uses `<library>/reports`.
+    pub reports_dir: Option<PathBuf>,
     /// UI language (`cs`, `sk`, `en`, `de`); `None` = system language.
     pub locale: Option<String>,
     pub theme: Theme,
@@ -136,6 +139,7 @@ impl Default for Settings {
         Self {
             projects_dir: None,
             drawings_dir: None,
+            reports_dir: None,
             locale: None,
             theme: Theme::System,
             roof_defaults: RoofDefaults::default(),
@@ -358,7 +362,7 @@ impl Settings {
     /// Checks values only; folders are checked by [`prepare_dir`] when they
     /// are chosen, so a missing network drive does not block other changes.
     pub fn validate(&self) -> Result<(), SettingsError> {
-        for dir in [&self.projects_dir, &self.drawings_dir]
+        for dir in [&self.projects_dir, &self.drawings_dir, &self.reports_dir]
             .into_iter()
             .flatten()
         {
@@ -391,7 +395,7 @@ impl Settings {
 
 /// Keys an update may change ([`Settings::patched`]).
 /// Settings an AI client may only ask for ([`Settings::patched_by_ai`]).
-pub const FOLDER_KEYS: [&str; 2] = ["projects_dir", "drawings_dir"];
+pub const FOLDER_KEYS: [&str; 3] = ["projects_dir", "drawings_dir", "reports_dir"];
 
 /// Folders an AI client asked to switch to, with who asked and why.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -540,9 +544,10 @@ pub fn is_network_path(path: &Path) -> bool {
     }
 }
 
-pub const EDITABLE_KEYS: [&str; 6] = [
+pub const EDITABLE_KEYS: [&str; 7] = [
     "projects_dir",
     "drawings_dir",
+    "reports_dir",
     "locale",
     "theme",
     "roof_defaults",
@@ -580,7 +585,7 @@ impl Settings {
                         }
                     }
                 }
-                ("projects_dir" | "drawings_dir" | "locale", Value::String(s))
+                ("projects_dir" | "drawings_dir" | "reports_dir" | "locale", Value::String(s))
                     if s.trim().is_empty() =>
                 {
                     doc[*key] = Value::Null;
@@ -591,14 +596,16 @@ impl Settings {
         let next: Settings =
             serde_json::from_value(doc).map_err(|_| SettingsError::InvalidValue("type"))?;
         next.validate()?;
-        for key in ["projects_dir", "drawings_dir"] {
+        for key in ["projects_dir", "drawings_dir", "reports_dir"] {
             if prepare && patch.contains_key(key) {
-                let dir = if key == "projects_dir" {
-                    next.projects_dir()
-                } else {
-                    next.drawings_dir()
+                let dir = match key {
+                    "projects_dir" => Some(next.projects_dir()),
+                    "drawings_dir" => Some(next.drawings_dir()),
+                    _ => next.reports_dir.clone(),
                 };
-                prepare_dir(&dir)?;
+                if let Some(dir) = dir {
+                    prepare_dir(&dir)?;
+                }
             }
         }
         Ok(next)
@@ -629,7 +636,8 @@ impl Settings {
         // waits for the user's yes.
         let moved = self.patched_with(&Value::Object(folders.clone()), false)?;
         let asks = moved.projects_dir() != self.projects_dir()
-            || moved.drawings_dir() != self.drawings_dir();
+            || moved.drawings_dir() != self.drawings_dir()
+            || moved.reports_dir != self.reports_dir;
         if asks {
             next.folder_request = Some(FolderRequest {
                 changes: folders,
@@ -869,6 +877,7 @@ impl Settings {
             "effective": {
                 "projects_dir": self.projects_dir(),
                 "drawings_dir": self.drawings_dir(),
+                "reports_dir": self.reports_dir,
                 "projects_dir_from_env": env_projects_dir().is_some(),
                 "default_projects_dir": builtin_projects_dir(),
                 "settings_file": settings_path(),
@@ -1703,5 +1712,133 @@ mod tests {
             prepare_dir(Path::new("rel")),
             Err(SettingsError::NotAbsolute)
         );
+    }
+
+    // ---- bug report folder (plan target/work/bug-report, criterion 9) ----
+    // Written against the JSON of the settings so they compile before the
+    // `reports_dir` field exists and fail on its behaviour.
+
+    fn reports_value(s: &Settings) -> Value {
+        serde_json::to_value(s).unwrap()["reports_dir"].clone()
+    }
+
+    #[test]
+    fn reports_dir_round_trips_and_a_blank_or_null_resets_it() {
+        let d = tmp("reports-dir");
+        let own = d.join("drive").join("reports");
+        let s = Settings::default()
+            .patched(&serde_json::json!({ "reports_dir": own.to_string_lossy() }))
+            .unwrap();
+        assert_eq!(reports_value(&s), serde_json::json!(own.to_string_lossy()));
+        assert!(own.is_dir(), "the folder the user chose is created");
+        let text = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(reports_value(&back), reports_value(&s));
+        for reset in [
+            serde_json::json!(null),
+            serde_json::json!(""),
+            serde_json::json!("  "),
+        ] {
+            let r = s
+                .patched(&serde_json::json!({ "reports_dir": reset }))
+                .unwrap();
+            assert_eq!(reports_value(&r), Value::Null);
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn reports_dir_must_be_absolute_and_a_folder() {
+        let d = tmp("reports-dir-bad");
+        let base = Settings::default();
+        assert!(
+            base.patched(&serde_json::json!({ "reports_dir": "relative/reports" }))
+                .is_err()
+        );
+        assert!(
+            base.patched(&serde_json::json!({ "reports_dir": 5 }))
+                .is_err()
+        );
+        let file = d.join("file.txt");
+        fs::write(&file, "x").unwrap();
+        assert_eq!(
+            base.patched(&serde_json::json!({ "reports_dir": file.to_string_lossy() }))
+                .unwrap_err(),
+            SettingsError::NotAFolder
+        );
+        // A settings file that names a relative folder is refused on load too.
+        let loaded: Settings =
+            serde_json::from_value(serde_json::json!({ "reports_dir": "relative" })).unwrap();
+        assert!(loaded.validate().is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_settings_file_from_before_reports_dir_loads_and_describes_it_unset() {
+        let d = tmp("reports-dir-old");
+        let path = d.join(SETTINGS_FILE);
+        fs::write(&path, r#"{ "locale": "de", "follow_ai": false }"#).unwrap();
+        let s = Settings::load_from(&path);
+        assert_eq!(s.locale.as_deref(), Some("de"));
+        assert_eq!(reports_value(&s), Value::Null);
+        let described = s.describe();
+        assert!(
+            described["effective"]
+                .as_object()
+                .unwrap()
+                .contains_key("reports_dir"),
+            "{described}"
+        );
+        assert_eq!(described["effective"]["reports_dir"], Value::Null);
+        let own = d.join("r");
+        let set = s
+            .patched(&serde_json::json!({ "reports_dir": own.to_string_lossy() }))
+            .unwrap();
+        assert_eq!(
+            set.describe()["effective"]["reports_dir"],
+            serde_json::json!(own.to_string_lossy())
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_ai_asks_for_the_reports_folder_like_for_the_drawings_folder() {
+        let d = tmp("reports-dir-ai");
+        let own = d.join("drive");
+        let base = Settings::default();
+        assert!(FOLDER_KEYS.contains(&"reports_dir"));
+        assert!(EDITABLE_KEYS.contains(&"reports_dir"));
+        let (next, asked) = base
+            .patched_by_ai(
+                &serde_json::json!({ "reports_dir": own.to_string_lossy() }),
+                "Claude",
+                "Reports go to the shared drive",
+            )
+            .unwrap();
+        assert!(asked, "a changed reports folder waits for the user");
+        assert_eq!(reports_value(&next), Value::Null, "nothing changed yet");
+        assert!(!own.exists(), "asking creates no folder");
+        let req = next.folder_request.clone().unwrap();
+        assert_eq!(
+            req.changes["reports_dir"],
+            serde_json::json!(own.to_string_lossy())
+        );
+        assert_eq!(req.by, "Claude");
+        // The user's yes applies it.
+        let yes = next.answer_folder_request(&req.changes, true).unwrap();
+        assert_eq!(
+            reports_value(&yes),
+            serde_json::json!(own.to_string_lossy())
+        );
+        // Asking for what is already set asks nothing.
+        let (_, again) = yes
+            .patched_by_ai(
+                &serde_json::json!({ "reports_dir": own.to_string_lossy() }),
+                "Claude",
+                "same",
+            )
+            .unwrap();
+        assert!(!again);
+        let _ = fs::remove_dir_all(&d);
     }
 }

@@ -2191,7 +2191,7 @@ pub(crate) fn slug_of(name: &str) -> String {
 }
 
 /// File-name friendly id derived from a project name.
-fn slug(name: &str) -> String {
+pub(crate) fn slug(name: &str) -> String {
     // Composed first: a name from macOS may come decomposed (HUNTIO-007).
     let mut s: String = crate::library::fold(name)
         .chars()
