@@ -765,9 +765,9 @@ impl Server {
             None | Some(Value::Null) => None,
             Some(_) => {
                 let id = arg_str(args, "id")?.to_string();
-                self.store
-                    .path(&id)
-                    .map_err(|_| format!("`{id}` is not a job id; call list_projects to see the ids"))?;
+                self.store.path(&id).map_err(|_| {
+                    format!("`{id}` is not a job id; call list_projects to see the ids")
+                })?;
                 Some(id)
             }
         };
@@ -820,7 +820,9 @@ impl Server {
                 .ok_or("`limit` must be an integer from 1 to 100")? as usize,
         };
         let dir = self.reports_folder(false)?;
-        let own = tectora_core::settings::Settings::load().reports_dir.is_none();
+        let own = tectora_core::settings::Settings::load()
+            .reports_dir
+            .is_none();
         // The library's own folder is made by the first report: not there
         // yet is an empty list. A folder the user set that is gone (an
         // unplugged drive) is an error.

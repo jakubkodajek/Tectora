@@ -1024,7 +1024,12 @@ fn edge_change_props() -> Value {
 /// name jobs and paths.
 fn error_code(e: &str) -> String {
     match e.split_once(':') {
-        Some((c, _)) if (2..=32).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') => c.to_string(),
+        Some((c, _))
+            if (2..=32).contains(&c.len())
+                && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+        {
+            c.to_string()
+        }
         _ => "error".into(),
     }
 }
@@ -2486,7 +2491,10 @@ impl Server {
                     }),
                     Err(e) => {
                         // The tool's name only: what it was given may be the user's.
-                        tectora_core::applog::line("WARN", &format!("tool {name} failed: {}", error_code(&e)));
+                        tectora_core::applog::line(
+                            "WARN",
+                            &format!("tool {name} failed: {}", error_code(&e)),
+                        );
                         json!({ "content": [{ "type": "text", "text": e }], "isError": true })
                     }
                 })

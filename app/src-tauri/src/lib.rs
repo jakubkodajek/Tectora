@@ -46,6 +46,9 @@ struct AppState {
     /// Example jobs seeded on this first start (example id, job id), until
     /// the UI names them in its language (`name_seeded_examples`).
     seeded: Mutex<Vec<(String, String)>>,
+    /// The bug report file saved last (Save as may name it anything):
+    /// "Show in folder" reveals it and the reports of the reports folder.
+    last_report: Mutex<Option<PathBuf>>,
 }
 
 impl AppState {
@@ -968,7 +971,9 @@ fn create_bug_report(
             },
         };
         let made = bugreport::create(&store, &request, &dest)?;
-        tectora_core::applog::line("INFO", &format!("bug report {}", made.file_name));
+        // No file name in the log: it carries the job's name.
+        tectora_core::applog::line("INFO", "bug report written");
+        *state.last_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(made.path.clone());
         Ok(SavedReport {
             path: made.path.display().to_string(),
             file_name: made.file_name,
@@ -984,17 +989,26 @@ fn bug_report_name(job_name: Option<String>, stamp: String) -> String {
     bugreport::file_name(job_name.as_deref(), &stamp)
 }
 
-/// Shows a saved bug report in Finder / Explorer. Only an existing `.zip`
-/// file by an absolute path is revealed.
-#[tauri::command]
-fn show_bug_report(app: tauri::AppHandle, path: String) -> CmdResult<()> {
+/// Shows a saved bug report in Finder / Explorer. Only the file just saved,
+/// or a file named like a report inside the reports folder, is revealed.
+#[tauri::command(async)]
+fn show_bug_report(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<()> {
     guard(|| {
         let path = PathBuf::from(path);
-        let zip = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
-        if !zip || !path.is_absolute() || !path.is_file() {
+        let last = state
+            .last_report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let saved_now = last.as_ref() == Some(&path);
+        let in_reports = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(bugreport::is_report_name)
+            && path
+                .parent()
+                .is_some_and(|d| d == bugreport::reports_dir(&Settings::load(), &state.store()));
+        if !(saved_now || in_reports) || !path.is_absolute() || !path.is_file() {
             return Err(AppError::new("invalid_input").detail("not a bug report file"));
         }
         app.opener()
@@ -1278,6 +1292,7 @@ pub fn run() {
                 open_errors: Mutex::new(Vec::new()),
                 watcher_error: Mutex::new(None),
                 seeded: Mutex::new(seeded),
+                last_report: Mutex::new(None),
             });
             set_watcher(app.handle(), dir);
             open_files(app.handle(), file_args(std::env::args().skip(1)));
