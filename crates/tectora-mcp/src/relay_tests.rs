@@ -617,3 +617,39 @@ fn a_local_report_is_uploaded_only_by_an_explicit_send() {
     assert_eq!(relay.uploads.lock().unwrap().len(), 2);
     assert_eq!(state_in_list(&mut s, &local_name), "sent");
 }
+
+// ---- fix round 3 ----
+
+/// ARCH-004: the name `create_bug_report` returns reads that report, also
+/// for a second report of the same second and job.
+#[test]
+fn the_name_a_report_is_created_with_reads_that_report() {
+    let relay = start_relay();
+    let (mut s, _root) = server_with(Some(config_for(&relay.url)));
+    let first = report(&mut s, "FIRST-ZQX");
+    let second = report(&mut s, "SECOND-ZQX");
+    let (a, b) = (
+        first["file_name"].as_str().unwrap(),
+        second["file_name"].as_str().unwrap(),
+    );
+    assert_ne!(a, b, "two reports, one name");
+    let read_a = s
+        .call_tool("read_bug_report", &json!({ "name": a }))
+        .unwrap();
+    let read_b = s
+        .call_tool("read_bug_report", &json!({ "name": b }))
+        .unwrap();
+    assert_eq!(read_a["sent"]["description"], "FIRST-ZQX", "{read_a}");
+    assert_eq!(read_b["sent"]["description"], "SECOND-ZQX", "{read_b}");
+}
+
+/// ARCH-T4: Send now over MCP also uploads reports that were kept on this
+/// computer; the tool text says so.
+#[test]
+fn send_bug_reports_says_it_also_uploads_local_reports() {
+    let text = tool("send_bug_reports")["description"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(text.contains("local"), "{text}");
+}

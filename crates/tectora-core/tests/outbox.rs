@@ -801,8 +801,9 @@ fn a_drain_stops_at_the_first_offline_failure() {
     );
 }
 
-/// BUG-3 (fix round 2): a `next_try_ms` far beyond the longest backoff (a
-/// clock that jumped, a hostile sidecar) does not park the report.
+/// BUG-3 (fix round 2, narrowed in round 3, ARCH-001): a `next_try_ms` beyond
+/// the longest wait the relay may ask for (24 h) is a clock that jumped or a
+/// hostile sidecar; it does not park the report.
 #[test]
 fn a_next_try_far_in_the_future_counts_as_due() {
     let (d, store, ob) = setup("r2-clock");
@@ -812,7 +813,7 @@ fn a_next_try_far_in_the_future_counts_as_due() {
     let root = root_of(&d);
     for far in [
         T0 + 5 * 365 * 24 * 3600 * 1000,
-        T0 + 7 * 3600 * 1000,
+        T0 + 26 * 3600 * 1000,
         u64::MAX,
     ] {
         let mut s = sidecar(&root, &q.file_name);
@@ -830,7 +831,7 @@ fn a_next_try_far_in_the_future_counts_as_due() {
         let next = sidecar(&root, &q.file_name)["next_try_ms"]
             .as_u64()
             .unwrap();
-        assert!(next <= T0 + 6 * 3600 * 1000, "{next}");
+        assert!(next <= T0 + 24 * 3600 * 1000 + 3_600_000, "{next}");
     }
 }
 
@@ -1523,4 +1524,120 @@ fn both_workflows_pass_both_report_secrets_to_the_build() {
             "{f} echoes a secret"
         );
     }
+}
+
+// ---- fix round 3 (target/work/bug-report/fix-r3.md) ----
+
+/// ARCH-001: what the relay asked for (here 10 h, as a day limit does) is
+/// respected by every later drain, also one that only looks at the clock.
+#[test]
+fn a_wait_the_relay_asked_for_is_kept_by_the_next_drains() {
+    let (_d, store, ob) = setup("r3-wait");
+    for n in 0..3 {
+        ob.enqueue(&store, &request(None, &stamp(n), bare()), false)
+            .unwrap();
+    }
+    let calls = AtomicUsize::new(0);
+    ob.drain(T0, false, &mut |_, _| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Err(SendFailure::Retry {
+            code: "rate_limited".into(),
+            after_s: Some(26_691),
+        })
+    });
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a rate limit ends the run like offline"
+    );
+    for minutes in [1u64, 2, 3, 60, 300] {
+        let r = ob.drain(T0 + minutes * 60_000, false, &mut |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            ok_receipt()
+        });
+        assert_eq!(r.sent, 0, "{minutes} min later");
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "no report is re-sent before the relay's wait is over"
+    );
+    // After the wait, the report goes (the one that was tried; the other two were never tried).
+    let r = ob.drain(T0 + 26_700_000, false, &mut |_, _| ok_receipt());
+    assert!(r.sent >= 1);
+}
+
+/// ARCH-003: a `sent.lock` left by a killed process neither stalls the drain
+/// nor costs a report its line in the sent log.
+#[test]
+fn a_stale_or_fresh_sent_lock_left_behind_loses_no_sent_line() {
+    for (what, age_s) in [("fresh", 0u64), ("45 s old", 45)] {
+        let (d, store, ob) = setup("r3-sentlock");
+        for n in 0..5 {
+            ob.enqueue(&store, &request(None, &stamp(n), bare()), false)
+                .unwrap();
+        }
+        let root = root_of(&d);
+        let lock = root.join("sent.lock");
+        fs::write(&lock, "").unwrap();
+        if age_s > 0 {
+            let old = std::time::SystemTime::now() - Duration::from_secs(age_s);
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&lock)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root2 = root.clone();
+        let started = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let o = Outbox::at(&root2);
+            let r = o.drain(T0, false, &mut |_, _| ok_receipt());
+            let _ = tx.send(r.sent);
+        });
+        let sent = rx
+            .recv_timeout(Duration::from_secs(40))
+            .unwrap_or_else(|_| panic!("{what}: the drain is stuck behind sent.lock"));
+        assert_eq!(sent, 5, "{what}");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{what}: the drain waited {:?} for the lock",
+            started.elapsed()
+        );
+        let log = fs::read_to_string(root.join("sent.jsonl")).unwrap_or_default();
+        assert_eq!(
+            log.lines().count(),
+            5,
+            "{what}: a sent report lost its line"
+        );
+    }
+}
+
+/// ARCH-004: one name means one report for its whole life: a second report
+/// with the name of an already sent one is queued under a new name.
+#[test]
+fn a_report_gets_a_name_no_earlier_report_had() {
+    let (_d, store, ob) = setup("r3-names");
+    let a = ob
+        .enqueue(&store, &request(None, "20261128-143012", bare()), false)
+        .unwrap();
+    ob.drain(T0, false, &mut |_, _| ok_receipt());
+    let b = ob
+        .enqueue(&store, &request(None, "20261128-143012", bare()), false)
+        .unwrap();
+    assert_ne!(
+        a.file_name, b.file_name,
+        "the name of a sent report is reused"
+    );
+    assert!(bugreport::is_report_name(&b.file_name));
+    ob.drain(T0, false, &mut |_, _| ok_receipt());
+    let r = ob.read(&b.file_name).unwrap();
+    assert_eq!(
+        r["sent"]["id"], b.id,
+        "the returned name reads its own report"
+    );
+    let r = ob.read(&a.file_name).unwrap();
+    assert_eq!(r["sent"]["id"], a.id);
 }

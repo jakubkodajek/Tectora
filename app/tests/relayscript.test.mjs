@@ -515,4 +515,40 @@ describe("Code.gs", () => {
     const src = CODE;
     expect(src, "the sweep has no time bound").toMatch(/Date\.now\(\)[^;\n]*(MAX|LIMIT|DEADLINE|budget|elapsed)|(MAX|LIMIT|DEADLINE)[A-Z_]*[^;\n]*Date\.now\(\)/i);
   });
+
+  // ---- fix round 3 (target/work/bug-report/fix-r3.md) ----
+
+  // ARCH-002: a refused token or repository is not the report's fault; when the
+  // owner fixes it, the sweep opens the issues, however long that took.
+  it("opens the issues of reports refused for a token or repository problem once that is fixed", () => {
+    for (const status of [401, 403, 404]) {
+      const w = world({}, { githubStatus: status });
+      post(w, good());
+      for (let day = 0; day < 8; day++) w.sandbox.sweep();
+      expect(w.files[0].description, `${status} after a week`).toContain(`issue: error:${status}`);
+      w.github.status = 201;
+      w.sandbox.sweep();
+      expect(w.files[0].description, `${status} after the fix`).toContain("issue: https://github.com/jakubkodajek/Tectora/issues/12");
+    }
+  });
+
+  it("opens the issues of reports filed while no token was set once it is set", () => {
+    const w = world({ GITHUB_TOKEN: "" });
+    post(w, good());
+    for (let day = 0; day < 8; day++) w.sandbox.sweep();
+    w.properties.set("GITHUB_TOKEN", TOKEN);
+    w.sandbox.sweep();
+    expect(w.files[0].description).toContain("issue: https://github.com/");
+  });
+
+  // ARCH-T1: a report that is given up on leaves nothing behind in Script Properties.
+  it("keeps no F_ property for a report it gave up on", () => {
+    const w = world({}, { githubStatus: 500 });
+    post(w, good({ meta: { description: "POISON", source: "app" } }));
+    w.github.failIf = (issue) => /POISON/.test(JSON.stringify(issue));
+    w.github.status = 201;
+    for (let day = 0; day < 10; day++) w.sandbox.sweep();
+    const left = [...w.properties.keys()].filter((k) => k.startsWith("F_"));
+    expect(left, "F_ properties of a report given up for good").toEqual([]);
+  });
 });
