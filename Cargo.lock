@@ -5027,6 +5027,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "tectora-relay",
  "thiserror 2.0.21",
  "toml_edit 0.25.17+spec-1.1.0",
  "zip",
