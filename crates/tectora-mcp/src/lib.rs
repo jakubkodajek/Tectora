@@ -1104,10 +1104,11 @@ fn base_tools() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir or drawings_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then. Every other change applies at once and is shown to the user with your summary and the values before and after, to accept or revert (`settings.ai_changes`).",
+            "description": "Change Tectora settings, same as the app's Settings screen. Pass only the keys to change; null resets a folder or the language to its default. A new projects_dir, drawings_dir or reports_dir is only a request: the app asks the user to allow it, and the folders stay as they are until then. Every other change applies at once and is shown to the user with your summary and the values before and after, to accept or revert (`settings.ai_changes`).",
             "inputSchema": schema(json!({
                 "projects_dir": { "type": ["string", "null"], "description": "Absolute path of the design library folder." },
                 "drawings_dir": { "type": ["string", "null"], "description": "Absolute path of the drawings inbox; default <projects_dir>/drawings." },
+                "reports_dir": { "type": ["string", "null"], "description": "Absolute path of the folder bug reports are saved to (e.g. a shared Google Drive folder); default: `reports` in the job library." },
                 "locale": { "type": ["string", "null"], "enum": ["cs", "sk", "en", "de", null] },
                 "theme": { "type": "string", "enum": ["system", "light", "dark"] },
                 "roof_defaults": {
@@ -2471,6 +2472,8 @@ impl Server {
                         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() }],
                     }),
                     Err(e) => {
+                        // The tool's name only: what it was given may be the user's.
+                        tectora_core::applog::line("WARN", &format!("tool {name} failed"));
                         json!({ "content": [{ "type": "text", "text": e }], "isError": true })
                     }
                 })
@@ -2559,6 +2562,8 @@ pub fn run_stdio(store: Store) -> io::Result<()> {
     if worker::run_if_worker() {
         return Ok(());
     }
+    tectora_core::applog::init("mcp");
+    tectora_core::applog::install_panic_hook();
     let mut server = Server::new(store);
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
@@ -3966,6 +3971,61 @@ mod tests {
     /// `TECTORA_CONFIG_DIR`) run one at a time, so one never sees the
     /// other's half-written defaults.
     static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Bug report folder (plan target/work/bug-report, criteria 9 and 10): an
+    /// AI client can only ask for it, and a report goes where the user set.
+    #[test]
+    fn the_reports_folder_is_asked_for_and_a_report_goes_there() {
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("tectora-mcp-reports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        unsafe { std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg")) };
+        let mut s = server();
+        let drive = base.join("drive");
+        let r = s
+            .call_tool(
+                "update_settings",
+                &json!({ "reports_dir": drive.to_string_lossy(), "summary": "Reports to the shared drive" }),
+            )
+            .unwrap();
+        assert_eq!(
+            r["settings"]["folder_request"]["changes"]["reports_dir"],
+            json!(drive.to_string_lossy())
+        );
+        assert!(!drive.exists(), "asking creates no folder");
+        // Until the user says yes the library folder is used.
+        let made = s
+            .call_tool(
+                "create_bug_report",
+                &json!({ "description": "d", "summary": "Report" }),
+            )
+            .unwrap();
+        assert!(
+            std::path::Path::new(made["path"].as_str().unwrap())
+                .starts_with(s.store.dir.join("reports")),
+            "{made}"
+        );
+        let shown = Settings::load().folder_request.unwrap().changes;
+        Settings::update(|s| s.answer_folder_request(&shown, true)).unwrap();
+        let r = s.call_tool("get_settings", &json!({})).unwrap();
+        assert_eq!(r["effective"]["reports_dir"], json!(drive));
+        let made = s
+            .call_tool(
+                "create_bug_report",
+                &json!({ "description": "d", "summary": "Report" }),
+            )
+            .unwrap();
+        let path = std::path::PathBuf::from(made["path"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(drive.as_path()));
+        let listed = s.call_tool("list_bug_reports", &json!({})).unwrap();
+        assert!(
+            listed
+                .to_string()
+                .contains(made["file_name"].as_str().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
 
     #[test]
     fn a_file_outside_the_job_folders_waits_for_the_user() {
