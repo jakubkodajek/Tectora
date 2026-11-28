@@ -249,8 +249,8 @@ pub const MAX_COPIES: u32 = 50;
 /// Most walls of a regular polygon part (the editor's field allows 64).
 pub const MAX_POLYGON_SIDES: usize = 64;
 
-/// Applies `m` to part `pi` and to the dormers, chimneys, openings, windows
-/// and hand-drawn lines and faces lying on it. With `copies` > 0 (at most
+/// Applies `m` to part `pi` and to the dormers, chimneys, openings, windows,
+/// hand-drawn lines and faces and towers lying on it (a tower by its centre). With `copies` > 0 (at most
 /// [`MAX_COPIES`]) the part stays and that many copies are added, the k-th
 /// mapped k times (DACAD's copy functions). Returns the indices of the new
 /// or moved parts.
@@ -315,6 +315,7 @@ pub fn transform_part(project: &mut Project, pi: usize, m: PlanMap, copies: u32)
             .map(|f| on(centre(f.points.clone())))
             .collect(),
     );
+    let towers = pick(project.towers.iter().map(|t| on(t.center)).collect());
 
     if copies == 0 {
         let m1 = Power(m, 1);
@@ -336,6 +337,9 @@ pub fn transform_part(project: &mut Project, pi: usize, m: PlanMap, copies: u32)
         }
         for &i in &faces {
             project.manual_faces[i] = map_face(&project.manual_faces[i], m1);
+        }
+        for &i in &towers {
+            project.towers[i] = map_tower(&project.towers[i], m1);
         }
         return vec![pi];
     }
@@ -375,6 +379,11 @@ pub fn transform_part(project: &mut Project, pi: usize, m: PlanMap, copies: u32)
             .map(|&i| map_face(&project.manual_faces[i], mk))
             .collect();
         project.manual_faces.extend(new);
+        let new: Vec<_> = towers
+            .iter()
+            .map(|&i| map_tower(&project.towers[i], mk))
+            .collect();
+        project.towers.extend(new);
     }
     added
 }

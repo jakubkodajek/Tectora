@@ -24,7 +24,7 @@ pub struct Change {
     /// `part_name`, `edge`, `vertex`, `pitch_deg`, `eave_height`,
     /// `overhang`, `half_hip`, `breaks`, `priority`, `clad`, `direction`,
     /// `material`. Items (with `item`): `dormer`, `chimney`, `window`,
-    /// `roof_opening`, `manual_line`, `manual_face`.
+    /// `roof_opening`, `manual_line`, `manual_face`, `tower`.
     ///
     /// Logs written before item changes existed hold one `dormers`,
     /// `chimneys`, `windows` or `roof_openings` change with the whole list.
@@ -304,6 +304,7 @@ pub fn diff(before: &Project, after: &Project) -> Vec<Change> {
         &after.manual_faces,
         &mut out,
     );
+    diff_items("tower", &before.towers, &after.towers, &mut out);
     let n = before.parts.len().min(after.parts.len());
     for i in 0..n {
         diff_part(i, &before.parts[i], &after.parts[i], &mut out);
@@ -451,5 +452,36 @@ mod tests {
         assert_eq!(d.len(), 1, "{d:?}");
         assert_eq!(d[0].field, "building_height");
         assert_eq!(d[0].part, Some(0));
+    }
+
+    #[test]
+    fn an_added_moved_or_removed_tower_is_one_item_change() {
+        let a = examples::find("gable").unwrap().project();
+        let mut b = a.clone();
+        let t = crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Cone,
+            Point2::new(4.0, 4.0),
+            2.0,
+            12.0,
+        );
+        b.towers.push(t);
+        let c = diff(&a, &b);
+        assert_eq!(c.len(), 1);
+        assert_eq!(
+            (c[0].field.as_str(), c[0].item, &c[0].kind),
+            ("tower", Some(0), &ChangeKind::Added)
+        );
+        let mut moved = b.clone();
+        moved.towers[0].center = Point2::new(5.0, 4.0);
+        let c = diff(&b, &moved);
+        assert_eq!(
+            (c[0].field.as_str(), &c[0].kind),
+            ("tower", &ChangeKind::Modified)
+        );
+        let c = diff(&moved, &a);
+        assert_eq!(
+            (c[0].field.as_str(), &c[0].kind),
+            ("tower", &ChangeKind::Removed)
+        );
     }
 }

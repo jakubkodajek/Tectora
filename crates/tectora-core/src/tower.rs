@@ -550,12 +550,11 @@ impl Tower {
                 Some(b) if b.kind == TierKind::Wall => {
                     lines.push(self.ring_line("T", i, bottom_h, bottom_z, &draw, half, perimeter))
                 }
-                Some(b) if (b.pitch_deg - tr.pitch_deg).abs() > 0.5 || b.area == 0.0 => {
-                    if bottom_h > EPS {
-                        lines.push(
-                            self.ring_line("K", i, bottom_h, bottom_z, &draw, half, perimeter),
-                        )
-                    }
+                Some(b)
+                    if ((b.pitch_deg - tr.pitch_deg).abs() > 0.5 || b.area == 0.0)
+                        && bottom_h > EPS =>
+                {
+                    lines.push(self.ring_line("K", i, bottom_h, bottom_z, &draw, half, perimeter))
                 }
                 _ => {}
             }
@@ -619,6 +618,7 @@ impl Tower {
 
     /// A horizontal ring line at half width `h` and height `z`; its length
     /// from the fine outline.
+    #[allow(clippy::too_many_arguments)]
     fn ring_line(
         &self,
         code: &'static str,
