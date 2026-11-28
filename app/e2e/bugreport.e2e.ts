@@ -11,6 +11,7 @@ import { cs } from "./i18n";
 test.describe("report a bug", () => {
   test("the reports folder from Settings gets the report, which an AI client can list and read", async ({ app, page, mcp }) => {
     const id = await createExample("hip", "Valba chyba");
+    await app.open();
     const folder = path.join(path.dirname(scratchFile("x", "")), "Hlášení");
     fs.mkdirSync(folder, { recursive: true });
 
@@ -55,6 +56,7 @@ test.describe("report a bug", () => {
 
   test("the button is in the library too, and Send works with an empty text", async ({ app, page }) => {
     await createExample("hip", "Bez textu");
+    await app.open();
     const button = page.getByRole("button", { name: cs("report.button") });
     await expect(button).toBeVisible();
     await button.click();

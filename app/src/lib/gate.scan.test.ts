@@ -273,7 +273,7 @@ describe("the writer gate covers every entry point outside the editor's refusal 
       const inside = actions.filter((a) => a.startsWith(`${file}:`)).length;
       expect(outside, `${file}: a toast action outside notify(`).toBe(inside);
     }
-    expect(actions.sort()).toEqual(["App.svelte:ai.followOpen", "Editor.svelte:snap.refreshedShow", "Home.svelte:home.restore", "JobPanel.svelte:snap.store"]);
+    expect(actions.sort()).toEqual(["App.svelte:ai.followOpen", "Editor.svelte:snap.refreshedShow", "Home.svelte:home.restore", "JobPanel.svelte:snap.store", "ReportDialog.svelte:report.show"]);
     const toasts = stripComments(files["Toasts.svelte"]);
     const run = definition(toasts, "runAction");
     expect(run && gateFirst(run), "Toasts runAction asks the gate before anything else").toBe(true);

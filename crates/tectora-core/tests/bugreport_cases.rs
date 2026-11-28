@@ -414,9 +414,7 @@ fn a_report_that_cannot_be_written_is_refused_with_a_code_and_writes_nothing() {
     fs::create_dir_all(&out).unwrap();
     log_dir();
     let refused = |req: &Request, dest: Dest| {
-        let e = bugreport::create(&store, req, &dest)
-            .err()
-            .expect("must be refused");
+        let e = bugreport::create(&store, req, &dest).expect_err("must be refused");
         assert!(
             REFUSAL_CODES.contains(&e.code),
             "code {} ({})",
@@ -650,16 +648,7 @@ fn file_names_are_plain_ascii_whatever_the_job_is_called() {
             .unwrap_or_else(|| panic!("{f}"));
         let rest = rest.strip_suffix(".zip").unwrap_or_else(|| panic!("{f}"));
         // slug of 1 to 40 chars of [a-z0-9-], then an optional -<number>.
-        let slug = match rest.rsplit_once('-') {
-            Some((s, num))
-                if !s.is_empty() && num.chars().all(|c| c.is_ascii_digit()) && s.len() >= 1 =>
-            {
-                // `-2`-style suffixes are only added by `create`; a plain
-                // name may still end in a number of the slug itself.
-                rest
-            }
-            _ => rest,
-        };
+        let slug = rest;
         assert!(
             (1..=45).contains(&slug.len())
                 && slug
