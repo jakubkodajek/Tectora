@@ -483,3 +483,9 @@ sessions that use it know where things stand.
   `open_gap`); PR #57's `objectfacts.ts` / `PlaceSketch.svelte` must be
   listed in the parity file when it merges (core `edit::facts` gives the
   same facts); standard-roof dry run and copy offsets have no MCP default.
+- Coordination: if PR #58 (bug report) merges before #59, #59 lists its
+  commands (create_bug_report, bug_report_outbox, send_bug_reports,
+  save_queued_bug_report, discard_bug_report, bug_report_name,
+  show_bug_report) and UI files (ReportButton/ReportDialog/ReportOutbox
+  .svelte, reportlog.ts, bugreport.ts, reportqueue.ts, report.svelte.ts);
+  if #57 merges first, #59 lists objectfacts.ts and PlaceSketch.svelte.
