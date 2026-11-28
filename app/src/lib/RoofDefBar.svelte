@@ -406,9 +406,10 @@
       </div>
       {#if onarc && !marker}
         <div class="actions" data-testid="def-arcs">
-          <button class="btn sm" onclick={() => onarc("bend")}>{t("arc.bend")}</button>
-          <button class="btn sm" onclick={() => onarc("apse")}>{t("arc.apse")}</button>
-          <button class="btn sm" onclick={() => onarc("round")} title={t("arc.roundBarHint")}>{t("arc.roundStart")}</button>
+          <!-- A double click's second press must not run the action again on the arc just made (UX-004). -->
+          <button class="btn sm" onclick={(e) => e.detail < 2 && onarc("bend")}>{t("arc.bend")}</button>
+          <button class="btn sm" onclick={(e) => e.detail < 2 && onarc("apse")}>{t("arc.apse")}</button>
+          <button class="btn sm" onclick={(e) => e.detail < 2 && onarc("round")} title={t("arc.roundBarHint")}>{t("arc.roundStart")}</button>
         </div>
       {/if}
       <div class="actions">

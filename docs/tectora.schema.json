@@ -414,7 +414,7 @@
       "description": "A tower or turret standing through the roof (see the module docs).",
       "properties": {
         "base_height": {
-          "description": "Height where the tower's roof starts (top of the shaft), m above\nground.",
+          "description": "Height where the tower's roof starts (top of the shaft), m above\nground: the roof over the shaft's wall line.",
           "format": "double",
           "type": "number"
         },
@@ -437,6 +437,11 @@
         },
         "label": {
           "type": "string"
+        },
+        "overhang": {
+          "description": "Eave overhang of the tower's roof beyond the shaft, m (0: the roof\nends at the wall). The first tier runs on at its own pitch to the\noverhang line, where the eave is, `overhang · tan(pitch)` below\n`base_height`, as a wall's roof meets its eave at the overhang line\n(audit r2 UX-001). The shaft and its cut stay the wall's.",
+          "format": "double",
+          "type": "number"
         },
         "rotation_deg": {
           "description": "Turn of the tower's x axis from the plan's x axis, degrees\ncounter-clockwise.",

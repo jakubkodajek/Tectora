@@ -263,7 +263,42 @@ export function dialogRefusal(e: unknown): DialogRefusal | null {
   return { text: text.charAt(0).toLocaleUpperCase() + text.slice(1), detail: text === t("refuse.other") ? `${err.code}: ${err.detail ?? ""}` : null };
 }
 
-const TOWER_CODES = new Set(["tower_limit", "tower_missing", "tower_not_calculated", "tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge"]);
+/**
+ * A tower dialog's view of a failed core call (the preset buttons and OK):
+ * a refusal as `dialogRefusal`; also a tower problem the core answers with
+ * another code (`tower_preset` answers `out_of_range` with a `(tower_…)`
+ * code, review ERR-004), and a job over its counts (`too_many`: the tiers of
+ * all towers, ARCH-002) with the core's text under it, so the reason stays
+ * beside OK and is not a "could not calculate the roof" toast. Null for a
+ * failure of the core.
+ */
+export function towerRefusal(e: unknown): DialogRefusal | null {
+  const r = dialogRefusal(e);
+  if (r) return r;
+  const err = toAppError(e);
+  if ((err.code === "out_of_range" || err.code === "too_many") && /\((tower_[a-z_]+)\)\s*$/.test(err.detail ?? "")) return dialogRefusal({ ...err, code: "refused" });
+  if (err.code === "too_many") return { text: describeError(err).message, detail: `${err.code}: ${err.detail ?? ""}` };
+  return null;
+}
+
+const TOWER_CODES = new Set(["tower_limit", "tower_missing", "tower_not_calculated", "tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge", "tower_overhang", "tower_tiers_limit", "tower_label"]);
+
+/** The text of each arc refusal code of the core (`edit::arcs::ARC_CODES`). */
+const ARC_KEYS = new Map<string, string>([
+  ["arc_no_wall", "arc.err.noWall"],
+  ["arc_no_corner", "arc.err.noCorner"],
+  ["arc_no_part", "arc.err.noPart"],
+  ["arc_segments", "arc.err.segments"],
+  ["arc_too_short", "arc.err.tooShort"],
+  ["arc_flat", "arc.err.flat"],
+  ["arc_bulge", "arc.err.bulge"],
+  ["arc_radius_min", "arc.err.radiusMin"],
+  ["arc_radius_max", "arc.err.radiusMax"],
+  ["arc_straight", "arc.err.straight"],
+  ["arc_no_length", "arc.err.noLength"],
+  ["arc_touches", "arc.err.touches"],
+  ["arc_invalid", "arc.err.invalid"],
+]);
 
 /**
  * Why the core refused a rounded corner or a bent wall (`edit::arcs`,
@@ -271,9 +306,21 @@ const TOWER_CODES = new Set(["tower_limit", "tower_missing", "tower_not_calculat
  */
 export function arcReason(detail: string): string | null {
   const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
-  // A wall, corner or building the outline does not have (any more): no value is wrong (ERR-004).
-  const gone = detail.match(/\((arc_no_wall|arc_no_corner|arc_no_part)\)\s*$/);
-  if (gone) return t(gone[1] === "arc_no_wall" ? "arc.err.noWall" : gone[1] === "arc_no_corner" ? "arc.err.noCorner" : "arc.err.noPart");
+  // Every refusal of the core ends with its code (`edit::arcs::ARC_CODES`): the text is
+  // chosen by the code; the figures it names are read from the sentence (ARCH-005).
+  const code = detail.match(/\((arc_[a-z_]+)\)\s*$/)?.[1];
+  const key = code ? ARC_KEYS.get(code) : undefined;
+  if (code && key) {
+    const n = (re: RegExp) => {
+      const v = detail.match(re)?.[1];
+      return v === undefined ? "—" : f(v);
+    };
+    return t(key, {
+      max: code === "arc_segments" ? n(/2 to (\d+) walls/) : code === "arc_bulge" ? n(/half the wall \(([\d.]+) m\)/) : n(/at most ([\d.]+) m/),
+      min: n(/shorter than ([\d.]+) m/),
+    });
+  }
+  // Without a code (an older core): by the sentence.
   let m = detail.match(/an arc has 2 to (\d+) walls/);
   if (m) return t("arc.err.segments", { max: m[1] });
   m = detail.match(/the bend must be at least [\d.]+ m and at most half the wall \(([\d.]+) m\)/);
@@ -282,7 +329,8 @@ export function arcReason(detail: string): string | null {
   m = detail.match(/the radius is too large for the walls at the corner \(at most ([\d.]+) m\)/);
   if (m) return t("arc.err.radiusMax", { max: f(m[1]) });
   if (/the walls at the corner run straight on/.test(detail)) return t("arc.err.straight");
-  if (/the arc's walls would be shorter than/.test(detail)) return t("arc.err.tooShort");
+  m = detail.match(/the arc's walls would be shorter than ([\d.]+) m/);
+  if (m) return t("arc.err.tooShort", { min: f(m[1]) });
   if (/(the wall|a wall at the corner) has no length/.test(detail)) return t("arc.err.noLength");
   if (/the arc would make the outline invalid/.test(detail)) return t("arc.err.invalid");
   return null;

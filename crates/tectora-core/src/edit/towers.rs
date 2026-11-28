@@ -105,12 +105,20 @@ pub const TOWER_MISSING: &str = "tower_missing";
 /// The code that ends the refusal of a tower without problems that still
 /// gives no roof (`commands::tower_preview`).
 pub const TOWER_NOT_CALCULATED: &str = "tower_not_calculated";
+/// The code that ends the refusal of a tower whose tiers would take the
+/// job over [`crate::tower::MAX_TIERS_TOTAL`] tiers of all towers (audit r2
+/// ARCH-002: it came as the general "too many objects").
+pub const TOWER_TIERS_LIMIT: &str = "tower_tiers_limit";
+/// The code that ends the refusal of a tower label too long or with a
+/// line break or control character (audit r2 ARCH-004: it was cut
+/// silently, where a part name is refused).
+pub const TOWER_LABEL: &str = "tower_label";
 
 /// Adds `tower` (`index` `None`) or replaces tower `index`; refuses a
 /// tower with problems, with the first one's English message. Returns the
 /// tower's index. Every refusal ends with its code in parentheses (a
-/// problem's, [`TOWER_LIMIT`] or [`TOWER_MISSING`]), which the app
-/// translates by.
+/// problem's, [`TOWER_LIMIT`], [`TOWER_TIERS_LIMIT`], [`TOWER_LABEL`] or
+/// [`TOWER_MISSING`]), which the app translates by.
 pub fn set_tower(
     project: &mut Project,
     index: Option<usize>,
@@ -118,6 +126,27 @@ pub fn set_tower(
 ) -> Result<usize, String> {
     if let Some((code, msg)) = tower.problems().first() {
         return Err(format!("{msg} ({code})"));
+    }
+    // A label the tower already had stays (a job received with one is
+    // cleaned on import); a new one is checked as a part name is.
+    let old = index.and_then(|i| project.towers.get(i));
+    if old.is_none_or(|o| o.label != tower.label) {
+        super::check_label("the tower label", &tower.label)
+            .map_err(|e| format!("{e} ({TOWER_LABEL})"))?;
+    }
+    let others: usize = project
+        .towers
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| Some(k) != index)
+        .map(|(_, t)| t.tiers.len())
+        .sum();
+    if others + tower.tiers.len() > crate::tower::MAX_TIERS_TOTAL {
+        return Err(format!(
+            "a job has at most {} tiers in all its towers; this tower would make {} ({TOWER_TIERS_LIMIT})",
+            crate::tower::MAX_TIERS_TOTAL,
+            others + tower.tiers.len()
+        ));
     }
     let mut tower = tower;
     tower.label = super::clean_line(&tower.label, super::MAX_LABEL_CHARS);
@@ -212,5 +241,52 @@ mod tests {
             l.chars().count()
         );
         assert!(crate::edit::check_texts_change(None, &p).is_ok());
+    }
+
+    /// Audit r2 ARCH-002: a tower that takes the job over the tiers all its
+    /// towers may have is refused with its own code before anything else is
+    /// checked, and replacing a tower counts the tiers it replaces.
+    #[test]
+    fn the_tier_limit_of_a_job_is_refused_with_its_own_code() {
+        let mut p = Project::new("t");
+        let t = preset(TowerPreset::Baroque, Point2::new(0.0, 0.0), 1.0, 10.0);
+        let per = t.tiers.len();
+        let fit = crate::tower::MAX_TIERS_TOTAL / per;
+        for _ in 0..fit {
+            set_tower(&mut p, None, t.clone()).unwrap();
+        }
+        let e = set_tower(&mut p, None, t.clone()).unwrap_err();
+        assert!(e.ends_with(&format!("({TOWER_TIERS_LIMIT})")), "{e}");
+        assert!(e.contains("120"), "{e}");
+        assert_eq!(p.towers.len(), fit);
+        // The same tower again in place of the first fits.
+        assert_eq!(set_tower(&mut p, Some(0), t), Ok(0));
+    }
+
+    /// Audit r2 ARCH-004: a tower label with a line break or longer than a
+    /// part name may be is refused as a part name is, nothing changed; a
+    /// label the tower already had is kept.
+    #[test]
+    fn a_bad_tower_label_is_refused_like_a_part_name() {
+        let mut p = Project::new("t");
+        let mut t = preset(TowerPreset::Cone, Point2::new(0.0, 0.0), 2.0, 9.0);
+        for bad in [
+            "a\nb".to_string(),
+            "x".repeat(201),
+            "a\u{202e}b".to_string(),
+        ] {
+            t.label = bad;
+            let e = set_tower(&mut p, None, t.clone()).unwrap_err();
+            assert!(e.ends_with(&format!("({TOWER_LABEL})")), "{e}");
+        }
+        assert!(p.towers.is_empty());
+        t.label = "Zvonice".into();
+        assert_eq!(set_tower(&mut p, None, t.clone()), Ok(0));
+        // An old label (as a received job may still have) is not refused
+        // when only another value changes.
+        p.towers[0].label = "x".repeat(201);
+        let mut w = p.towers[0].clone();
+        w.width = 3.0;
+        assert_eq!(set_tower(&mut p, Some(0), w), Ok(0));
     }
 }

@@ -220,6 +220,55 @@ fn unique_name(project: &Project, base: &str) -> String {
 }
 
 /// Even-odd point-in-polygon test on the part's wall outline.
+/// Removes building `part` and the towers standing on it: their centre
+/// inside its walls (as [`transform_part`] takes them along) and on no
+/// other building (audit r2 UX-003). The editor's "Delete building" and
+/// MCP `delete_items` both go through it. Returns the indices the removed
+/// towers had.
+pub fn delete_part(project: &mut Project, part: usize) -> Result<Vec<usize>, String> {
+    if part >= project.parts.len() {
+        return Err(format!("part {part} does not exist"));
+    }
+    let old = project.parts.remove(part);
+    Ok(drop_towers_left(project, &old))
+}
+
+/// Replaces building `part` by `new`; the towers that stood on the old
+/// building and stand on no building now are removed with it (audit r2
+/// UX-003). The editor's "Replace the selected building" and MCP's
+/// standard roof with `replace_part` and `set_outline` go through it.
+/// Returns the indices the removed towers had.
+pub fn replace_part(
+    project: &mut Project,
+    part: usize,
+    new: RoofPart,
+) -> Result<Vec<usize>, String> {
+    let Some(slot) = project.parts.get_mut(part) else {
+        return Err(format!("part {part} does not exist"));
+    };
+    let old = std::mem::replace(slot, new);
+    Ok(drop_towers_left(project, &old))
+}
+
+/// Removes the towers whose centre lies in `old`'s walls and in no
+/// building of `project`; returns their indices.
+fn drop_towers_left(project: &mut Project, old: &RoofPart) -> Vec<usize> {
+    let gone: Vec<usize> = project
+        .towers
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            inside_outline(old, t.center)
+                && !project.parts.iter().any(|q| inside_outline(q, t.center))
+        })
+        .map(|(k, _)| k)
+        .collect();
+    for &k in gone.iter().rev() {
+        project.towers.remove(k);
+    }
+    gone
+}
+
 pub fn inside_outline(part: &RoofPart, p: Point2) -> bool {
     let o: Vec<Point2> = part.edges.iter().map(|e| e.start).collect();
     let mut inside = false;
@@ -720,6 +769,44 @@ mod tests {
             height: 1.18,
         });
         p
+    }
+
+    /// Audit r2 UX-003: deleting a building deletes the towers standing on
+    /// it (centre inside its walls, as moving it takes them along), not a
+    /// tower beside it or on another building.
+    #[test]
+    fn deleting_a_building_deletes_the_towers_on_it() {
+        let mut p = with_items();
+        let mut other = part();
+        for e in &mut other.edges {
+            e.start.x += 20.0;
+        }
+        p.parts.push(other);
+        let tower = |x: f64| crate::tower::Tower::pyramid(Point2::new(x, 3.0), 1.0, 8.0, 1.0);
+        p.towers = vec![tower(25.0), tower(5.0), tower(-5.0)];
+        assert_eq!(delete_part(&mut p, 0), Ok(vec![1]));
+        assert_eq!(p.parts.len(), 1);
+        let xs: Vec<f64> = p.towers.iter().map(|t| t.center.x).collect();
+        assert_eq!(xs, [25.0, -5.0]);
+        assert!(delete_part(&mut p, 4).is_err());
+        assert_eq!(p.parts.len(), 1);
+    }
+
+    /// Audit r2 UX-003: a building replaced by a smaller one keeps the
+    /// towers that still stand on it and loses those left outside.
+    #[test]
+    fn replacing_a_building_deletes_the_towers_left_outside() {
+        let mut p = with_items();
+        let tower = |x: f64| crate::tower::Tower::pyramid(Point2::new(x, 3.0), 1.0, 8.0, 1.0);
+        p.towers = vec![tower(2.0), tower(8.0)];
+        let mut small = part();
+        small.edges[1].start.x = 5.0;
+        small.edges[2].start.x = 5.0;
+        assert_eq!(replace_part(&mut p, 0, small.clone()), Ok(vec![1]));
+        assert_eq!(p.parts[0], small);
+        assert_eq!(p.towers.len(), 1);
+        assert_eq!(p.towers[0].center.x, 2.0);
+        assert!(replace_part(&mut p, 3, small).is_err());
     }
 
     #[test]

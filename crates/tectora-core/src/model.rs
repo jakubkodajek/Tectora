@@ -18,8 +18,11 @@ use crate::geom::{Point2, signed_area};
 /// - 3: fields added to version 2 without a bump (e.g. `parts[].height`,
 ///   written by 0.8.0 as version 2) and unknown top-level keys kept
 ///   (`Project::extra`). Releases up to 0.8.0 refuse a version 3 file.
-/// - 4: `towers`. Releases up to 0.11 refuse a version 4 file (they would
-///   keep the towers as unknown keys and calculate the roof without them).
+/// - 4: `towers` (with `towers[].overhang`, added before version 4 was
+///   released). The released 0.11.0 and earlier refuse a version 4 file
+///   (they would keep the towers as unknown keys and calculate the roof
+///   without them); the first release that writes it is the one after
+///   0.11.0, whose workspace version is raised when it is released.
 pub const SCHEMA_VERSION: u32 = 4;
 
 /// Pitch at or above this value (degrees) means a vertical gable wall.

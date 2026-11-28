@@ -10,8 +10,11 @@ import type { CalcResult, Project, RoofWarning, RoofWindow } from "./types";
 import { hasBuilding } from "./offer";
 
 /** The translated sentence of one plausibility warning. */
-export function warningText(w: RoofWarning): string {
+export function warningText(w: RoofWarning, result: CalcResult | null = null): string {
   switch (w.kind) {
+    case "tower_base_below_roof":
+      // The core's warning for a tower roof sunk into the roof (UX-002), by the tower's name.
+      return t("res.warn.tower_base_below_roof", { name: (w.towers ?? []).map((i) => result?.towers?.[i]?.label || t("tower.n", { n: i + 1 })).join(", "), v: num(w.value) });
     case "merged_walls": {
       const [a, b] = w.edges ?? [0, 0];
       return t("res.warn.merged_walls", { a: a + 1, b: b + 1 });
@@ -71,6 +74,11 @@ const NOTICES = new Set<RoofWarning["kind"]>(["plane_over_wall", "merged_planes"
 export function hasRoofWarning(result: CalcResult | null): boolean {
   const warned = (ws: RoofWarning[] | undefined) => (ws ?? []).some((w) => !NOTICES.has(w.kind));
   return (result?.parts ?? []).some((p) => warned(p.geometry.warnings)) || warned(result?.warnings);
+}
+
+/** How many towers the core cut out of a roof (their shafts are deducted with the chimneys, MATH-005). */
+export function towersOnRoof(result: CalcResult | null): number {
+  return (result?.towers ?? []).filter((tw) => tw.result && tw.shaft?.on_roof).length;
 }
 
 /**
@@ -242,9 +250,9 @@ export function areaListShown(rows: AreaRow[], facesOnly: boolean): boolean {
 export function resultWarnings(result: CalcResult | null): { part: string | null; text: string }[] {
   if (!result) return [];
   const parts = result.parts.flatMap((p, i) =>
-    (p.geometry.warnings ?? []).map((w) => ({ part: result.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w) })),
+    (p.geometry.warnings ?? []).map((w) => ({ part: result.parts.length > 1 ? partLabel(p.name, i) : null, text: warningText(w, result) })),
   );
-  return parts.concat((result.warnings ?? []).map((w) => ({ part: null, text: warningText(w) })));
+  return parts.concat((result.warnings ?? []).map((w) => ({ part: null, text: warningText(w, result) })));
 }
 
 /** Per part, the parts its roof is joined with, as the calculation joined them. */

@@ -12,6 +12,8 @@
 //   field *before* that press is handled (so clicking the next wall stores the
 //   value on the wall it was typed for, not on the newly selected one);
 // - Escape restores the stored value; an invalid entry is restored and marked;
+//   a live field, which stores as the user types, puts back the value it had
+//   before the typing began (never a prefix of a refused text, ERR-001);
 // - ArrowUp / ArrowDown and the small ▲▼ buttons step by `step`;
 // - while the user types, outside updates (autosave, AI edits) never replace
 //   the typed text.
@@ -157,6 +159,20 @@ export function toSend(v: number, stored: number | null | undefined, out: number
   return out !== null ? out !== v : stored !== v;
 }
 
+/**
+ * What a live field must put back when its typing ends without a value it
+ * takes (Escape, a refused or emptied text, review ERR-001): the value it had
+ * when the user began to type, once a different value was stored on the way
+ * ("3000" typed key by key stored 3, 30, then 300 is refused: 3 goes back,
+ * not 30). `{ v: null }` asks to clear a field that started empty; null means
+ * nothing to put back.
+ */
+export function liveRestore(start: number | null | undefined, lastSent: number | null): { v: number | null } | null {
+  if (lastSent === null) return null;
+  const from = start ?? null;
+  return from === lastSent ? null : { v: from };
+}
+
 export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   let opts = initial;
   let dirty = false;
@@ -183,6 +199,26 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
   /** Counts item switches (`key`): an answer for an earlier item is not this field's any more. */
   let item = 0;
+  /** Live fields: the stored value when the user began to type, and the last value stored since (ERR-001). */
+  let typedFrom: number | null | undefined = undefined;
+  let liveSent: number | null = null;
+
+  /**
+   * Live fields: puts back the value from before the typing (Escape, a
+   * refused text), so no prefix of a refused number stays stored. Returns
+   * the value the field shows now, or undefined when nothing was put back.
+   */
+  function restoreLive(): { v: number | null } | null {
+    if (!opts.live) return null;
+    const back = liveRestore(typedFrom, liveSent);
+    liveSent = null;
+    if (!back) return null;
+    if (back.v === null) {
+      if (!opts.onclear) return null;
+      opts.onclear();
+    } else opts.onchange(back.v);
+    return back;
+  }
 
   /** Why `text` cannot be stored, for the tooltip; null when it can. */
   function reason(text: string): string | null {
@@ -264,8 +300,8 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
    * the field again or it is switched to another item, so a lost value
    * stays visible (UX-401).
    */
-  function refuse(why: string, stay = false) {
-    input.value = fmt(opts.value);
+  function refuse(why: string, stay = false, shown?: { v: number | null } | null) {
+    input.value = fmt(shown ? shown.v : opts.value);
     setInvalid(why);
     stays = stay;
     opts.onrefuse?.(why);
@@ -303,6 +339,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     if (!dirty) return;
     setDirty(false);
     if (opts.onclear && input.value.trim() === "") {
+      liveSent = null;
       setInvalid(null);
       opts.onclear();
       return;
@@ -312,14 +349,18 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     // A typed value ends a burst of steps: it is what the field shows now.
     if (v !== null) stepped = null;
     const ok = v !== null && store(v);
+    // A live field that stored a prefix of a refused text puts the value
+    // from before the typing back (ERR-001).
+    const back = ok ? null : restoreLive();
+    if (ok) liveSent = null;
     // The stored value may arrive later (parent re-render); show the typed
     // number now, or the stored one when it was refused.
-    input.value = ok ? fmt(v) : fmt(opts.value);
+    input.value = ok ? fmt(v) : fmt(back ? back.v : opts.value);
     if (ok || text.trim() === "") {
       setInvalid(null);
     } else {
       // Say why for a moment, then the restored value is plain again.
-      refuse(reason(text) ?? refusal ?? t("num.refused"));
+      refuse(reason(text) ?? refusal ?? t("num.refused"), false, back);
     }
   }
 
@@ -352,6 +393,11 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
   }
 
   function onInput() {
+    if (!dirty) {
+      // The value to put back if this typing ends refused or with Escape.
+      typedFrom = opts.value;
+      liveSent = null;
+    }
     setDirty(true);
     const text = input.value.trim();
     // A lone "-" or "," is a number being typed, not an error yet.
@@ -360,7 +406,22 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     setInvalid(v === null && !partial ? reason(text) : null);
     if (opts.live && v !== null) {
       // Live fields store as they go but keep the text as typed ("2," stays).
-      if (opts.value !== v) opts.onchange(v);
+      if ((liveSent ?? opts.value) !== v) {
+        opts.onchange(v);
+        liveSent = v;
+      }
+    } else if (opts.live && v === null && !partial && liveSent !== null) {
+      // "300" after "30": the refused text's prefix must not stay stored
+      // while the field is marked; the value from before the typing goes
+      // back (the text stays as typed, so the user can correct it) (ERR-001).
+      const back = liveRestore(typedFrom, liveSent);
+      if (back && back.v !== null) {
+        opts.onchange(back.v);
+        liveSent = back.v;
+      } else if (back && opts.onclear) {
+        opts.onclear();
+        liveSent = null;
+      }
     }
   }
 
@@ -372,7 +433,11 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
     } else if (e.key === "Escape" && dirty) {
       setDirty(false);
       setInvalid(null);
-      render();
+      // A live field stored as the user typed: Escape puts back the value
+      // from before the typing, not the last keystroke's (ERR-001).
+      const back = restoreLive();
+      if (back) input.value = fmt(back.v);
+      else render();
       e.preventDefault();
       e.stopPropagation();
     } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && opts.arrows !== false) {
@@ -497,6 +562,7 @@ export function numeric(input: HTMLInputElement, initial: NumericOptions) {
         out = null;
         stepped = null;
         refusal = null;
+        liveSent = null;
         if (invalid) setInvalid(null);
       } else if (!dirty && invalid && !stays && fmt(opts.value) !== input.value) setInvalid(null);
       render();

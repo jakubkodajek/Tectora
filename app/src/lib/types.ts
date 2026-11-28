@@ -163,6 +163,8 @@ export interface Tower {
   corner_radius?: number;
   /** Height where the tower's roof starts (top of the shaft), m. */
   base_height: number;
+  /** Eave overhang of the tower's roof beyond the shaft, m (0 or absent: the roof ends at the shaft; core `tower::Tower::overhang`). */
+  overhang?: number;
   tiers: TowerTier[];
 }
 
@@ -427,6 +429,7 @@ export interface Problem {
     | "tower_base"
     | "tower_no_tiers"
     | "tower_tiers"
+    | "tower_overhang"
     | "tower_tier_size"
     | "tower_flat_bulge"
     | "tower_bulge";
@@ -460,7 +463,8 @@ export interface RoofWarning {
     | "uncovered_plan"
     | "manual_face_crosses"
     | "manual_faces_overlap"
-    | "manual_face_over_roof";
+    | "manual_face_over_roof"
+    | "tower_base_below_roof";
   /** m outside, m² overlapping, the relative area difference, m² below zero (cut_exceeds_face), m higher (plane_over_wall), m apart (merged_planes), m counted twice (doubled_line), m from the origin (far_from_origin), pairs (objects_overlap), m above the roof (dormer_above_roof), m² hidden (hidden_under_neighbour), m² without roof (uncovered_plan), m² of plan shared (manual_faces_overlap) or over the roof (manual_face_over_roof), else 0. */
   value: number;
   /** merged_materials: the edge whose material the plane has, then the edge whose material is not used; merged_walls: the edge whose pitch is used, then the edge whose pitch and breaks are ignored; plane_over_wall, merged_planes: the outer wall, then the inner wall; wing_joined: the wing's walls; cut_exceeds_face: the walls of the faces. */
@@ -473,7 +477,7 @@ export interface RoofWarning {
   face?: number;
   /** manual_faces_overlap: the second hand-drawn face of the pair. */
   other_face?: number;
-  /** no_roof_area: the towers (from 0) whose shaft took all of the roof. */
+  /** no_roof_area: the towers (from 0) whose shaft took all of the roof; tower_base_below_roof: the tower whose roof starts below this roof. */
   towers?: number[];
 }
 

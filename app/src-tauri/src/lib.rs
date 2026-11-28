@@ -818,6 +818,27 @@ fn arc_edit(project: Project, part: usize, edit: commands::ArcEdit) -> CmdResult
     guard(|| Ok(commands::arc_edit(&project, part, edit)?))
 }
 
+/// The editor's "Delete building": part `part` and the towers standing on
+/// it removed (`tectora_core::commands::delete_part`, the MCP tool
+/// delete_items of a part). Returns `{project, towers_removed}`.
+#[tauri::command(async)]
+fn delete_part(project: Project, part: usize) -> CmdResult<Value> {
+    guard(|| Ok(commands::delete_part(&project, part)?))
+}
+
+/// The standard roof's "Replace the selected building": part `part`
+/// replaced by `new`, the towers left on no building removed
+/// (`tectora_core::commands::replace_part`, the MCP tool
+/// create_standard_roof with replace_part). Returns `{project, towers_removed}`.
+#[tauri::command(async)]
+fn replace_part(
+    project: Project,
+    part: usize,
+    new: tectora_core::model::RoofPart,
+) -> CmdResult<Value> {
+    guard(|| Ok(commands::replace_part(&project, part, new)?))
+}
+
 /// The transform dialog's OK and "Duplicate part": part `part` moved,
 /// rotated, mirrored or copied with what lies on it
 /// (`tectora_core::commands::transform_part`, the MCP tool transform_part).
@@ -1290,6 +1311,8 @@ pub fn run() {
             tower_preset,
             tower_preview,
             arc_edit,
+            delete_part,
+            replace_part,
             face_to_part,
             set_part_height,
             place_item,

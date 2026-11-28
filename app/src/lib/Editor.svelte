@@ -38,7 +38,7 @@
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
-  import { describeCalcError, describeError, describeProblem, dialogRefusal, toAppError, type AppError, type Described } from "./errors";
+  import { describeCalcError, describeError, describeProblem, dialogRefusal, toAppError, towerNames, towerRefusal, type AppError, type Described } from "./errors";
   import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning, toasts } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
@@ -47,11 +47,11 @@
   import RoundRoofForm from "./RoundRoofForm.svelte";
   import RoofCalcForm from "./RoofCalcForm.svelte";
   import TransformForm from "./TransformForm.svelte";
-  import { transformPart, translation, type TransformMode, type TransformOp } from "./transform";
+  import { insideOutline, towersOnPart, transformPart, translation, type TransformMode, type TransformOp } from "./transform";
   import { latest, sequence } from "./latest";
   import { api, onProjectsChanged } from "./api";
   import { handOverDeleted } from "./deleted";
-  import { changedEdges, changedItems, describeChange, describeFigure, ghostOf } from "./changes";
+  import { changedEdges, changedItems, describeChanges, describeFigure, ghostOf } from "./changes";
   import { wallNotes } from "./wallnotes";
   import { merge3, sameJob } from "./merge";
   import { keepMissedNotice, takeMissedNotice } from "./missed";
@@ -497,6 +497,12 @@
   // The banner's change line and the plan's marks: the approved state
   // against the job now (UX-2001); each step's own change is in the AI tab.
   const pendingChanges = $derived(bannerChanges(review, pendingList));
+  // The review banner takes height from the plan: what it asks to review stays in view (UX-009).
+  $effect(() => {
+    if (!pending) return;
+    const id = setTimeout(() => plan?.keepInView(), 50);
+    return () => clearTimeout(id);
+  });
   const highlight = $derived.by(() => {
     if (!project) return new Set<string>();
     if (focusChange) return changedEdges([focusChange], project);
@@ -2431,6 +2437,8 @@
       selectItem({ kind: "tower", index: r.index });
       towerDlg = null;
       commit();
+      // A wider tower may reach out of the plan (UX-009).
+      setTimeout(() => plan?.keepInView(), 0);
     };
     try {
       if (towerDlg.index === null) {
@@ -2446,10 +2454,13 @@
         info(t("editor.dialogStale"));
         return;
       }
-      const o = await pendingEdits.track(jobEdits.run(dialogHolds.tower, (job, i) => api.setTower(plain(job), i, tower), done));
+      // As for a new tower: a dialog closed meanwhile (Escape while OK was with the core) stores nothing.
+      const dlg = towerDlg;
+      const o = await pendingEdits.track(jobEdits.run(dialogHolds.tower, (job, i) => api.setTower(plain(job), i, tower), (r) => towerDlg === dlg && done(r)));
       if (o === "gone") towerDlg = null;
     } catch (e) {
-      const r = dialogRefusal(e);
+      // A tower problem or the job's tower limits: the reason stays beside OK (ERR-004, ARCH-002).
+      const r = towerRefusal(e);
       if (r) {
         towerBlocked = r.text;
         towerBlockedDetail = r.detail;
@@ -2482,12 +2493,16 @@
     arcDlg = { part, index, mode, value: mode === "bend" ? +Math.min(1, half).toFixed(3) : 1, segments: null, max: mode === "bend" ? half : null, refused: null, detail: null, typing: null };
   }
 
-  /** A semicircular end on wall `edge` (an apse: the bulge is half the wall), made at once. */
-  function apseWall(part: number, edge: number) {
+  /**
+   * A semicircular end on wall `edge` (an apse: the bulge is half the wall),
+   * made at once. A second press while the first is with the core is
+   * ignored: it would bend the first piece of the new arc (UX-004).
+   */
+  const apseWall = exclusive(async (part: number, edge: number) => {
     const half = Math.floor((wallLength(part, edge) / 2) * 1000) / 1000;
     if (half < 0.005) return;
-    void runArc(jobEdits.hold("parts", part), { op: "bend_wall", index: edge, bulge: half }, null);
-  }
+    await pendingEdits.track(runArc(jobEdits.hold("parts", part), { op: "bend_wall", index: edge, bulge: half }, null));
+  });
 
   // Not tracked itself: it waits for the edits under way first (a typed value commits on blur).
   const applyArcDialog = exclusive(applyArcDialogNow, (b) => (acting.arc = b));
@@ -2533,7 +2548,8 @@
       if (!notifyRefusal(e, "arc")) notifyError(e, "calc");
       if (!dlg) return null;
       const err = toAppError(e);
-      return { text: t("refuse.other"), detail: `${err.code}: ${err.detail ?? ""}` };
+      // A failure of the core, not of the typed value: the sentence does not blame the value.
+      return { text: t("arc.failed"), detail: `${err.code}: ${err.detail ?? ""}` };
     }
   }
 
@@ -3399,7 +3415,11 @@
       const hold = jobEdits.hold("parts", selection.part);
       // Tauri's dialog plugin replaces window.confirm with an async version
       // (a Promise is always truthy), so the answer must be awaited.
-      if (!(await confirm(t("editor.confirmDeletePart", { name: partLabel(project.parts[selection.part].name, selection.part) })))) return;
+      // The towers on the building go with it, and the question names them (UX-003).
+      const name = partLabel(project.parts[selection.part].name, selection.part);
+      const towers = towersOnPart(project, selection.part);
+      const ask = towers.length ? t("editor.confirmDeletePartTowers", { name, towers: towerNames(towers, project) }) : t("editor.confirmDeletePart", { name });
+      if (!(await confirm(ask))) return;
       if (!project) return;
       // An AI save while the question was open: the building asked about is
       // removed where it is now; one the save changed or removed is not (jobedits.ts).
@@ -3407,9 +3427,22 @@
         if (!hold.removed) notMadeNote("gone", hold);
         return;
       }
-      project.parts.splice(hold.index, 1);
-      selection = null;
-      commit();
+      // The core deletes the building and the towers on it as it is now
+      // (an AI save may have moved one), as MCP delete_items does.
+      try {
+        await pendingEdits.track(
+          jobEdits.run(hold, (job, pi) => api.deletePart(plain(job), pi), (r) => {
+            if (!project) return;
+            adoptProject(r.project);
+            project.towers = r.project.towers ?? [];
+            if (r.towers_removed.length) towerSel = null;
+            selection = null;
+            commit();
+          }),
+        );
+      } catch (e) {
+        notifyError(e);
+      }
     });
   }
 
@@ -3513,25 +3546,60 @@
     setTimeout(() => plan?.fit(), 0);
   }
 
-  function applyStandard() {
-    if (!project || !std?.part) return;
-    const part = $state.snapshot(std.part) as RoofPart;
-    if (std.mode === "replace" && project.parts.length) {
-      part.name = project.parts[selection?.part ?? 0].name;
-      project.parts[selection?.part ?? 0] = part;
-    } else {
-      // Place a new part to the right of the existing ones.
-      const xs = project.parts.flatMap((p) => p.edges.map((e) => e.start.x));
-      const dx = xs.length ? maxOf(xs) + 2 : 0;
-      for (const e of part.edges) e.start.x = +(e.start.x + dx).toFixed(3);
-      part.name = project.parts.length === 0 ? t("editor.mainPart") : t("editor.partN", { n: project.parts.length + 1 });
-      project.parts.push(part);
-    }
-    std = null;
-    drawing = null;
-    selection = null;
-    commit();
-    setTimeout(() => plan?.fit(), 0);
+  async function applyStandard() {
+    // One question and its edit: the prepare phase of Revert waits for both (as deletePart, HUNT-1204).
+    return asking(async () => {
+      if (!project || !std?.part) return;
+      const part = $state.snapshot(std.part) as RoofPart;
+      if (std.mode === "replace" && project.parts.length) {
+        const pi = selection?.part ?? 0;
+        // Towers of the old building the new one does not carry are deleted
+        // with it, after a question that names them (UX-003).
+        // Which towers go is the core's rule (on the old building, on no building now); this only names them in the question.
+        const stays = (c: Point2) => insideOutline(part, c) || project!.parts.some((q, j) => j !== pi && insideOutline(q, c));
+        const lost = towersOnPart(project, pi).filter((i) => !stays(project!.towers![i].center));
+        const hold = jobEdits.hold("parts", pi);
+        if (lost.length) {
+          const name = partLabel(project.parts[pi].name, pi);
+          if (!(await confirm(t("editor.confirmReplacePartTowers", { name, towers: towerNames(lost, project) })))) return;
+          if (!project) return;
+          if (hold.gone) {
+            if (!hold.removed) notMadeNote("gone", hold);
+            return;
+          }
+        }
+        std = null;
+        drawing = null;
+        try {
+          await pendingEdits.track(
+            jobEdits.run(hold, (job, at) => api.replacePart(plain(job), at, { ...part, name: job.parts[at].name }), (r) => {
+              if (!project) return;
+              adoptProject(r.project);
+              project.towers = r.project.towers ?? [];
+              if (r.towers_removed.length) towerSel = null;
+              selection = null;
+              commit();
+              setTimeout(() => plan?.fit(), 0);
+            }),
+          );
+        } catch (e) {
+          notifyError(e);
+        }
+        return;
+      } else {
+        // Place a new part to the right of the existing ones.
+        const xs = project.parts.flatMap((p) => p.edges.map((e) => e.start.x));
+        const dx = xs.length ? maxOf(xs) + 2 : 0;
+        for (const e of part.edges) e.start.x = +(e.start.x + dx).toFixed(3);
+        part.name = project.parts.length === 0 ? t("editor.mainPart") : t("editor.partN", { n: project.parts.length + 1 });
+        project.parts.push(part);
+      }
+      std = null;
+      drawing = null;
+      selection = null;
+      commit();
+      setTimeout(() => plan?.fit(), 0);
+    });
   }
 
   function setLayout(l: "split" | "plan" | "3d") {
@@ -3634,6 +3702,10 @@
       // Enter closes a hand-drawn face, as it closes a footprint (UX-010).
       e.preventDefault();
       closeFace();
+    } else if (e.key === "Enter" && !mod && towerSel !== null && !drawing && !placing && !(e.target as HTMLElement).closest?.("button, a")) {
+      // Enter on a selected tower opens its dialog, like a double click (UX-012).
+      e.preventDefault();
+      editTower(towerSel);
     } else if (e.key === "Escape" && placing) {
       placing = false;
     } else if (e.key === "Escape" && linePin) {
@@ -3743,7 +3815,7 @@
               {#if review?.steps_stand !== false}<span class="review-summary" title={pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}>{pendingList.map((a) => entryText(a, activity)).reverse().join(" → ")}</span>{/if}
               {#if pendingChanges.length}
                 <span class="review-list">
-                  {pendingChanges.slice(0, 4).map((c) => describeChange(c, project)).join(" · ")}{pendingChanges.length > 4 ? ` · ${t("review.more", { n: pendingChanges.length - 4 })}` : ""}
+                  {#each [describeChanges(pendingChanges, project)] as rows}{rows.slice(0, 4).join(" · ")}{rows.length > 4 ? ` · ${t("review.more", { n: rows.length - 4 })}` : ""}{/each}
                 </span>
               {/if}
               {#if review?.differences?.length}
@@ -3957,7 +4029,7 @@
     <footer class="statusbar" inert={closed}>
       <span class="coords">{cursor ? `X ${num(cursor.x)}   Y ${num(cursor.y)}` : "X —   Y —"}</span>
       <span class="opt">{t("status.snap")}</span>
-      <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}</span>
+      <span class="opt">{t("status.walls", { n: wallCount, p: project.parts.length })}{#if project.towers?.length}{` · ${t("status.towers", { n: project.towers.length })}`}{/if}</span>
       {#if result}<span data-testid="status-area" class:pending={calcPending} aria-busy={calcPending}>{t("res.area")}: <b title={roofState(result) !== "ok" ? t(roofState(result) === "none" ? "res.notCalculated" : "res.calcPartial") : undefined}>{roofState(result) === "none" ? "—" : m2(result.totals.roof_area)}</b></span>{/if}
       <span class="spacer"></span>
       <span class="save" class:failed={!reviewOut && saveState === "failed"}>
@@ -4020,7 +4092,7 @@
     {#snippet footer()}
       {@const why = towerTyping ?? towerBlocked}
       {#if why}<p class="dlg-why" role="alert" data-testid="tower-ok-blocked"><span>{why}{#if !towerTyping && towerBlockedDetail}<code data-testid="tower-ok-detail">{towerBlockedDetail}</code>{/if}</span></p>{/if}
-      <button class="btn" onclick={() => (towerDlg = null)}>{t("common.cancel")}</button>
+      <button class="btn" onclick={() => void closeTowerDialog()}>{t("common.cancel")}</button>
       <button class="btn primary" data-testid="tower-ok" disabled={!!why} aria-disabled={acting.tower} aria-busy={acting.tower} title={why ?? undefined} onclick={() => !acting.tower && applyTowerDialog()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>

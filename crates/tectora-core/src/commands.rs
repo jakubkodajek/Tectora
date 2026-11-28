@@ -559,7 +559,9 @@ pub fn set_tower(
 }
 
 /// A new tower from a preset (`edit::towers::preset`), for the tower
-/// dialog's start and its preset buttons.
+/// dialog's start and its preset buttons; a preset whose tiers do not fit
+/// the tower's limits at that width is `refused` with the problem's code,
+/// as `tower_preview` refuses it (audit r2 ERR-004).
 pub fn tower_preset(
     kind: crate::edit::towers::TowerPreset,
     center: crate::geom::Point2,
@@ -568,9 +570,41 @@ pub fn tower_preset(
 ) -> Result<crate::tower::Tower, CommandError> {
     let t = crate::edit::towers::preset(kind, center, width, base_height);
     if let Some((code, msg)) = t.problems().first() {
-        return Err(CommandError::out_of_range(format!("{msg} ({code})")));
+        return Err(refused(format!("{msg} ({code})")));
     }
     Ok(t)
+}
+
+/// The editor's "Delete building" (`edit::transform::delete_part`, MCP
+/// `delete_items` of a part): the project without part `part` and the
+/// towers standing on it, and the indices those towers had.
+pub fn delete_part(project: &Project, part: usize) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let mut next = project.clone();
+    let towers = crate::model::guarded(|| crate::edit::transform::delete_part(&mut next, part))
+        .map_err(CommandError::internal)?
+        .map_err(refused)?;
+    check_input(&next)?;
+    Ok(serde_json::json!({ "project": next, "towers_removed": towers }))
+}
+
+/// The editor's "Replace the selected building" (`edit::transform::
+/// replace_part`, MCP `create_standard_roof` with `replace_part`): part
+/// `part` replaced by `new`, the towers that stood on it and stand on no
+/// building now removed; and the indices those towers had.
+pub fn replace_part(
+    project: &Project,
+    part: usize,
+    new: crate::model::RoofPart,
+) -> Result<Value, CommandError> {
+    check_input(project)?;
+    let mut next = project.clone();
+    let towers =
+        crate::model::guarded(|| crate::edit::transform::replace_part(&mut next, part, new))
+            .map_err(CommandError::internal)?
+            .map_err(refused)?;
+    check_input(&next)?;
+    Ok(serde_json::json!({ "project": next, "towers_removed": towers }))
 }
 
 /// A tower's roof as the dialog previews it (areas, lines, rings), or
@@ -710,6 +744,48 @@ pub fn check_input(project: &Project) -> Result<(), CommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit r2 ERR-004: a preset whose tiers the tower's limits refuse at
+    /// that width is refused with the problem's code, not answered as a
+    /// value out of the file's range.
+    #[test]
+    fn a_preset_that_does_not_fit_is_refused_with_its_code() {
+        use crate::edit::towers::TowerPreset;
+        let e = tower_preset(
+            TowerPreset::Octagon,
+            crate::geom::Point2::new(0.0, 0.0),
+            70.0,
+            10.0,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "refused", "{e:?}");
+        assert!(e.detail.ends_with("(tower_tier_size)"), "{e:?}");
+    }
+
+    /// Audit r2 UX-003: deleting or replacing a building through the
+    /// commands takes its towers with it and says which.
+    #[test]
+    fn deleting_a_building_through_the_command_removes_its_tower() {
+        let mut p = hip();
+        let c = p.parts[0].outline()[0];
+        p.towers.push(crate::tower::Tower::pyramid(
+            crate::geom::Point2::new(c.x + 1.5, c.y + 1.5),
+            1.0,
+            8.0,
+            1.0,
+        ));
+        let v = delete_part(&p, 0).unwrap();
+        assert_eq!(v["towers_removed"], serde_json::json!([0]));
+        assert_eq!(v["project"]["parts"].as_array().unwrap().len(), 0);
+        assert!(v["project"].get("towers").is_none(), "{}", v["project"]);
+        assert_eq!(delete_part(&p, 3).unwrap_err().code, "refused");
+        let mut far = p.parts[0].clone();
+        for e in &mut far.edges {
+            e.start.x += 100.0;
+        }
+        let v = replace_part(&p, 0, far).unwrap();
+        assert_eq!(v["towers_removed"], serde_json::json!([0]));
+    }
 
     fn hip() -> Project {
         crate::examples::find("hip").expect("example").project()

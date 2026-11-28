@@ -11,7 +11,7 @@
   import type { Ghost } from "./changes";
   import { placementOf, type ItemRef, type PlanTarget } from "./items";
   import { gridStep as gridStepFor, gridValues } from "./grid";
-  import { boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
+  import { boxInView, boxOf, contentPoints, draftLeavesView, fitView, resizedView } from "./planfit";
   import { hostIndex, isDormerFace } from "./dormers";
   import { dormerWallLines, onWallLine } from "./scene3d";
   import { chooseLabels, insidePolygon, placeDimSpots, rotatedBox, segCrossesBox, segIndex, wallNumber, type Box, type DimSpot, type Seg } from "./planlabels";
@@ -159,6 +159,18 @@
     userView = false;
     scale = v.scale;
     center = v.center;
+  }
+
+  /**
+   * Fits the plan again when the drawing no longer lies within it: after an
+   * edit made something larger (an arc, a wider tower) or the review banner
+   * took height from the pane (UX-009). A view that still shows everything
+   * stays as the user left it.
+   */
+  export function keepInView() {
+    const box = contentBox();
+    if (!box || !fitted) return;
+    if (!boxInView(box, { scale, center }, width, height)) fit();
   }
 
   $effect(() => {

@@ -64,9 +64,14 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    slope or curvature from the section; see the guide, "Towers, turrets
    and curved walls"). Rounded corners and apses are `edit_walls`
    `round_corner` / `bend_wall` on the footprint, not hand-drawn faces.
-   After a tower, check `calc`: `shaft.base_below_roof` (base under the
-   roof), `shaft.roof_failed` (the building under it has no roof) and a
-   roof error whose `towers` names its shaft.
+   A cone on a round building whose roof overhangs the wall takes the
+   wall's diameter as `width` and the overhang as `overhang`.
+   After a tower, check `calc`: `shaft.base_below_roof` and the warning
+   `tower_base_below_roof` (base under the roof), `shaft.roof_failed` (the
+   building under it has no roof) and a roof error whose `towers` names its
+   shaft. A refused tower or arc ends with its code (`tower_tiers_limit`:
+   at most 120 tiers in all towers; `arc_flat` / `arc_too_short`: fewer
+   walls or a larger radius); read the guide's limits before retrying.
    Where a drawing dimensions a dormer, chimney or window from the eave and
    from a roof edge, place it with `place_item` (`from_eave` along the
    slope, `from_left` or `from_right`) and check it against `placements`

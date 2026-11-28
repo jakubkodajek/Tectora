@@ -6,7 +6,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName, materialToken } from "./materials";
-  import { areaListShown, areaRows, towerRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, resultWarnings, roofState } from "./results";
+  import { areaListShown, areaRows, towerRows, towersOnRoof, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, resultWarnings, roofState } from "./results";
   import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
@@ -61,9 +61,11 @@
   // the area each kind took off the roof from the core's breakdown. What
   // the core reported on no roof face is counted apart (UX-1503).
   const objects = $derived(project ? objectCounts(project, result) : null);
+  /** Towers cut out of a roof: the core deducts their shafts as chimneys (MATH-005). */
+  const shafts = $derived(towersOnRoof(result));
   const hasObjects = $derived(
     !!objects &&
-      objects.windows.length + objects.chimneys + objects.holes + objects.dormers + objects.off.windows + objects.off.chimneys + objects.off.holes + objects.off.dormers > 0,
+      objects.windows.length + objects.chimneys + objects.holes + objects.dormers + objects.off.windows + objects.off.chimneys + objects.off.holes + objects.off.dormers + shafts > 0,
   );
   let breakdown = $state<CalcBreakdown | null>(null);
   let seq = 0;
@@ -228,7 +230,7 @@
             {#if !tw.calculated}<small class="joined">{t("tower.notCalculated")}</small>{/if}
             {#if tw.calculated && tw.on_ground}<small class="joined">{t("tower.onGround")}</small>{/if}
             {#if tw.calculated && tw.roof_failed}<small class="joined" data-testid="res-tower-roof-failed">{t("tower.roofFailed")}</small>{/if}
-            {#if tw.calculated && tw.base_below_roof}<small class="joined">{t("tower.baseBelowRoof")}</small>{/if}
+            {#if tw.calculated && tw.base_below_roof && !tw.roof_failed}<small class="joined below" data-testid="res-tower-below"><i class="mark" aria-hidden="true"></i>{t("tower.baseBelowRoof")}</small>{/if}
           </td></tr>
           {#if tw.calculated}
             <tr><td>{t("tower.roofArea")}</td><td class="v">{m2(tw.roof_area)}</td></tr>
@@ -271,8 +273,9 @@
             <td class="v">{#if deducted.window}−{m2(deducted.window)}{/if}</td>
           </tr>
         {/if}
-        {#if objects.chimneys || objects.off.chimneys}
-          <tr><td>{t("res.obj.chimneys", { n: objects.chimneys })}{#if objects.off.chimneys} <small class="joined">{t("res.offRoof", { n: objects.off.chimneys })}</small>{/if}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
+        {#if objects.chimneys || objects.off.chimneys || shafts}
+          <!-- The shafts are deducted as chimneys: the row says so, not "1 chimney −53 m²" (MATH-005). -->
+          <tr data-testid="res-obj-chimneys"><td>{shafts ? t("res.obj.chimneysShafts", { n: objects.chimneys, k: shafts }) : t("res.obj.chimneys", { n: objects.chimneys })}{#if objects.off.chimneys} <small class="joined">{t("res.offRoof", { n: objects.off.chimneys })}</small>{/if}</td><td class="v">{#if deducted.chimney}−{m2(deducted.chimney)}{/if}</td></tr>
         {/if}
         {#if objects.holes || objects.off.holes}
           <tr><td>{t("res.obj.holes", { n: objects.holes })}{#if objects.off.holes} <small class="joined">{t("res.offRoof", { n: objects.off.holes })}</small>{/if}</td><td class="v">{#if deducted.hole}−{m2(deducted.hole)}{/if}</td></tr>
@@ -386,6 +389,20 @@
     display: block;
     font-size: 11.5px;
     color: var(--text-2);
+  }
+  /* A tower roof sunk into the roof: the warning's own small status mark (UX-002). */
+  .joined.below {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+  }
+  .joined.below .mark {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 2px;
+    background: var(--ai);
   }
   .results {
     display: flex;

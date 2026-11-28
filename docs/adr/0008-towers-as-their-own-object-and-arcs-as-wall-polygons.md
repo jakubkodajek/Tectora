@@ -74,6 +74,22 @@ total nor in the list's `Stena` row (the building's walls).
   surface) instead. The tower does not interact with other roof objects
   (a dormer under it, a tower straddling two buildings' join beyond the
   chimney rules). Schema version 4.
+- Audit round 2 (2026-11-28) additions, no change of the decision:
+  - The shaft's cut keeps the shaft's own symmetry (the same few chords on
+    every rounded corner, a sharp corner where the arc is under 10 cm, a
+    regular polygon of an even number of corners, at least four, for a
+    circle or many short sides), so a rounded shaft has its front and back
+    abutments WV/WH as a sharp one has.
+  - A tower may have an eave `overhang`: its first tier runs on at its own
+    pitch beyond the shaft, the eave `overhang · tan(pitch)` below
+    `base_height`, as a wall's roof meets its eave at the overhang line;
+    the shaft and its cut stay the wall's.
+  - The arcs keep to what the roof core takes: walls of at least 0.15 m
+    and corners turning at least 2° (DACAD's own steps are 11.25° and 15°;
+    finer arcs lost the roof or were calculated off); an arc touching
+    another wall is refused. Every refusal ends with a stable code.
+  - A tower is deleted with the building it stands in, rises with it, and
+    a tower sunk into the roof is a warning (`tower_base_below_roof`).
 - Follow-ups: a tower's shaft cladding and lantern walls in the price-sheet
   list if TERRAN wants them there (Jakub's choice); per-tier plan shapes;
   an eyebrow dormer.

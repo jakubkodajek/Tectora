@@ -382,7 +382,7 @@ pub(crate) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "edit_walls",
-            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); round_corner {index, radius, segments?} (rounds the corner at the start of wall `index` into an arc of short walls tangent to both walls; the arc walls carry the roof definition of the wall before the corner); bend_wall {index, bulge, segments?} (bends wall `index` into an arc whose middle stands `bulge` m off the wall, + outward, at most half the wall; the arc walls keep its roof definition, but a gable becomes eaves like its neighbour: an apse). Arcs get 11.25° steps, 15° where a step would be under 0.4 m, unless `segments` (2-64) is given; the roof is calculated on the walls as for any polygon. Wall indices after an arc shift by the walls it added. rename {name}.",
+            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); round_corner {index, radius, segments?} (rounds the corner at the start of wall `index` into an arc of short walls tangent to both walls; the arc walls carry the roof definition of the wall before the corner); bend_wall {index, bulge, segments?} (bends wall `index` into an arc whose middle stands `bulge` m off the wall, + outward, at most half the wall; the arc walls keep its roof definition, but a gable becomes eaves like its neighbour: an apse). Arcs get 11.25° steps, 15° where a step would be under 0.4 m, unless `segments` (2-64) is given; the roof is calculated on the walls as for any polygon. An arc is refused (the reason ends with its code) when its walls would be under 0.15 m (`arc_too_short`), its corners turn under 2° (`arc_flat`: too many walls or too slight a bend; a tangent arc meets its walls at half a step), it would touch another wall (`arc_touches`), the bend is under 0.005 m or over half the wall (`arc_bulge`) or the radius under 0.01 m or too large for the walls (`arc_radius_min`, `arc_radius_max`). Wall indices after an arc shift by the walls it added. rename {name}.",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "operations": { "type": "array", "items": { "type": "object", "properties": {
@@ -397,7 +397,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "transform_part",
-            "description": "Move, rotate or mirror a part together with the dormers, chimneys, roof windows, openings and hand-drawn lines and faces on it; with `copies` > 0 the part stays and that many copies are added, each one the transform applied once more (copy, copy-rotate, copy-mirror).",
+            "description": "Move, rotate or mirror a part together with the dormers, chimneys, roof windows, openings, towers and hand-drawn lines and faces on it; with `copies` > 0 the part stays and that many copies are added, each one the transform applied once more (copy, copy-rotate, copy-mirror).",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "op": { "type": "string", "enum": ["move", "rotate", "mirror"] },
@@ -455,7 +455,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "add_shape_part",
-            "description": "Add a part from a shape: a standard roof on a rectangle (gable, shed, hip, pyramid, half_hip) or a regular polygon with a hip roof on every wall. Without `at`, a standard roof is placed 2 m right of the existing parts (as in the app). With `replace_part` it replaces that part instead.",
+            "description": "Add a part from a shape: a standard roof on a rectangle (gable, shed, hip, pyramid, half_hip) or a regular polygon with a hip roof on every wall. Without `at`, a standard roof is placed 2 m right of the existing parts (as in the app). With `replace_part` it replaces that part instead; towers of the old part that stand on no building then are deleted with it.",
             "inputSchema": schema(json!({
                 "id": id,
                 "shape": { "type": "string", "enum": ["gable", "shed", "hip", "pyramid", "half_hip", "regular_polygon"] },
@@ -472,7 +472,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "delete_items",
-            "description": "Delete parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines or faces, or towers by index (indices as get_project lists them).",
+            "description": "Delete parts, dormers, chimneys, roof windows, roof openings, hand-drawn lines or faces, or towers by index (indices as get_project lists them). A part goes with the towers standing on it (their centre in its walls and in no other building's).",
             "inputSchema": schema(json!({
                 "id": id,
                 "items": { "type": "array", "items": { "type": "object", "properties": {
@@ -497,7 +497,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_part_height",
-            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" and \"Eave height\" fields. Give `height` for the building height (top of the walls, m above ground): the roof moves with it, every wall's eave height, pitch breaks and half-hips shift by the change, and so do the dormers, chimneys and hand-drawn lines on it; each wall keeps its own eave below or above the wall top. The building height itself changes no roof figure (the roof is calculated from the eave heights; an eave is measured at the overhang line and is usually lower than the building). Give `eave_height` instead to put every wall of the part at that eave height (breaks, half-hips and objects move with them) and keep the building height. Where buildings of different heights meet, the roofs are joined by their eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
+            "description": "Set the height of a building (part) in one change, as the editor's \"Building height\" and \"Eave height\" fields. Give `height` for the building height (top of the walls, m above ground): the roof moves with it, every wall's eave height, pitch breaks and half-hips shift by the change, and so do the dormers, chimneys, towers (their base_height) and hand-drawn lines on it; each wall keeps its own eave below or above the wall top. The building height itself changes no roof figure (the roof is calculated from the eave heights; an eave is measured at the overhang line and is usually lower than the building). Give `eave_height` instead to put every wall of the part at that eave height (breaks, half-hips and objects move with them) and keep the building height. Where buildings of different heights meet, the roofs are joined by their eave heights, so use it to make a wing lower or higher than the main roof. To change only some walls, use update_edges.",
             "inputSchema": schema(json!({
                 "id": id,
                 "part": { "type": "integer", "minimum": 0, "description": "Part index (as get_project lists them)." },
@@ -516,7 +516,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "set_tower",
-            "description": "Add a tower or turret standing through the roof, or change one (`index`). A tower is a shaft of a plan `shape` (rectangle `width` × `depth`, regular `polygon` with `sides` and `width` across the flats, or `circle` of diameter `width`; rectangles and polygons may have rounded corners `corner_radius`) around `center`, turned by `rotation_deg`, whose own roof starts at `base_height` (m above ground, like eave heights) and is a stack of `tiers` from the bottom up. Each tier rises `rise` m and ends `top_width` wide (measured like `width`; 0 = a point); the plan at every height is the base shape scaled about the centre. `bulge` (m, at most half the tier's chord) curves the tier's profile: positive outward (onion), negative inward (bell). A tier with the same width at bottom and top is a vertical wall (a lantern): listed as wall area, not roof area. `material` per tier as on walls (default 2, sheet metal). The shaft is cut out of the roofs it stands in like a chimney (deduction and abutment lines WV/WH/WS), and the tower's roof adds its area, eaves (T), pitch breaks (c), Pult lines (P) and hips (G) to the totals; calc lists every tower's tiers. Without `tiers`, `preset` gives a profile in proportion to the width: pyramid, octagon, cone, helm (bell-shaped), onion, baroque (helm, onion, lantern, small onion, spire). Read heights from the section drawing: base_height is where the shaft's walls end and the tower's roof begins.",
+            "description": "Add a tower or turret standing through the roof, or change one (`index`). A tower is a shaft of a plan `shape` (rectangle `width` × `depth`, regular `polygon` with `sides` and `width` across the flats, or `circle` of diameter `width`; rectangles and polygons may have rounded corners `corner_radius`) around `center`, turned by `rotation_deg`, whose own roof starts at `base_height` (m above ground, like eave heights) and is a stack of `tiers` from the bottom up. Each tier rises `rise` m and ends `top_width` wide (measured like `width`; 0 = a point); the plan at every height is the base shape scaled about the centre. `bulge` (m, at most half the tier's chord) curves the tier's profile: positive outward (onion), negative inward (bell). A tier with the same width at bottom and top is a vertical wall (a lantern): listed as wall area, not roof area. `material` per tier as on walls (default 2, sheet metal). The shaft is cut out of the roofs it stands in like a chimney (deduction and abutment lines WV/WH/WS), and the tower's roof adds its area, eaves (T), pitch breaks (c), Pult lines (P) and hips (G) to the totals; calc lists every tower's tiers. Without `tiers`, `preset` gives a profile in proportion to the width: pyramid, octagon, cone, helm (bell-shaped), onion, baroque (helm, onion, lantern, small onion, spire). Read heights from the section drawing: base_height is where the shaft's walls end and the tower's roof begins (over the wall line); `overhang` carries the roof on beyond the shaft to its eave. Limits: shaft width and depth 0.1-100 m, 3-64 sides, a tier rises 0-100 m and ends 0-200 m wide, at most 24 tiers a tower, 50 towers and 120 tiers of all towers in a job; each refusal ends with its code in parentheses (`tower_size`, `tower_tier_size`, `tower_overhang`, `tower_limit`, `tower_tiers_limit`, `tower_label`, …). A tower moves, is copied and is deleted with the building its centre stands in, and rises with it when the building's height changes.",
             "inputSchema": schema(json!({
                 "id": id,
                 "index": { "type": "integer", "minimum": 0, "description": "Tower to change; omit to add one." },
@@ -528,6 +528,7 @@ pub(crate) fn tools() -> Vec<Value> {
                 "sides": { "type": "integer", "minimum": 3, "maximum": 64 },
                 "corner_radius": { "type": "number" }, "rotation_deg": { "type": "number" },
                 "base_height": { "type": "number" },
+                "overhang": { "type": "number", "minimum": 0, "maximum": tectora_core::tower::MAX_OVERHANG, "description": "Eave overhang of the tower's roof beyond the shaft, m (default 0): the first tier runs on at its pitch to the overhang line, where the eave is, overhang · tan(pitch) below base_height. For a cone on a round building with an overhang." },
                 "tiers": { "type": "array", "items": { "type": "object", "properties": {
                     "rise": { "type": "number" }, "top_width": { "type": "number" },
                     "bulge": { "type": "number" }, "material": { "type": "integer", "minimum": 1, "description": "Roof material as on walls: 1 tiles, 2 sheet metal (default), 3 stone, 4 slate, 5 solar panels." }
@@ -1592,8 +1593,11 @@ impl Server {
         };
         part.normalize_ccw();
         match replace {
-            Some(r) if r < p.parts.len() => p.parts[r] = part,
-            Some(r) => return Err(format!("part {r} does not exist")),
+            // Towers left standing on no building go with it (audit r2
+            // UX-003), as in the editor.
+            Some(r) => {
+                tectora_core::edit::transform::replace_part(&mut p, r, part)?;
+            }
             None => p.parts.push(part),
         }
         // As every other creating tool: no new input problem (HUNTC-007).
@@ -1657,6 +1661,9 @@ impl Server {
         if let Some(r) = arg_f64(args, "rotation_deg")? {
             t.rotation_deg = r;
         }
+        if let Some(o) = arg_f64(args, "overhang")? {
+            t.overhang = o;
+        }
         if let Some(l) = opt::<String>(args, "label")? {
             t.label = l;
         }
@@ -1715,7 +1722,10 @@ impl Server {
                 Ok(())
             }
             match kind.as_str() {
-                "part" => take(&mut p.parts, i, &kind)?,
+                // With the towers standing on it (audit r2 UX-003).
+                "part" => {
+                    tectora_core::edit::transform::delete_part(&mut p, i)?;
+                }
                 "dormer" => take(&mut p.dormers, i, &kind)?,
                 "chimney" => take(&mut p.chimneys, i, &kind)?,
                 "window" => take(&mut p.windows, i, &kind)?,
@@ -3848,6 +3858,104 @@ mod tests {
                     "tiers": [{ "rise": 1, "top_width": 0, "material": 4 }] }),
         );
         assert_eq!(s.store.load(&id).unwrap().towers[0].tiers[0].material, 4);
+    }
+
+    /// Audit r2 MATH-006: `calc` lists a rectangular tower's tier with the
+    /// pitch and area of both pairs of sides, as `calc_breakdown` does.
+    #[test]
+    fn calc_lists_both_pitches_of_a_rectangular_towers_tier() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "t", "center": [5, 4], "width": 3, "depth": 2, "base_height": 15,
+                    "tiers": [{ "rise": 3, "top_width": 0 }] }),
+        );
+        let c = call(&mut s, "calc", json!({ "id": id }));
+        let tier = &c["towers"][0]["tiers"][0];
+        assert_eq!(tier["pitch_deg"], json!(63.43), "{tier}");
+        assert_eq!(tier["depth_sides"]["pitch_deg"], json!(71.57), "{tier}");
+        assert_eq!(tier["depth_sides"]["area_m2"], json!(9.49), "{tier}");
+    }
+
+    /// Audit r2 UX-001: `set_tower` takes the eave `overhang`, and the
+    /// eave and area grow with it.
+    #[test]
+    fn set_tower_takes_an_overhang() {
+        let (mut s, id) = setup();
+        let flush = call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "t", "preset": "cone", "center": [5, 4], "width": 4, "base_height": 15 }),
+        );
+        let wide = call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "t", "index": 0, "overhang": 0.5 }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().towers[0].overhang, 0.5);
+        let a = |v: &Value| v["roof_area_m2"].as_f64().unwrap();
+        assert!(a(&wide) > a(&flush) + 5.0, "{wide} vs {flush}");
+        let e = s
+            .call_tool(
+                "set_tower",
+                &json!({ "id": id, "summary": "t", "index": 0, "overhang": -1 }),
+            )
+            .unwrap_err();
+        assert!(e.contains("(tower_overhang)"), "{e}");
+    }
+
+    /// Audit r2 UX-003: `delete_items` of a part deletes the towers on it,
+    /// and a standard roof replacing the part keeps only those that still
+    /// stand on a building.
+    #[test]
+    fn deleting_or_replacing_a_part_takes_its_towers_along() {
+        let (mut s, id) = setup();
+        for c in [[5, 4], [9, 7]] {
+            call(
+                &mut s,
+                "set_tower",
+                json!({ "id": id, "summary": "t", "center": c, "width": 1, "base_height": 15 }),
+            );
+        }
+        call(
+            &mut s,
+            "add_shape_part",
+            json!({ "id": id, "shape": "gable", "length": 6, "width": 6, "pitch_deg": 40,
+                    "replace_part": 0, "at": [0, 0], "summary": "smaller" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.towers.len(), 1, "{:?}", p.towers);
+        assert_eq!(p.towers[0].center.x, 5.0);
+        call(
+            &mut s,
+            "delete_items",
+            json!({ "id": id, "items": [{ "kind": "part", "index": 0 }], "summary": "gone" }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert!(p.parts.is_empty() && p.towers.is_empty(), "{:?}", p.towers);
+    }
+
+    /// Audit r2 ARCH-002: the tier limit of a job is refused with its own
+    /// code, which the guide names.
+    #[test]
+    fn the_tier_limit_of_a_job_has_its_own_code() {
+        let (mut s, id) = setup();
+        for k in 0..17 {
+            call(
+                &mut s,
+                "set_tower",
+                json!({ "id": id, "summary": "t", "preset": "baroque", "center": [1 + k % 8, 1 + k / 8], "width": 1, "base_height": 15 }),
+            );
+        }
+        let e = s
+            .call_tool(
+                "set_tower",
+                &json!({ "id": id, "summary": "t", "preset": "baroque", "center": [5, 7], "width": 1, "base_height": 15 }),
+            )
+            .unwrap_err();
+        assert!(e.contains("(tower_tiers_limit)"), "{e}");
+        assert!(crate::GUIDE.contains("tower_tiers_limit"));
     }
 
     /// Audit ERR-002: `clear_roof` removes the towers too, also when they

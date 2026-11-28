@@ -1,7 +1,7 @@
 // Human-readable descriptions of project changes (see `tectora_core::diff`).
 
 import { m, m2, num } from "./format";
-import { t } from "./i18n.svelte";
+import { numberLocale, t } from "./i18n.svelte";
 import { partLabel } from "./partname";
 import { materialName } from "./materials";
 import { windowOutline } from "./openings";
@@ -54,6 +54,48 @@ export function shownText(v: unknown): string {
 /** Most field differences listed under one changed tower. */
 const MAX_TOWER_DETAILS = 6;
 
+/** A tower's length as the dialog writes it: 2 decimals, a third when it has one (0,375 m) (UX-005). */
+const towerLen = (v: unknown) => `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 3 }).format(Number(v))} m`;
+
+type TierLike = Partial<Tower["tiers"][number]>;
+const sameTier = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
+
+/** One tier's values in a line ("Převýšení 1,20 m · Šířka nahoře 0,00 m · Břidlice"), for an added or removed tier. */
+function tierValues(x: TierLike, project: Project | null): string {
+  const v: string[] = [];
+  const fin = (n: unknown) => typeof n === "number" && Number.isFinite(n);
+  if (fin(x.rise)) v.push(`${t("tower.rise")} ${towerLen(x.rise)}`);
+  if (fin(x.top_width)) v.push(`${t("tower.topWidth")} ${towerLen(x.top_width)}`);
+  if (fin(x.bulge) && x.bulge !== 0) v.push(`${t("tower.bulge")} ${towerLen(x.bulge)}`);
+  v.push(materialName(project, Number(x.material ?? 2)));
+  return v.join(" · ");
+}
+
+/**
+ * The tiers of two versions matched before they are compared: the tiers
+ * both start and end with are left out, so one tier added or removed reads
+ * as that, not as every tier above it changed (UX-005). What is left is
+ * compared pairwise; the rest of the longer side is added or removed.
+ * Pairs `[before index | null, after index | null]`.
+ */
+export function matchTiers(ta: unknown[], tb: unknown[]): [number | null, number | null][] {
+  let p = 0;
+  while (p < ta.length && p < tb.length && sameTier(ta[p], tb[p])) p++;
+  let s = 0;
+  while (s < ta.length - p && s < tb.length - p && sameTier(ta[ta.length - 1 - s], tb[tb.length - 1 - s])) s++;
+  const ma = ta.length - p - s;
+  const mb = tb.length - p - s;
+  const out: [number | null, number | null][] = [];
+  for (let k = 0; k < Math.max(ma, mb); k++) out.push([k < ma ? p + k : null, k < mb ? p + k : null]);
+  return out;
+}
+
+/** A tower's name in a change row: its label, else its number. */
+function towerName(c: Change): string {
+  const pick = (v: unknown) => (v && typeof v === "object" ? shownText((v as Tower).label) : "");
+  return pick(c.after) || pick(c.before) || t("tower.n", { n: (c.item ?? 0) + 1 });
+}
+
 /**
  * What an outside save changed in a tower, field by field ("Pás 3:
  * Převýšení 0,9 m → 1,4 m"), for the expanded review list (audit UX-008).
@@ -75,26 +117,34 @@ export function towerDetails(c: Change, project: Project | null): string[] {
   const shape = (v: unknown) => (v === "rectangle" || v === "polygon" || v === "circle" ? t(`tower.shape.${v}`) : "—");
   diff(t("tower.label"), a.label ?? "", b.label ?? "", (v) => shownText(v) || "—");
   diff(t("tower.shape"), a.shape ?? "rectangle", b.shape ?? "rectangle", shape);
-  diff(t("tower.width"), a.width, b.width, len);
-  diff(t("tower.depth"), a.depth, b.depth, len);
+  diff(t("tower.width"), a.width, b.width, towerLen);
+  diff(t("tower.depth"), a.depth, b.depth, towerLen);
   diff(t("tower.sides"), a.sides, b.sides, (v) => num(Number(v)));
-  diff(t("tower.cornerRadius"), a.corner_radius ?? 0, b.corner_radius ?? 0, len);
+  diff(t("tower.cornerRadius"), a.corner_radius ?? 0, b.corner_radius ?? 0, towerLen);
   diff(t("tower.rotation"), a.rotation_deg ?? 0, b.rotation_deg ?? 0, deg);
-  diff(t("tower.baseHeight"), a.base_height, b.base_height, len);
+  diff(t("tower.baseHeight"), a.base_height, b.base_height, towerLen);
+  diff(t("edge.overhang"), a.overhang ?? 0, b.overhang ?? 0, towerLen);
   if (isPt(a.center) && isPt(b.center) && (a.center.x !== b.center.x || a.center.y !== b.center.y)) {
-    out.push(t("chg.towerMoved", { x: num(b.center.x), y: num(b.center.y) }));
+    out.push(t("chg.towerMoved", { ax: num(a.center.x), ay: num(a.center.y), x: num(b.center.x), y: num(b.center.y) }));
   }
   const ta = Array.isArray(a.tiers) ? a.tiers : [];
   const tb = Array.isArray(b.tiers) ? b.tiers : [];
-  if (ta.length !== tb.length) out.push(`${t("tower.tiers")}: ${ta.length} → ${tb.length}`);
-  for (let i = 0; i < Math.min(ta.length, tb.length); i++) {
-    const x = ta[i];
-    const y = tb[i];
+  for (const [i, j] of matchTiers(ta, tb)) {
+    const x = i === null ? null : ta[i];
+    const y = j === null ? null : tb[j];
+    if (x && typeof x === "object" && !y) {
+      out.push(t("chg.tierRemoved", { n: i! + 1, v: tierValues(x, project) }));
+      continue;
+    }
+    if (y && typeof y === "object" && !x) {
+      out.push(t("chg.tierAdded", { n: j! + 1, v: tierValues(y, project) }));
+      continue;
+    }
     if (!x || !y || typeof x !== "object" || typeof y !== "object") continue;
-    const tier = t("tower.tierN", { n: i + 1 });
-    diff(`${tier}, ${t("tower.rise")}`, x.rise, y.rise, len);
-    diff(`${tier}, ${t("tower.topWidth")}`, x.top_width, y.top_width, len);
-    diff(`${tier}, ${t("tower.bulge")}`, x.bulge ?? 0, y.bulge ?? 0, len);
+    const tier = t("tower.tierN", { n: j! + 1 });
+    diff(`${tier}, ${t("tower.rise")}`, x.rise, y.rise, towerLen);
+    diff(`${tier}, ${t("tower.topWidth")}`, x.top_width, y.top_width, towerLen);
+    diff(`${tier}, ${t("tower.bulge")}`, x.bulge ?? 0, y.bulge ?? 0, towerLen);
     diff(`${tier}, ${t("edge.material")}`, x.material ?? 2, y.material ?? 2, (v) => materialName(project, Number(v)));
   }
   return out.length > MAX_TOWER_DETAILS ? [...out.slice(0, MAX_TOWER_DETAILS - 1), t("review.more", { n: out.length - MAX_TOWER_DETAILS + 1 })] : out;
@@ -117,7 +167,8 @@ function describeValid(c: Change, project: Project | null): string {
   const prefix = multiPart && part !== undefined ? t("chg.part", { p: part + 1 }) + " · " : "";
   const text = (() => {
     if (isItemChange(c)) {
-      const name = t(ITEM_LABEL[c.field], { n: c.item! + 1 });
+      // A tower by its name, as the plan and Results show it (UX-005).
+      const name = c.field === "tower" ? towerName(c) : t(ITEM_LABEL[c.field], { n: c.item! + 1 });
       return t(c.kind === "added" ? "chg.itemAdded" : c.kind === "removed" ? "chg.itemRemoved" : "chg.itemModified", { name });
     }
     switch (c.field) {
@@ -194,6 +245,44 @@ function describeValid(c: Change, project: Project | null): string {
     }
   })();
   return prefix + text;
+}
+
+/** Corners added or removed in one building from which the list says only how many (an arc, UX-013). */
+const MANY_CORNERS = 3;
+
+/**
+ * The rows of a list of changes: as `describeChange`, but the corners one
+ * save added to and removed from one building (a rounded corner, an apse:
+ * eight "new corner" rows) are one row with their counts (UX-013).
+ */
+export function describeChanges(changes: Change[], project: Project | null): string[] {
+  const valid = changes.filter(isChange);
+  const corners = new Map<number, { added: number; removed: number }>();
+  for (const c of valid) {
+    const p = index(c.part);
+    if (c.field !== "edge" || p === undefined) continue;
+    const k = corners.get(p) ?? { added: 0, removed: 0 };
+    if (c.kind === "added") k.added++;
+    else if (c.kind === "removed") k.removed++;
+    corners.set(p, k);
+  }
+  const many = (p: number | undefined) => p !== undefined && (corners.get(p)?.added ?? 0) + (corners.get(p)?.removed ?? 0) >= MANY_CORNERS;
+  const multiPart = (project?.parts.length ?? 0) > 1;
+  const out: string[] = [];
+  const said = new Set<number>();
+  for (const c of changes) {
+    const p = isChange(c) ? index(c.part) : undefined;
+    if (isChange(c) && c.field === "edge" && many(p)) {
+      if (said.has(p!)) continue;
+      said.add(p!);
+      const k = corners.get(p!)!;
+      const prefix = multiPart ? t("chg.part", { p: p! + 1 }) + " · " : "";
+      out.push(prefix + t("chg.cornersMany", { a: k.added, r: k.removed }));
+      continue;
+    }
+    out.push(describeChange(c, project));
+  }
+  return out;
 }
 
 const STATUSES = new Set(["draft", "offer", "ordered", "done"]);

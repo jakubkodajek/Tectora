@@ -362,6 +362,11 @@ svg.icon {
   opacity: 0.35;
   cursor: default;
 }
-input.num-input[aria-invalid="true"] {
+input.num-input[aria-invalid="true"],
+input.num-input[aria-invalid="true"]:focus {
+  /* Also while the field has the focus: the refused text is marked where it is typed (towers audit r2, @ui 4). */
   border-color: var(--danger);
+}
+input.num-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 20%, transparent);
 }

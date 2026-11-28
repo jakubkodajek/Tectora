@@ -76,6 +76,9 @@
   const deg = (v: number, max = 4) =>
     `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 0, maximumFractionDigits: max, useGrouping: false }).format(v)}°`;
 
+  /** A tier's pitch with two decimals always, so one column reads 80,40° and 82,37° alike (UX-014). */
+  const deg2 = (v: number) => `${new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(v)}°`;
+
   const many = $derived((data?.parts.length ?? 0) > 1);
   const multiMaterial = $derived((data?.materials.length ?? 0) > 1);
 
@@ -95,6 +98,14 @@
   );
   const openingLabel = (k: string) =>
     t(k === "window" ? "opening.window" : k === "chimney" ? chimneyLabel : k === "hole" ? "opening.hole" : "bd.dormer");
+
+  /** Tower `i`'s shaft cladding from the calculation, with the shaft's perimeter; null when it has none. */
+  const shaftOf = (i: number) => {
+    const tw = result?.towers?.[i];
+    const sh = tw?.shaft;
+    if (!tw?.result || !sh || sh.roof_failed || sh.wall_area < 0.0005) return null;
+    return { area: sh.wall_area, perimeter: tw.result.base_perimeter, ground: !sh.on_roof };
+  };
 
   const plan2 = (p: [number, number, number][]) => p.map((v) => [v[0], v[1]] as [number, number]);
 
@@ -260,13 +271,13 @@
             {#each [...tw.tiers].reverse() as x}
               {@const lean = x.kind === "roof" && (x.pitch_deg > 90 || (x.depth_sides?.pitch_deg ?? 0) > 90)}
               <div class="calc tier">
-                <span title={lean ? t("tower.pitchHint") : undefined}><span class="no">{faceRef(null, x.no, tw.no - 1)}</span> {x.kind === "wall" ? t("tower.kind.wall") : deg(x.pitch_deg, 2)}{#if x.kind === "roof" && x.depth_sides}{` / ${deg(x.depth_sides.pitch_deg, 2)}`}{/if}{#if lean}{` (${t("tower.leaning")})`}{/if}{#if multiMaterial}{` · ${materialName(project, x.material)}`}{/if}
+                <span title={lean ? t("tower.pitchHint") : undefined}><span class="no">{faceRef(null, x.no, tw.no - 1)}</span> {x.kind === "wall" ? t("tower.kind.wall") : deg2(x.pitch_deg)}{#if x.kind === "roof" && x.depth_sides}{` / ${deg2(x.depth_sides.pitch_deg)}`}{/if}{#if lean}{` (${t("tower.leaning")})`}{/if}{#if multiMaterial}{` · ${materialName(project, x.material)}`}{/if}
                   · {t("bd.towerTier", { a: fixed(x.bottom_height, 3), b: fixed(x.top_height, 3), p: fixed(x.bottom_perimeter, 3), q: fixed(x.top_perimeter, 3) })}</span>
                 <span>= {fixed(x.area, 3)} m²</span>
               </div>
               {#if x.kind === "roof" && x.depth_sides}
                 <div class="calc tier sub" data-testid="bd-tower-depth">
-                  <span>{t("tower.depthSides")}: {deg(x.depth_sides.pitch_deg, 2)}</span>
+                  <span>{t("tower.depthSides")}: {deg2(x.depth_sides.pitch_deg)}</span>
                   <span>{fixed(x.depth_sides.area, 3)} m²</span>
                 </div>
               {/if}
@@ -278,6 +289,11 @@
             {/if}
             {#if tw.wall_area >= 0.0005}
               <p class="muted">{t("bd.towerWalls", { v: a2(tw.wall_area) })}</p>
+            {/if}
+            <!-- The shaft's cladding, the core's figure from the calculation (`shaft.wall_area`), not in the roof area (UX-008). -->
+            {#if shaftOf(tw.no - 1)}
+              {@const sh = shaftOf(tw.no - 1)!}
+              <p class="muted" data-testid="bd-tower-shaft">{t(sh.ground ? "bd.towerShaftGround" : "bd.towerShaft", { v: a2(sh.area), p: len(sh.perimeter) })}</p>
             {/if}
           </div>
         {/each}

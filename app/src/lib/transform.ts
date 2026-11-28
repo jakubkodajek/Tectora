@@ -167,6 +167,23 @@ export function insideOutline(part: RoofPart, p: Point2): boolean {
   return inside;
 }
 
+/**
+ * The towers standing on part `pi` (by their centre, the rule move and copy
+ * use): deleting the building deletes them with it (UX-003). Indices in the
+ * job's tower list, ascending.
+ */
+export function towersOnPart(project: Project, pi: number): number[] {
+  const part = project.parts[pi];
+  if (!part) return [];
+  return (project.towers ?? []).flatMap((t, i) => (insideOutline(part, t.center) ? [i] : []));
+}
+
+/** Removes the towers with indices `idx` from the job (any order, duplicates ignored). */
+export function removeTowers(project: Project, idx: number[]) {
+  if (!project.towers) return;
+  for (const i of [...new Set(idx)].sort((a, b) => b - a)) project.towers.splice(i, 1);
+}
+
 const centre = (pts: Point2[]): Point2 => ({
   x: pts.reduce((s, p) => s + p.x, 0) / Math.max(pts.length, 1),
   y: pts.reduce((s, p) => s + p.y, 0) / Math.max(pts.length, 1),

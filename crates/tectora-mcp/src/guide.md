@@ -320,19 +320,39 @@ The tools cover every operation of the Tectora editor:
   is a short tier wider at the top. The cross, ball and weathervane are no
   tier. Start from a `preset` (pyramid, octagon, cone, helm, onion, baroque)
   and give your own `tiers` when the drawing dimensions them.
+- `base_height` is the roof over the shaft's wall line. `overhang` (m,
+  default 0) carries the first tier on at its pitch beyond the shaft to the
+  eave, `overhang · tan(pitch)` lower, as a wall's eave lies at its
+  overhang line: give it for a cone on a round building whose roof
+  overhangs the wall; `width` stays the wall's.
 - The shaft is cut out of the roofs like a chimney (WV/WH/WS lines). Its
   `base_height` must be above the roof around it: `calc` lists each tower
-  with `shaft.base_below_roof` when it is not. `calc` also lists every
+  with `shaft.base_below_roof` when it is not, and the building gets the
+  warning `tower_base_below_roof` naming it in `towers`. `calc` also lists every
   tier's pitch, area and material (a material number from 1, as on walls),
   the roof area and the wall area (lantern), and the shaft's cladding area
   above the roof. `shaft.on_roof: false` is a tower beside every roof,
   measured from the ground; `shaft.roof_failed: true` is a tower in a
   building whose roof is not calculated: its cladding area is `null` until
   that roof is fixed. A roof error or a 0 m² roof that a shaft causes names
-  it in `towers` (indices), not as a chimney.
-- Refusals of `set_tower` and of arcs that are not about a value end with
-  their code: `(tower_limit)` (a job has at most 50 towers),
-  `(tower_missing)`, `(arc_no_wall)`, `(arc_no_corner)`, `(arc_no_part)`.
+  it in `towers` (indices), not as a chimney. A rectangular tower's tier
+  lists the other pair of sides as `depth_sides` (pitch, area).
+- A tower moves, rotates and is copied with the building its centre stands
+  in (`transform_part`), rises with it (`set_part_height`), and is deleted
+  with it (`delete_items` of the part, or a part replaced so that the tower
+  stands on no building).
+- Limits: shaft `width` and `depth` 0.1-100 m, 3-64 `sides`, a tier rises
+  0-100 m and ends 0-200 m wide, `overhang` 0-10 m; at most 24 tiers a
+  tower, 50 towers and 120 tiers of all towers in a job.
+- Every refusal of `set_tower` and of an arc ends with its code in
+  parentheses. Towers: a problem's code (`tower_size`, `tower_tier_size`,
+  `tower_bulge`, `tower_overhang`, …), `(tower_limit)` (a job has at most 50
+  towers), `(tower_tiers_limit)` (at most 120 tiers in all towers of a job),
+  `(tower_label)` (a label too long or with a line break), `(tower_missing)`.
+  Arcs: `(arc_no_wall)`, `(arc_no_corner)`, `(arc_no_part)`,
+  `(arc_segments)`, `(arc_too_short)`, `(arc_flat)`, `(arc_bulge)`,
+  `(arc_radius_min)`, `(arc_radius_max)`, `(arc_straight)`,
+  `(arc_no_length)`, `(arc_touches)`, `(arc_invalid)`.
 - A cone on a round building drawn as walls (DACAD's way) still works; a
   tower is simpler and exact.
 - A rounded building corner is `edit_walls` `round_corner {index, radius}`
@@ -342,6 +362,12 @@ The tools cover every operation of the Tectora editor:
   length; a bent gable becomes eaves with its neighbour's roof (a conical
   half hip). Both make short walls in 11.25° steps (`segments` 2-64 to choose)
   that keep the wall's roof definition; wall indices after the arc shift.
+  An arc's walls are at least 0.15 m and its corners turn at least 2° (a
+  tangent arc meets its walls at half a step), as the roof core needs:
+  more walls, a smaller radius or a slighter bend than that are refused
+  (`arc_too_short`, `arc_flat`); an inward arc that would touch another wall
+  is refused (`arc_touches`). A bend is 0.005 m to half the wall, a radius
+  0.01 m up to what the walls at the corner allow.
 
 ## Stored result
 

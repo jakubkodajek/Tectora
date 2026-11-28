@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
-import { STEP_WAIT_MS, formatNumber, parseNumber, stepValue, toSend, waitingStep } from "./numeric.svelte";
+import { STEP_WAIT_MS, formatNumber, liveRestore, parseNumber, stepValue, toSend, waitingStep } from "./numeric.svelte";
 
 describe("parseNumber", () => {
   it("takes a comma or a dot as the decimal separator", () => {
@@ -160,5 +160,22 @@ describe("toSend (UI-307)", () => {
   });
   it("the value already on its way is not sent twice", () => {
     expect(toSend(3.05, 3, 3.05)).toBe(false);
+  });
+});
+
+describe("liveRestore (ERR-001)", () => {
+  it("puts back the value from before the typing, not a prefix of the refused text", () => {
+    // 3 stored, "3000" typed key by key: 3, 30 stored live, then 300 refused.
+    expect(liveRestore(3, 30)).toEqual({ v: 3 });
+    // Escape after "250" typed over 2.25: 25 was stored live.
+    expect(liveRestore(2.25, 25)).toEqual({ v: 2.25 });
+  });
+  it("puts nothing back when nothing else was stored while typing", () => {
+    expect(liveRestore(3, null)).toBeNull();
+    expect(liveRestore(3, 3)).toBeNull();
+  });
+  it("asks to clear a field that started empty", () => {
+    expect(liveRestore(null, 10)).toEqual({ v: null });
+    expect(liveRestore(undefined, 10)).toEqual({ v: null });
   });
 });

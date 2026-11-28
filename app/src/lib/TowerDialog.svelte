@@ -3,10 +3,10 @@
   // shape and the roof's tiers, with a section sketch and the areas from
   // the core (`tower_preview`). OK stores it through `set_tower` (the MCP
   // tool of the same name); nothing of the roof is calculated here.
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import { api } from "./api";
-  import { dialogRefusal, toAppError, type DialogRefusal } from "./errors";
+  import { toAppError, towerRefusal, type DialogRefusal } from "./errors";
   import { m, m2 } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import Icon from "./Icon.svelte";
@@ -51,10 +51,25 @@
   let presetBusy = $state(false);
   /** Why the last preset was not used (the tower stays as it was). */
   let presetWhy = $state<DialogRefusal | null>(null);
-  /** The user changed the tiers in this dialog: a preset or closing asks before dropping them (audit UX-004). */
+  /** The user changed the tiers in this dialog: a preset asks before dropping them (audit UX-004). */
   let edited = false;
+  /** The tower as the dialog opened it: closing asks when anything differs from it (UX-011). */
+  const opened = JSON.stringify($state.snapshot(tower));
+  /** Whether any value differs from the tower the dialog opened with (name, shape, sizes, tiers, …). */
+  export function changed(): boolean {
+    return edited || JSON.stringify($state.snapshot(tower)) !== opened;
+  }
   let asking = false;
   let table = $state<HTMLDivElement | undefined>();
+  let root = $state<HTMLDivElement | undefined>();
+  // Opened by a double click on the tower in the plan, the plan's tower kept
+  // the focus: it goes to the dialog's first field, so Tab starts there (towers audit r2, @ui 1).
+  onMount(() => {
+    const id = setTimeout(() => {
+      if (root && !root.closest("[role=dialog]")?.contains(document.activeElement)) root.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+    }, 0);
+    return () => clearTimeout(id);
+  });
 
   /** Fields whose typed text cannot be used: their label and the field's reason. */
   const invalid = new SvelteMap<string, { label: string; why: string }>();
@@ -104,7 +119,7 @@
       .catch(async (e) => {
         if (mine !== seq) return;
         stale = preview !== null;
-        const r = dialogRefusal(e);
+        const r = towerRefusal(e);
         if (!r) {
           // Not the user's value: a failure of the core, with its code (audit ERR-004).
           badTier = null;
@@ -206,14 +221,14 @@
         }
       }
       const p = await api.towerPreset(kind, { ...tower.center }, tower.width, tower.base_height);
-      tower = { ...p, label: tower.label, rotation_deg: tower.rotation_deg };
+      tower = { ...p, label: tower.label, rotation_deg: tower.rotation_deg, ...(tower.overhang ? { overhang: tower.overhang } : {}) };
       edited = false;
       presetWhy = null;
       rebuilt();
     } catch (e) {
       // A preset the core refuses leaves the tower as it was, which OK can
       // still store: a note, not a block, cleared by the next edit (audit ERR-004).
-      const r = dialogRefusal(e);
+      const r = towerRefusal(e);
       if (!r) {
         notifyError(e, "calc");
         return;
@@ -225,12 +240,13 @@
   }
 
   /**
-   * Whether the dialog may close now (Escape, the close button, a press
-   * beside it): asks first when the user changed the tiers (audit UX-004).
+   * Whether the dialog may close now (Escape, Cancel, the close button, a
+   * press beside it): asks first when the user changed anything (audit
+   * UX-004, UX-011).
    */
   export async function mayClose(): Promise<boolean> {
     if (asking) return false;
-    if (!edited) return true;
+    if (!changed()) return true;
     asking = true;
     try {
       // Tauri's dialog plugin makes confirm asynchronous: always await it.
@@ -285,7 +301,7 @@
   const shape = $derived(tower.shape ?? "rectangle");
 </script>
 
-<div class="dlg">
+<div class="dlg" bind:this={root}>
   <div class="presets" role="group" aria-label={t("tower.presets")}>
     {#each TOWER_PRESETS as k}
       <button class="preset" disabled={presetBusy} onclick={() => usePreset(k)} data-testid="tower-preset-{k}">
@@ -308,8 +324,9 @@
           {#each SHAPES as s}<option value={s}>{t(`tower.shape.${s}`)}</option>{/each}
         </select>
       </label>
-      <label><span>{t("tower.width")}</span>
-        <div class="unit"><input type="text" use:numeric={{ value: tower.width, step: 0.1, min: 0.1, max: 100, live: true, onchange: (v) => set({ width: v }), onvalidity: validity("width", t("tower.width")) }} /><em>m</em></div>
+      <!-- What the width measures: the shaft's outer size at its foot, where the tower roof starts (no overhang) (UX-001). -->
+      <label title={t(shape === "circle" ? "tower.diameterHint" : "tower.widthHint")}><span>{t(shape === "circle" ? "tower.diameter" : "tower.width")}</span>
+        <div class="unit"><input type="text" aria-label={t(shape === "circle" ? "tower.diameter" : "tower.width")} use:numeric={{ value: tower.width, step: 0.1, min: 0.1, max: 100, live: true, onchange: (v) => set({ width: v }), onvalidity: validity("width", t("tower.width")) }} /><em>m</em></div>
       </label>
       {#if shape === "rectangle"}
         <label><span>{t("tower.depth")}</span>
@@ -328,6 +345,16 @@
       {/if}
       <label><span>{t("tower.rotation")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: tower.rotation_deg ?? 0, step: 5, min: -360, max: 360, live: true, onchange: (v) => set({ rotation_deg: v }), onvalidity: validity("rotation", t("tower.rotation")) }} /><em>°</em></div>
+      </label>
+      <label><span>{t("tower.centerX")}</span>
+        <div class="unit"><input type="text" use:numeric={{ value: tower.center.x, step: 0.05, spinner: false, live: true, onchange: (v) => set({ center: { ...tower.center, x: v } }), onvalidity: validity("cx", t("tower.centerX")) }} /><em>m</em></div>
+      </label>
+      <label><span>{t("tower.centerY")}</span>
+        <div class="unit"><input type="text" use:numeric={{ value: tower.center.y, step: 0.05, spinner: false, live: true, onchange: (v) => set({ center: { ...tower.center, y: v } }), onvalidity: validity("cy", t("tower.centerY")) }} /><em>m</em></div>
+      </label>
+      <!-- The tower roof's own eave beyond the shaft, as a wall's overhang (core `Tower::overhang`, UX-001). -->
+      <label title={t("tower.overhangHint")}><span>{t("edge.overhang")}</span>
+        <div class="unit"><input type="text" aria-label={t("tower.overhang")} use:numeric={{ value: tower.overhang ?? 0, step: 0.05, min: 0, max: 10, live: true, onchange: (v) => set({ overhang: v }), onvalidity: validity("overhang", t("edge.overhang")) }} /><em>m</em></div>
       </label>
       <label class="wide"><span>{t("tower.baseHeight")}</span>
         <div class="unit"><input type="text" use:numeric={{ value: tower.base_height, step: 0.1, min: 0, max: 1000, live: true, onchange: (v) => set({ base_height: v }), onvalidity: validity("base", t("tower.baseHeight")) }} /><em>m</em></div>
@@ -386,7 +413,7 @@
               {#each materialIds(project) as mt}<option value={mt}>{materialName(project, mt)}</option>{/each}
             </select>
           </span>
-          <span class="ro" role="cell" title={lean ? t("tower.pitchHint") : undefined}>{r ? pitchText(r) : "—"}</span>
+          <span class="ro" role="cell" title={lean ? t("tower.pitchHint") : r?.kind === "wall" ? t("tower.kind.wall") : undefined}>{r ? pitchText(r) : "—"}</span>
           <span class="acts" role="cell">
             <button class="icon-btn" data-act="up" title={t("tower.tierUp", { n: i + 1 })} aria-label={t("tower.tierUp", { n: i + 1 })} disabled={i >= tower.tiers.length - 1} onclick={() => moveTier(i, 1)}><Icon name="up" size={15} /></button>
             <button class="icon-btn" data-act="down" title={t("tower.tierDown", { n: i + 1 })} aria-label={t("tower.tierDown", { n: i + 1 })} disabled={i === 0} onclick={() => moveTier(i, -1)}><Icon name="down" size={15} /></button>

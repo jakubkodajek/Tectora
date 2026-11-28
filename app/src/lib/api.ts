@@ -220,6 +220,10 @@ export const api = {
   towerPreview: (tower: Tower) => invoke<TowerPreview>("tower_preview", { tower }),
   /** A corner of part `part` rounded or a wall bent into an arc (the MCP tool edit_walls' round_corner / bend_wall); "refused" when it does not fit. */
   arcEdit: (project: Project, part: number, edit: ArcEdit) => invoke<Project>("arc_edit", { project, part, edit }),
+  /** "Delete building": the job without part `part` and the towers on it, and the indices those towers had. */
+  deletePart: (project: Project, part: number) => invoke<{ project: Project; towers_removed: number[] }>("delete_part", { project, part }),
+  /** "Replace the selected building": part `part` replaced by `next`, the towers left on no building removed. */
+  replacePart: (project: Project, part: number, next: RoofPart) => invoke<{ project: Project; towers_removed: number[] }>("replace_part", { project, part, new: next }),
   /** The corners of a regular polygon, counter-clockwise, the first wall along the x axis. */
   regularPolygon: (centre: Point2, sides: number, side: number, rotationDeg = 0) =>
     invoke<{ corners: Point2[] }>("item_geometry", { request: { op: "regular_polygon", centre, sides, side, rotation_deg: rotationDeg } }).then((r) => r.corners),

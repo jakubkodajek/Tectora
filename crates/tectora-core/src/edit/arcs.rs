@@ -23,6 +23,36 @@ use crate::model::{EdgeDef, RoofPart};
 pub const ARC_NO_WALL: &str = "arc_no_wall";
 pub const ARC_NO_CORNER: &str = "arc_no_corner";
 pub const ARC_NO_PART: &str = "arc_no_part";
+/// The codes that end the refusal of an arc's values (audit r2 ARCH-005):
+/// a wall count out of range, walls too short, corners turning too little,
+/// a bend or radius out of range, walls in line, a wall without length, an
+/// arc touching another wall, an outline made invalid.
+pub const ARC_SEGMENTS: &str = "arc_segments";
+pub const ARC_TOO_SHORT: &str = "arc_too_short";
+pub const ARC_FLAT: &str = "arc_flat";
+pub const ARC_BULGE: &str = "arc_bulge";
+pub const ARC_RADIUS_MIN: &str = "arc_radius_min";
+pub const ARC_RADIUS_MAX: &str = "arc_radius_max";
+pub const ARC_STRAIGHT: &str = "arc_straight";
+pub const ARC_NO_LENGTH: &str = "arc_no_length";
+pub const ARC_TOUCHES: &str = "arc_touches";
+pub const ARC_INVALID: &str = "arc_invalid";
+/// Every code an arc's refusal ends with.
+pub const ARC_CODES: [&str; 13] = [
+    ARC_NO_WALL,
+    ARC_NO_CORNER,
+    ARC_NO_PART,
+    ARC_SEGMENTS,
+    ARC_TOO_SHORT,
+    ARC_FLAT,
+    ARC_BULGE,
+    ARC_RADIUS_MIN,
+    ARC_RADIUS_MAX,
+    ARC_STRAIGHT,
+    ARC_NO_LENGTH,
+    ARC_TOUCHES,
+    ARC_INVALID,
+];
 
 /// Most walls one arc may become.
 pub const MAX_ARC_SEGMENTS: usize = 64;
@@ -46,9 +76,20 @@ pub fn default_segments(r: f64, sweep: f64) -> usize {
 }
 
 /// The shortest wall an arc may have, m. The roof core merges points
-/// within 2 cm and takes walls under about 10 cm with visible error (audit
-/// MATH-003: at r = 0.1 m the roof was 0.49 m² too large, no warning).
-pub const MIN_ARC_WALL: f64 = 0.1;
+/// within 2 cm and takes walls under about 12.5 cm with visible error
+/// (audit MATH-003: at r = 0.1 m the roof was 0.49 m² too large; r2
+/// MATH-003: four corners of 10 to 12 cm walls 0.08 to 0.11 m² over, no
+/// warning). DACAD's own round roof never makes a step under 0.4 m.
+pub const MIN_ARC_WALL: f64 = 0.15;
+
+/// The least an arc's corners may turn, degrees: the roof core fails on
+/// walls meeting nearly in line, or takes those under its 0.5° angle
+/// tolerance as one wall with the area off (audit r2 MATH-002: a
+/// semicircle of 54 walls, corners of 1.67° where it meets the walls,
+/// had no roof; MATH-004: a 5 cm bow of a 10 m wall, 1.15°, went to the
+/// fallback, a 2 cm one was 0.11 m² off). DACAD's own steps are 11.25°
+/// and 15°; the round dormer refuses segments under 2° alike.
+pub const MIN_ARC_TURN_DEG: f64 = 2.0;
 
 /// The walls of an arc of `sweep` radians on radius `r`: the given count,
 /// or DACAD's steps with fewer walls where they would be shorter than
@@ -64,14 +105,57 @@ fn segments_or_default(segments: Option<usize>, r: f64, sweep: f64) -> Result<us
             n
         }
         Some(n) if (2..=MAX_ARC_SEGMENTS).contains(&n) => n,
-        Some(n) => return Err(format!("an arc has 2 to {MAX_ARC_SEGMENTS} walls, not {n}")),
+        Some(n) => {
+            return Err(format!(
+                "an arc has 2 to {MAX_ARC_SEGMENTS} walls, not {n} ({ARC_SEGMENTS})"
+            ));
+        }
     };
     if chord(n) < MIN_ARC_WALL {
         return Err(format!(
-            "the arc's walls would be shorter than {MIN_ARC_WALL} m: give a larger radius or fewer walls"
+            "the arc's walls would be shorter than {MIN_ARC_WALL} m: give a larger radius or fewer walls ({ARC_TOO_SHORT})"
         ));
     }
     Ok(n)
+}
+
+/// The refusal of an arc whose corners turn under [`MIN_ARC_TURN_DEG`].
+fn too_flat() -> String {
+    format!(
+        "the arc's corners would turn by less than {MIN_ARC_TURN_DEG}°: give a larger bend or fewer walls ({ARC_FLAT})"
+    )
+}
+
+/// How much the outline `pts` turns at corner `k`, degrees.
+fn turn_deg(pts: &[Point2], k: usize) -> f64 {
+    let n = pts.len();
+    let (a, b, c) = (pts[(k + n - 1) % n], pts[k], pts[(k + 1) % n]);
+    let (ux, uy) = (b.x - a.x, b.y - a.y);
+    let (vx, vy) = (c.x - b.x, c.y - b.y);
+    (ux * vy - uy * vx)
+        .atan2(ux * vx + uy * vy)
+        .abs()
+        .to_degrees()
+}
+
+/// Whether some corner `from..=to` (indices into `part`'s outline, taken
+/// round) turns under [`MIN_ARC_TURN_DEG`].
+fn turns_too_little(part: &RoofPart, from: usize, to: usize) -> bool {
+    let pts = part.outline();
+    let n = pts.len();
+    (from..=to).any(|k| turn_deg(&pts, k % n) < MIN_ARC_TURN_DEG)
+}
+
+/// The plan distance of `p` from the wall `a`–`b`.
+fn to_segment(p: Point2, a: Point2, b: Point2) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let l2 = dx * dx + dy * dy;
+    let s = if l2 > 0.0 {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(Point2::new(a.x + dx * s, a.y + dy * s))
 }
 
 fn p3(p: Point2) -> Point2 {
@@ -90,6 +174,18 @@ pub fn bend_wall(
     bulge: f64,
     segments: Option<usize>,
 ) -> Result<usize, String> {
+    let (done, segs) = bent(part, i, bulge, segments)?;
+    *part = done;
+    Ok(segs)
+}
+
+/// [`bend_wall`] on a copy of `part`: the new part and its arc's walls.
+fn bent(
+    part: &RoofPart,
+    i: usize,
+    bulge: f64,
+    segments: Option<usize>,
+) -> Result<(RoofPart, usize), String> {
     let n = part.edges.len();
     if i >= n {
         return Err(format!("wall {i} does not exist ({ARC_NO_WALL})"));
@@ -98,11 +194,11 @@ pub fn bend_wall(
     let b = part.edges[(i + 1) % n].start;
     let l = a.distance(b);
     if !(l > 0.01) {
-        return Err("the wall has no length".into());
+        return Err(format!("the wall has no length ({ARC_NO_LENGTH})"));
     }
     if !(bulge.is_finite() && bulge.abs() >= 0.005 && bulge.abs() <= l / 2.0 + 1e-9) {
         return Err(format!(
-            "the bend must be at least 0.005 m and at most half the wall ({:.3} m)",
+            "the bend must be at least 0.005 m and at most half the wall ({:.3} m) ({ARC_BULGE})",
             l / 2.0
         ));
     }
@@ -129,6 +225,11 @@ pub fn bend_wall(
     } else {
         -1.0
     };
+    if sweep.to_degrees() / (segs as f64) < MIN_ARC_TURN_DEG {
+        return Err(too_flat());
+    }
+    let mut work = part.clone();
+    let part = &mut work;
     // A gable bent into an arc is an apse: its walls are eaves with the
     // roof of a neighbouring eave wall, a conical half hip, as a curved
     // gable (a verge along an arc) is not built (audit UX-001).
@@ -155,9 +256,31 @@ pub fn bend_wall(
             }
         })
         .collect();
+    // An arc reaching another wall of the building (an inward one up to
+    // the opposite wall) leaves no roof (audit r2 MATH-002 "also seen").
+    if n >= 4 {
+        let outline = part.outline();
+        let far_walls = (0..n).filter(|&j| j != i && j != (i + 1) % n && j != (i + n - 1) % n);
+        for j in far_walls {
+            let (wa, wb) = (outline[j], outline[(j + 1) % n]);
+            if new
+                .iter()
+                .any(|e| to_segment(e.start, wa, wb) < MIN_ARC_WALL)
+            {
+                return Err(format!(
+                    "the arc would touch another wall of the building ({ARC_TOUCHES})"
+                ));
+            }
+        }
+    }
     part.edges[i].source = None;
     part.edges.splice(i + 1..i + 1, new);
-    Ok(segs)
+    // Where the arc meets the walls beside it, too.
+    if turns_too_little(part, i, i + segs) {
+        return Err(too_flat());
+    }
+    let done = std::mem::replace(part, RoofPart::new("", Vec::new()));
+    Ok((done, segs))
 }
 
 /// Rounds the corner at the start of wall `v` of `part` with radius
@@ -176,20 +299,26 @@ pub fn round_corner(
         return Err(format!("corner {v} does not exist ({ARC_NO_CORNER})"));
     }
     if !(radius.is_finite() && radius >= 0.01) {
-        return Err("the radius must be at least 0.01 m".into());
+        return Err(format!(
+            "the radius must be at least 0.01 m ({ARC_RADIUS_MIN})"
+        ));
     }
     let prev = part.edges[(v + n - 1) % n].start;
     let p = part.edges[v].start;
     let next = part.edges[(v + 1) % n].start;
     let (l1, l2) = (p.distance(prev), p.distance(next));
     if !(l1 > 0.01 && l2 > 0.01) {
-        return Err("a wall at the corner has no length".into());
+        return Err(format!(
+            "a wall at the corner has no length ({ARC_NO_LENGTH})"
+        ));
     }
     let e1 = Point2::new((prev.x - p.x) / l1, (prev.y - p.y) / l1);
     let e2 = Point2::new((next.x - p.x) / l2, (next.y - p.y) / l2);
     let theta = (e1.x * e2.x + e1.y * e2.y).clamp(-1.0, 1.0).acos();
     if !(theta > 1e-3 && theta < PI - 1e-3) {
-        return Err("the walls at the corner run straight on".into());
+        return Err(format!(
+            "the walls at the corner run straight on ({ARC_STRAIGHT})"
+        ));
     }
     let half = theta / 2.0;
     let t = radius / half.tan();
@@ -197,7 +326,7 @@ pub fn round_corner(
     // is not allowed either: a zero-length wall is a problem.
     if t > l1 - MIN_ARC_WALL || t > l2 - MIN_ARC_WALL {
         return Err(format!(
-            "the radius is too large for the walls at the corner (at most {:.3} m)",
+            "the radius is too large for the walls at the corner (at most {:.3} m) ({ARC_RADIUS_MAX})",
             ((l1.min(l2) - MIN_ARC_WALL).max(0.0)) * half.tan()
         ));
     }
@@ -211,6 +340,11 @@ pub fn round_corner(
     );
     let sweep = PI - theta;
     let segs = segments_or_default(segments, radius, sweep)?;
+    // The arc's corners turn by its step, half a step where it meets the
+    // walls (tangent to them).
+    if sweep.to_degrees() / (segs as f64) / 2.0 < MIN_ARC_TURN_DEG {
+        return Err(too_flat());
+    }
     let a0 = (t1.y - c.y).atan2(t1.x - c.x);
     let a1 = (t2.y - c.y).atan2(t2.x - c.x);
     // The short way round from t1 to t2.
@@ -274,7 +408,7 @@ pub fn outline_spoiled(before: &crate::Project, after: &crate::Project) -> Optio
         })
         .map(|p| {
             format!(
-                "the arc would make the outline invalid: {}",
+                "the arc would make the outline invalid: {} ({ARC_INVALID})",
                 after.describe(&p)
             )
         })
@@ -423,5 +557,144 @@ mod tests {
             assert_eq!(e.pitch_deg, 30.0);
         }
         assert!(part.edges[2 + n].is_gable());
+    }
+
+    fn rect(w: f64, d: f64) -> RoofPart {
+        let pts = [(0.0, 0.0), (w, 0.0), (w, d), (0.0, d)];
+        RoofPart::new(
+            "A",
+            pts.iter()
+                .map(|&(x, y)| plain_edge(Point2::new(x, y), 30.0, 3.0, 0.0))
+                .collect(),
+        )
+    }
+
+    /// The roof of a single part over its plan / cos 30° (no overhang),
+    /// or the calculation's error.
+    fn roof_and_plan(part: &RoofPart) -> Result<(f64, f64), String> {
+        let mut prj = crate::Project::new("t");
+        prj.parts.push(part.clone());
+        let geos = crate::openings::generate_project(&prj);
+        if let Some(e) = &geos[0].error {
+            return Err(format!("{:?}", e.kind));
+        }
+        if geos[0]
+            .warnings
+            .iter()
+            .any(|w| w.kind == crate::check::WarningKind::NotCalculatedByCore)
+        {
+            return Err("not calculated by the core".into());
+        }
+        let roof: f64 = geos[0].faces.iter().map(|f| f.area).sum();
+        let plan = crate::geom::signed_area(&part.outline()).abs() / 30f64.to_radians().cos();
+        Ok((roof, plan))
+    }
+
+    /// Audit r2 MATH-002: a semicircle of many walls left the building
+    /// without a roof from 54 walls on (corners turning under 2°): every
+    /// count is refused with its code or gives the roof.
+    #[test]
+    fn an_arc_of_many_walls_is_refused_or_calculates() {
+        for segs in [16, 32, 40, 44, 46, 48, 52, 54, 56, 64] {
+            let mut part = rect(20.0, 10.0);
+            match bend_wall(&mut part, 1, 5.0, Some(segs)) {
+                Ok(_) => {
+                    let (roof, plan) =
+                        roof_and_plan(&part).unwrap_or_else(|e| panic!("{segs}: {e}"));
+                    assert!((roof - plan).abs() < 0.01, "{segs}: {roof} vs {plan}");
+                }
+                Err(e) => assert!(e.ends_with(&format!("({ARC_FLAT})")), "{segs}: {e}"),
+            }
+        }
+    }
+
+    /// Audit r2 MATH-003: four corners rounded with radii of 0.3 to 0.5 m
+    /// give the plan / cos 30° (the 10 to 12 cm walls they had were 0.08 to
+    /// 0.11 m² over).
+    #[test]
+    fn four_small_rounded_corners_give_the_plan_over_the_cosine() {
+        for k in 0..=10 {
+            let r = 0.3 + 0.02 * k as f64;
+            let mut part = rect(10.0, 10.0);
+            for v in [3, 2, 1, 0] {
+                round_corner(&mut part, v, r, None).unwrap();
+            }
+            let (roof, plan) = roof_and_plan(&part).unwrap_or_else(|e| panic!("{r}: {e}"));
+            assert!((roof - plan).abs() < 0.01, "r {r}: {roof} vs {plan}");
+        }
+    }
+
+    /// Audit r2 MATH-004: a slight bow of a 10 m wall is taken only where
+    /// its walls turn enough for the roof core; a flatter one is refused
+    /// with its code, never calculated off by centimetres.
+    #[test]
+    fn a_slight_bend_is_refused_or_gives_the_plan_over_the_cosine() {
+        for b in [0.005, 0.01, 0.02, 0.05, 0.08, 0.1, 0.2] {
+            for sign in [1.0, -1.0] {
+                let mut part = rect(20.0, 10.0);
+                match bend_wall(&mut part, 1, sign * b, None) {
+                    Ok(_) => {
+                        let (roof, plan) =
+                            roof_and_plan(&part).unwrap_or_else(|e| panic!("{b}: {e}"));
+                        assert!((roof - plan).abs() < 0.01, "{}: {roof} vs {plan}", sign * b);
+                    }
+                    Err(e) => assert!(e.ends_with(&format!("({ARC_FLAT})")), "{b}: {e}"),
+                }
+            }
+        }
+        // A bow the core takes stays possible.
+        assert!(bend_wall(&mut rect(20.0, 10.0), 1, 0.1, None).is_ok());
+    }
+
+    /// Audit r2 MATH-002 "also seen": an inward arc that touches the
+    /// opposite wall is refused (it left the building without a roof).
+    #[test]
+    fn an_inward_arc_touching_another_wall_is_refused() {
+        for (w, d, wall, bulge) in [
+            (5.0, 10.0, 1, -5.0),
+            (12.0, 4.0, 0, -4.0),
+            (12.0, 4.0, 0, -3.9),
+        ] {
+            let mut part = rect(w, d);
+            let e = bend_wall(&mut part, wall, bulge, None).unwrap_err();
+            assert!(
+                e.ends_with(&format!("({ARC_TOUCHES})")),
+                "{w} x {d}, {bulge}: {e}"
+            );
+            assert_eq!(part, rect(w, d));
+        }
+        assert!(bend_wall(&mut rect(12.0, 4.0), 0, -3.5, None).is_ok());
+    }
+
+    /// Audit r2 ARCH-005: every refusal of a value of an arc ends with its
+    /// own code from [`ARC_CODES`], which the app translates by.
+    #[test]
+    fn every_arc_refusal_ends_with_its_code() {
+        let mut errs = vec![
+            bend_wall(&mut square(10.0), 0, 1.0, Some(1)).unwrap_err(),
+            bend_wall(&mut square(10.0), 0, 6.0, None).unwrap_err(),
+            bend_wall(&mut square(10.0), 0, 0.001, None).unwrap_err(),
+            bend_wall(&mut square(10.0), 0, 0.02, None).unwrap_err(),
+            round_corner(&mut square(10.0), 1, 0.001, None).unwrap_err(),
+            round_corner(&mut square(10.0), 1, 20.0, None).unwrap_err(),
+            round_corner(&mut square(10.0), 1, 0.02, None).unwrap_err(),
+            round_corner(&mut square(10.0), 1, 1.0, Some(64)).unwrap_err(),
+        ];
+        let mut flat = square(10.0);
+        flat.edges
+            .insert(1, plain_edge(Point2::new(5.0, 0.0), 30.0, 3.0, 0.5));
+        errs.push(round_corner(&mut flat, 1, 1.0, None).unwrap_err());
+        let mut zero = square(10.0);
+        zero.edges
+            .insert(1, plain_edge(Point2::new(0.0, 0.0), 30.0, 3.0, 0.5));
+        errs.push(bend_wall(&mut zero, 0, 1.0, None).unwrap_err());
+        errs.push(round_corner(&mut zero, 1, 1.0, None).unwrap_err());
+        for e in &errs {
+            let code = e
+                .rsplit_once(" (")
+                .and_then(|(_, c)| c.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("no code: {e}"));
+            assert!(ARC_CODES.contains(&code), "{code} not in ARC_CODES: {e}");
+        }
     }
 }

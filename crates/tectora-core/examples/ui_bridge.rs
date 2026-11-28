@@ -144,6 +144,17 @@ fn calc_command(cmd: &str, a: &Value) -> Option<Result<Value, Value>> {
         "round_arc" => arg::<tectora_core::edit::round::ArcInput>(a, "input")
             .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))
             .and_then(|i| commands::round_arc(&i).map_err(err)),
+        "delete_part" => project().and_then(|p| {
+            let part = arg(a, "part")
+                .map_err(|Fail(e)| json!({ "code": "invalid_input", "detail": e }))?;
+            commands::delete_part(&p, part).map_err(err)
+        }),
+        "replace_part" => project().and_then(|p| {
+            let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
+            let part = arg(a, "part").map_err(bad)?;
+            let new = arg(a, "new").map_err(bad)?;
+            commands::replace_part(&p, part, new).map_err(err)
+        }),
         "transform_part" => project().and_then(|p| {
             let bad = |Fail(e): Fail| json!({ "code": "invalid_input", "detail": e });
             let part = arg(a, "part").map_err(bad)?;

@@ -19,9 +19,10 @@
 //! [no source: an editor convenience.] Raising or lowering the building
 //! carries its roof along: every wall's eave height, pitch breaks and
 //! half-hip move by the building's shift, so each wall keeps its own eave
-//! below or above the wall top. The dormers, chimneys and hand-drawn lines
-//! on the building (as the transform operations pick them: their centre
-//! inside the outline) move by the same shift.
+//! below or above the wall top. The dormers, chimneys, towers (their base
+//! height) and hand-drawn lines on the building (as the transform
+//! operations pick them: their centre inside the outline) move by the
+//! same shift.
 //! [`set_part_eave_height`] is the other way round: every wall at one eave
 //! height, the building height unchanged.
 
@@ -96,8 +97,8 @@ fn walls(project: &Project, part: usize) -> Result<&RoofPart, String> {
     Ok(p)
 }
 
-/// Moves the dormers, chimneys and hand-drawn lines on part `part` (centre
-/// inside its outline) up by `d`. Returns whether any moved.
+/// Moves the dormers, chimneys, towers and hand-drawn lines on part `part`
+/// (centre inside its outline) up by `d`. Returns whether any moved.
 fn move_objects(project: &mut Project, part: usize, d: f64) -> bool {
     if d == 0.0 {
         return false;
@@ -114,6 +115,14 @@ fn move_objects(project: &mut Project, part: usize, d: f64) -> bool {
     for c in &mut project.chimneys {
         if on(centre(c.corners.iter().copied())) {
             c.height = round_to(c.height + d, 3);
+            changed = true;
+        }
+    }
+    // A tower's base rises with the building as a chimney's top does
+    // (audit r2 ARCH-001); never below the ground.
+    for t in &mut project.towers {
+        if on(t.center) {
+            t.base_height = round_to((t.base_height + d).max(0.0), 3);
             changed = true;
         }
     }
@@ -273,6 +282,29 @@ mod tests {
         assert_eq!(part_height(&p, 1), Some(base));
         // The same height again changes nothing.
         assert!(!set_part_eave_height(&mut p, 1, base - 1.0).unwrap());
+    }
+
+    /// Audit r2 ARCH-001: a tower on the building rises with it, as its
+    /// chimneys do; a tower beside it stays.
+    #[test]
+    fn a_tower_on_the_building_moves_with_its_height() {
+        let mut p = examples::find("hip").unwrap().project();
+        let pts = p.parts[0].outline();
+        let n = pts.len() as f64;
+        let c = pts.iter().fold(Point2::new(0.0, 0.0), |a, b| {
+            Point2::new(a.x + b.x / n, a.y + b.y / n)
+        });
+        let on = crate::tower::Tower::pyramid(c, 2.0, 7.5, 1.5);
+        let beside = crate::tower::Tower::pyramid(Point2::new(c.x + 500.0, c.y), 2.0, 7.5, 1.5);
+        p.towers = vec![on, beside];
+        let h = part_height(&p, 0).unwrap();
+        assert!(set_part_height(&mut p, 0, h + 3.0).unwrap());
+        assert_eq!(p.towers[0].base_height, 10.5);
+        assert_eq!(p.towers[1].base_height, 7.5);
+        let eave = p.parts[0].edges[0].eave_height;
+        assert!(set_part_eave_height(&mut p, 0, eave - 1.0).unwrap());
+        assert_eq!(p.towers[0].base_height, 9.5);
+        assert_eq!(p.towers[1].base_height, 7.5);
     }
 
     #[test]

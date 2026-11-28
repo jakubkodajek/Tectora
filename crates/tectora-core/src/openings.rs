@@ -61,8 +61,18 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     let (clean, slots, ids) = cleaned(project);
     // The towers' shafts are cut out of the roofs like chimneys; the
     // checks below see the project's own objects only.
-    let mut geos = generate_valid(&with_tower_shafts(&clean));
-    let warnings = crate::check::check(&clean.parts, &geos);
+    let shafted = with_tower_shafts(&clean);
+    let mut geos = generate_valid(&shafted);
+    // What is cut out on purpose is no plan without a roof (audit r2
+    // MATH-008).
+    let cuts: Vec<Vec<Point2>> = shafted
+        .chimneys
+        .iter()
+        .chain(&shafted.roof_openings)
+        .map(|c| c.corners.clone())
+        .collect();
+    drop(shafted);
+    let warnings = crate::check::check_cut(&clean.parts, &geos, &cuts);
     for (geo, w) in geos.iter_mut().zip(warnings) {
         geo.warnings.extend(w);
     }
@@ -75,8 +85,11 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
             e.edges = crate::check::coplanar_error_walls(part, e.kind);
         }
     }
-    // A failure a tower's shaft causes names the tower (audit ERR-005).
+    // A failure a tower's shaft causes names the tower (audit ERR-005),
+    // also where the core's error says nothing of an opening (audit r2
+    // ERR-002): decided by calculating again without the shafts.
     blame_tower_shafts(&clean, &mut geos);
+    blame_by_result(&clean, &mut geos, |p| generate_valid(&with_tower_shafts(p)));
     // Windows, chimneys and openings the calculation left out: said, the
     // result unchanged.
     for (part, mut w) in crate::check::off_roof(&clean, &geos) {
@@ -91,6 +104,12 @@ pub fn generate_project(project: &Project) -> Vec<RoofGeometry> {
     // Objects lying on top of each other: said, each still deducted.
     for (part, w) in crate::check::overlapping_objects(&clean, &geos) {
         geos[part].warnings.push(w);
+    }
+    // A tower whose roof starts under the building's (audit r2 UX-002).
+    for (part, w) in crate::check::towers_below_roof(&clean, &geos) {
+        if let Some(g) = geos.get_mut(part) {
+            g.warnings.push(w);
+        }
     }
     slots
         .into_iter()
@@ -205,6 +224,114 @@ fn blame_tower_shafts(project: &Project, geos: &mut [RoofGeometry]) {
                 .collect();
         }
     }
+}
+
+/// The most single shafts [`blame_by_result`] leaves out one at a time to
+/// find the one a failure is due to; with more, all candidates are named.
+const MAX_BLAME_RUNS: usize = 8;
+
+/// Names the towers whose shaft a building's failure is due to, for the
+/// failures [`blame_tower_shafts`] named none for (audit r2 ERR-002: an
+/// error of another kind, or a shaft the convexity test takes): when the
+/// building calculates with the shafts that reach it left out, those are
+/// the cause; one of them alone when leaving out only that one is enough.
+/// `calc` calculates a project with its towers' shafts (in production
+/// `generate_valid(&with_tower_shafts(p))`). Only runs on a failure; the
+/// roofs themselves are not changed.
+fn blame_by_result(
+    project: &Project,
+    geos: &mut [RoofGeometry],
+    calc: impl Fn(&Project) -> Vec<RoofGeometry>,
+) {
+    if project.towers.is_empty() {
+        return;
+    }
+    let failed = |g: &RoofGeometry| g.error.as_ref().is_some_and(|e| e.towers.is_empty());
+    if !geos.iter().any(failed) {
+        return;
+    }
+    // Per failed building, the towers whose shaft reaches its plan with
+    // the overhangs (a box test: cheap and on the safe side).
+    let boxes: Vec<(usize, [f64; 4])> = project
+        .towers
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.problems().is_empty())
+        .filter_map(|(k, t)| {
+            let fp = t.footprint();
+            (fp.len() >= 3).then(|| (k, plan_box(&fp, 0.0)))
+        })
+        .collect();
+    let mut asked: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (i, g) in geos.iter().enumerate() {
+        let Some(part) = project.parts.get(i).filter(|_| failed(g)) else {
+            continue;
+        };
+        let reach = part
+            .edges
+            .iter()
+            .map(|e| e.overhang)
+            .filter(|o| o.is_finite())
+            .fold(0.0, f64::max)
+            + 0.05;
+        let pb = plan_box(&part.outline(), reach);
+        let near: Vec<usize> = boxes
+            .iter()
+            .filter(|(_, b)| b[0] <= pb[2] && pb[0] <= b[2] && b[1] <= pb[3] && pb[1] <= b[3])
+            .map(|(k, _)| *k)
+            .collect();
+        if !near.is_empty() {
+            asked.push((i, near));
+        }
+    }
+    if asked.is_empty() {
+        return;
+    }
+    let without = |left_out: &[usize]| -> Vec<RoofGeometry> {
+        let mut p = project.clone();
+        p.towers = project
+            .towers
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| !left_out.contains(k))
+            .map(|(_, t)| t.clone())
+            .collect();
+        calc(&p)
+    };
+    let all: Vec<usize> = asked.iter().flat_map(|(_, n)| n.clone()).collect();
+    let bare = without(&all);
+    let ok = |gs: &[RoofGeometry], i: usize| {
+        gs.get(i)
+            .is_some_and(|g| g.error.is_none() && !g.faces.is_empty())
+    };
+    for (i, near) in asked {
+        if !ok(&bare, i) {
+            continue;
+        }
+        let mut found: Vec<usize> = Vec::new();
+        if near.len() > 1 && near.len() <= MAX_BLAME_RUNS {
+            for &k in &near {
+                if ok(&without(&[k]), i) {
+                    found.push(k);
+                }
+            }
+        }
+        if found.is_empty() {
+            found = near;
+        }
+        if let Some(e) = geos.get_mut(i).and_then(|g| g.error.as_mut()) {
+            e.towers = found;
+        }
+    }
+}
+
+/// `[min x, min y, max x, max y]` of `pts`, grown by `grow`.
+fn plan_box(pts: &[Point2], grow: f64) -> [f64; 4] {
+    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    for p in pts {
+        b = [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)];
+    }
+    [b[0] - grow, b[1] - grow, b[2] + grow, b[3] + grow]
 }
 
 /// Index in the cleaned project of each part, and its edge count when it
@@ -2843,19 +2970,19 @@ mod tests {
     }
 
     /// Audit ERR-005: a non-convex-opening error names the towers whose
-    /// shaft the core does not take as convex (a 10 cm hexagon with
-    /// rounded corners, 12.7 km from the origin, where the core's float32
-    /// reads fold a corner in), and only those; a chimney's error names
+    /// shaft the core does not take as convex (a round shaft 300 km from
+    /// the origin, where the core's float32 reads fold a corner in), and
+    /// only those; a chimney's error names
     /// none.
     #[test]
     fn a_non_convex_opening_error_names_the_towers_whose_shaft_is_not_convex() {
         use crate::roof::{CalcError, CalcErrorKind};
         use crate::tower::{Tower, TowerShape};
-        let mut bad = Tower::pyramid(Point2::new(9000.0, 9000.0), 0.1, 16.0, 1.0);
-        bad.shape = TowerShape::Polygon;
-        bad.sides = 6;
-        bad.rotation_deg = 33.0;
-        bad.corner_radius = bad.max_corner_radius() * 8.0 / 11.0;
+        // Audit r2 MATH-011 made the 10 cm rounded hexagon at 9 km this
+        // test used a convex square; a 1 m round shaft 300 km out still
+        // folds under the core's float32 reads.
+        let mut bad = Tower::pyramid(Point2::new(300_000.0, 300_000.0), 1.0, 16.0, 1.0);
+        bad.shape = TowerShape::Circle;
         assert!(bad.problems().is_empty());
         assert!(!dacad_convex(&bad.footprint()));
         let good = Tower::pyramid(Point2::new(9003.0, 9000.0), 1.0, 16.0, 1.0);
@@ -2889,6 +3016,58 @@ mod tests {
             ..RoofGeometry::default()
         }];
         blame_tower_shafts(&p, &mut geos);
+        assert!(geos[0].error.as_ref().unwrap().towers.is_empty());
+    }
+
+    /// Audit r2 ERR-002: a building that fails with a tower's shaft and
+    /// calculates without it names that tower, whatever the error's kind
+    /// and whether or not the convexity test finds anything; a failure the
+    /// building has without the shafts too names none.
+    #[test]
+    fn a_failure_that_goes_with_a_shaft_names_its_tower() {
+        use crate::roof::{CalcError, CalcErrorKind};
+        use crate::tower::Tower;
+        let culprit = Tower::pyramid(Point2::new(3.0, 2.0), 1.0, 16.0, 1.0);
+        let other = Tower::pyramid(Point2::new(7.0, 6.0), 1.0, 16.0, 1.0);
+        let far = Tower::pyramid(Point2::new(500.0, 500.0), 1.0, 16.0, 1.0);
+        let mut p = gable();
+        p.towers = vec![other.clone(), culprit.clone(), far];
+        let culprit_fp = culprit.footprint();
+        let error = || CalcError {
+            kind: CalcErrorKind::OpenFaces,
+            code: None,
+            message_id: None,
+            message: String::new(),
+            parts: Vec::new(),
+            edges: Vec::new(),
+            towers: Vec::new(),
+        };
+        // The calculation fails while the culprit's shaft is cut.
+        let calc = |q: &Project| -> Vec<RoofGeometry> {
+            let shafted = with_tower_shafts(q);
+            if shafted.chimneys.iter().any(|c| c.corners == culprit_fp) {
+                vec![RoofGeometry {
+                    error: Some(error()),
+                    ..RoofGeometry::default()
+                }]
+            } else {
+                generate_valid(&shafted)
+            }
+        };
+        let mut geos = calc(&p);
+        blame_by_result(&p, &mut geos, calc);
+        assert_eq!(geos[0].error.as_ref().unwrap().towers, vec![1]);
+        // Failing without any shaft too: no tower is named.
+        let mut geos = vec![RoofGeometry {
+            error: Some(error()),
+            ..RoofGeometry::default()
+        }];
+        blame_by_result(&p, &mut geos, |_| {
+            vec![RoofGeometry {
+                error: Some(error()),
+                ..RoofGeometry::default()
+            }]
+        });
         assert!(geos[0].error.as_ref().unwrap().towers.is_empty());
     }
 }

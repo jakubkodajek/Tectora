@@ -804,9 +804,10 @@ pub fn outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
 /// thumbnail emptied the library screen (audit 2026-11-22 ARCH-402).
 pub const MAX_CARD_POINTS: usize = 2000;
 
-/// The outlines of a library card's thumbnail: the walls of each part and
-/// the hand-drawn faces, so a job of faces only has a thumbnail too
-/// (audit 2026-11-22 HUNT-305 item 5), at most [`MAX_CARD_POINTS`] points.
+/// The outlines of a library card's thumbnail: the walls of each part, the
+/// hand-drawn faces and the towers' shafts, so a job of faces or towers
+/// only has a thumbnail too (audit 2026-11-22 HUNT-305 item 5, r2
+/// ARCH-006), at most [`MAX_CARD_POINTS`] points.
 pub fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
     let mut out = outlines(project);
     out.extend(
@@ -815,6 +816,17 @@ pub fn card_outlines(project: &Project) -> Vec<Vec<[f64; 2]>> {
             .iter()
             .filter(|f| f.points.len() >= 3)
             .map(|f| f.points.iter().map(|p| [p.x, p.y]).collect()),
+    );
+    // And the towers' shafts, so a job of towers only has one too (audit
+    // r2 ARCH-006).
+    out.extend(
+        project
+            .towers
+            .iter()
+            .filter(|t| t.problems().is_empty())
+            .map(|t| t.footprint())
+            .filter(|f| f.len() >= 3)
+            .map(|f| f.iter().map(|p| [p.x, p.y]).collect()),
     );
     bounded_outlines(out, MAX_CARD_POINTS)
 }
@@ -6383,6 +6395,28 @@ mod tests {
         let p = examples::find("hip").unwrap().project();
         assert_eq!(card_outlines(&p), outlines(&p));
         let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    /// Audit r2 ARCH-006: a job of towers only has a thumbnail: each
+    /// tower's shaft, as it is cut out of a roof.
+    #[test]
+    fn a_job_of_towers_only_has_a_thumbnail() {
+        let mut p = Project::new("t");
+        let t = crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Cone,
+            crate::geom::Point2::new(3.0, 4.0),
+            2.0,
+            8.0,
+        );
+        p.towers.push(t.clone());
+        let o = card_outlines(&p);
+        assert_eq!(o.len(), 1, "{o:?}");
+        assert!(o[0].len() >= 4);
+        let fp = t.footprint();
+        assert!(o[0].iter().all(|q| {
+            fp.iter()
+                .any(|f| (f.x - q[0]).abs() < 1e-9 && (f.y - q[1]).abs() < 1e-9)
+        }));
     }
 
     /// Audit 2026-11-22 HUNT-505: one face over the point budget turned

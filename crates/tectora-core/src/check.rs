@@ -191,6 +191,15 @@ pub enum WarningKind {
     /// on the building nearest to the face. `face`: its index. `value`: the
     /// plan area over the roof, m².
     ManualFaceOverRoof,
+    /// A tower's roof starts below the roof around its shaft (its base
+    /// height under the building's roof there, e.g. after the building was
+    /// raised): part of the tower's roof lies inside the building's yet is
+    /// counted in full, and the shaft has no walls above the roof (audit r2
+    /// UX-002). Tectora's own check; the figures are kept. Reported on the
+    /// building whose roof is above the base. `towers`: the tower's index
+    /// in `project.towers`. `value`: how far the roof rises above the
+    /// tower's base, m.
+    TowerBaseBelowRoof,
 }
 
 /// Plan area two hand-drawn faces may share (or a hand-drawn face and the
@@ -235,6 +244,49 @@ impl WarningKind {
                 | WarningKind::ManualFaceOverRoof
         )
     }
+}
+
+/// [`WarningKind::TowerBaseBelowRoof`] for the towers of `project` whose
+/// base lies under the roofs `geos` (in the order of `project.parts`), as
+/// `(building, warning)`: the building whose roof face rises highest over
+/// the base.
+pub fn towers_below_roof(
+    project: &crate::Project,
+    geos: &[RoofGeometry],
+) -> Vec<(usize, RoofWarning)> {
+    let mut out = Vec::new();
+    for (k, t) in project.towers.iter().enumerate() {
+        if !t.problems().is_empty() || !crate::tower::shaft(t, project, geos).base_below_roof {
+            continue;
+        }
+        // The building whose roof over the shaft is highest.
+        let fp = t.footprint();
+        let best = geos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| {
+                let z = fp
+                    .iter()
+                    .chain([&t.center])
+                    .filter_map(|&q| crate::tower::roof_height_at(std::slice::from_ref(g), q))
+                    .fold(f64::NEG_INFINITY, f64::max);
+                (z.is_finite()).then_some((i, z))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((i, z)) = best {
+            out.push((
+                i,
+                RoofWarning {
+                    towers: vec![k],
+                    ..RoofWarning::new(
+                        WarningKind::TowerBaseBelowRoof,
+                        (z - t.base_height).max(0.0),
+                    )
+                },
+            ));
+        }
+    }
+    out
 }
 
 /// One finding about a calculated roof.
@@ -872,6 +924,17 @@ pub fn measure(outline: &[Vec<Point2>], geo: &RoofGeometry) -> Measures {
 /// pieces the join leaves, whose areas DACAD books by its own rules; the
 /// area check is then left out.
 pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>> {
+    check_cut(parts, geos, &[])
+}
+
+/// [`check`] of roofs that have the plan polygons `cuts` cut out of them
+/// on purpose (chimneys, roof openings, tower shafts): plan under a cut is
+/// no plan "without a roof" (audit r2 MATH-008).
+pub fn check_cut(
+    parts: &[RoofPart],
+    geos: &[RoofGeometry],
+    cuts: &[Vec<Point2>],
+) -> Vec<Vec<RoofWarning>> {
     let outline: Vec<Vec<Point2>> = parts.iter().flat_map(eave_outline).collect();
     let joined = parts.len() > 1;
     let mut out: Vec<Vec<RoofWarning>> = geos
@@ -919,7 +982,7 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
         out[i].push(RoofWarning::new(WarningKind::InsideAnother, 0.0));
     }
     if joined {
-        for (i, area) in uncovered_plan(parts, geos).into_iter().enumerate() {
+        for (i, area) in uncovered_plan(parts, geos, cuts).into_iter().enumerate() {
             if area > UNCOVERED_TOL {
                 out[i].push(RoofWarning::new(WarningKind::UncoveredPlan, area));
             }
@@ -936,11 +999,20 @@ pub fn check(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<Vec<RoofWarning>>
 /// Per building, the plan area within its eave outline that no sloped
 /// roof face of the job covers (dormer faces count), m². Buildings with an
 /// error or without faces, and flat-roofed ones, are left out.
-fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
+fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry], cuts: &[Vec<Point2>]) -> Vec<f64> {
     let mut out = vec![0.0; geos.len()];
     if geos.iter().any(|g| g.error.is_some()) {
         return out;
     }
+    let cuts: Vec<(Polygon<f64>, [f64; 4])> = cuts
+        .iter()
+        .filter(|c| {
+            c.len() >= 3
+                && c.iter().all(|p| p.x.is_finite() && p.y.is_finite())
+                && signed_area(c).abs() > 1e-9
+        })
+        .map(|c| (to_geo(c), bbox(c)))
+        .collect();
     let faces: Vec<(Polygon<f64>, [f64; 4])> = geos
         .iter()
         .flat_map(|g| &g.faces)
@@ -974,7 +1046,13 @@ fn uncovered_plan(parts: &[RoofPart], geos: &[RoofGeometry]) -> Vec<f64> {
                 roof = roof.union(&MultiPolygon::new(vec![poly.clone()]));
             }
         }
-        out[i] = plan_of.difference(&roof).unsigned_area();
+        let mut cut = MultiPolygon::new(vec![]);
+        for (poly, cb) in &cuts {
+            if boxes_meet(bb, *cb) {
+                cut = cut.union(&MultiPolygon::new(vec![poly.clone()]));
+            }
+        }
+        out[i] = plan_of.difference(&roof).difference(&cut).unsigned_area();
     }
     out
 }
