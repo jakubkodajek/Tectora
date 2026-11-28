@@ -140,6 +140,12 @@ export function describeError(e: unknown, action?: Action): Described {
   const unknownKeys = code === "too_many" && /unknown keys/.test(err.detail ?? "");
   // A job file in another encoding is intact text, not a damaged file (store.rs `read_text`).
   const notText = code === "unreadable" && notUtf8(err.detail);
+  // Over the towers' limits (a tower duplicated, `edit::towers::check_tower_counts`): that limit, not "too many objects".
+  const towerLimit = code === "too_many" ? err.detail?.match(/\((tower_limit|tower_tiers_limit)\)\s*$/)?.[1] : undefined;
+  if (towerLimit) {
+    const text = t(`prob.${towerLimit}`);
+    return { code: err.code, title: t(action ? `err.action.${action}` : "err.title"), message: text.charAt(0).toLocaleUpperCase() + text.slice(1) + ".", detail: err.detail };
+  }
   return {
     code: err.code,
     title: t(action ? `err.action.${action}` : "err.title"),
@@ -231,7 +237,12 @@ export function refusalReason(detail: string | undefined): string {
   if (/the helper gives values a wall does not take/.test(d)) return t("refuse.helperRange");
   // A tower's problem ends with its code (`edit::towers::set_tower`, `tower_preview`).
   const tower = d.match(/\((tower_[a-z_]+)\)\s*$/);
-  if (tower && TOWER_CODES.has(tower[1])) return t(`prob.${tower[1]}`);
+  if (tower && TOWER_CODES.has(tower[1])) {
+    // A curve too large names its tier and the largest curve it takes (core `Tower::problems`).
+    const most = tower[1] === "tower_bulge" ? d.match(/tier (\d+) takes a curve of at most ([\d.]+) m/) : null;
+    if (most) return t("prob.tower_bulgeMax", { n: most[1], max: new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+most[2]) });
+    return t(`prob.${tower[1]}`);
+  }
   const arc = arcReason(d);
   if (arc) return arc;
   const range = d.match(/out of range \((-?[\d.]+) to (-?[\d.]+) m/);
@@ -281,7 +292,7 @@ export function towerRefusal(e: unknown): DialogRefusal | null {
   return null;
 }
 
-const TOWER_CODES = new Set(["tower_limit", "tower_missing", "tower_not_calculated", "tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge", "tower_overhang", "tower_tiers_limit", "tower_label"]);
+const TOWER_CODES = new Set(["tower_limit", "tower_missing", "tower_not_calculated", "tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge", "tower_overhang", "tower_tiers_limit", "tower_label", "tower_tier_pitch"]);
 
 /** The text of each arc refusal code of the core (`edit::arcs::ARC_CODES`). */
 const ARC_KEYS = new Map<string, string>([
@@ -298,6 +309,7 @@ const ARC_KEYS = new Map<string, string>([
   ["arc_no_length", "arc.err.noLength"],
   ["arc_touches", "arc.err.touches"],
   ["arc_invalid", "arc.err.invalid"],
+  ["arc_none", "arc.err.none"],
 ]);
 
 /**

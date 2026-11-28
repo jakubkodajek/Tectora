@@ -337,24 +337,26 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
     };
     dormer_faces.extend(manual);
     // Towers: each roof tier (and a flat top) is a face of its own roof,
-    // numbered after the dormers' (`Z<n>.<tier>`), with its lines.
+    // numbered after the dormers' (`Z<n>.<tier>`), with its lines. A row
+    // carries the tier's number from 1 as the tower dialog and the
+    // results' steps count them (lantern tiers are wall, no row; the flat
+    // top is the number after the last tier), so `Z2.03` is "Pás 3" (audit
+    // r2 UX-006). A rectangle's sides along its depth, of their own pitch
+    // (audit MATH-006), are a second row of the tier's number, as the list
+    // gives every face of one wall the wall's number.
     for r in crate::tower::results(project).into_iter().flatten() {
         roof_no += 1;
-        let mut k = 0;
         for t in r
             .tiers
             .iter()
             .filter(|t| t.kind == crate::tower::TierKind::Roof)
         {
-            // A rectangle's sides along its depth have their own pitch:
-            // a face of their own (audit MATH-006).
             let own = t.area - t.depth_sides.map_or(0.0, |d| d.area);
             let rows = std::iter::once((t.pitch_deg, own))
                 .chain(t.depth_sides.map(|d| (d.pitch_deg, d.area)));
             for (pitch, area) in rows {
-                k += 1;
                 dormer_faces.push(ListFace {
-                    name: format!("Z{roof_no}.{k:02}"),
+                    name: format!("Z{roof_no}.{:02}", t.index + 1),
                     // A tier leaning outward (over 90°, under a cornice) is
                     // listed with its slope from the horizontal.
                     pitch: pitch.min(180.0 - pitch),
@@ -367,9 +369,8 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             }
         }
         if let Some(cap) = &r.cap {
-            k += 1;
             dormer_faces.push(ListFace {
-                name: format!("Z{roof_no}.{k:02}"),
+                name: format!("Z{roof_no}.{:02}", r.tiers.len() + 1),
                 pitch: 0.0,
                 area: cap.area,
                 rafter: None,
@@ -1055,16 +1056,19 @@ pub fn plan_sheet_named_of(
             format!("{}°", num(f.pitch_deg, 2)),
         ));
     }
-    // Towers: the outline of every tier from above, one label with the
-    // tower's roof area and its lowest tier's pitch.
+    // Towers: the outline of every tier from above, and a label for each
+    // roof tier (its ring between its bottom and top outline) and for the
+    // flat top, with its own area and pitch: a turret's tiers differ by
+    // 20° and more (audit r2 UX-006). The labels add up to the tower's
+    // roof area; a rectangle's tier of two pitches names both.
     for r in crate::tower::results(project).into_iter().flatten() {
-        let mut base: Option<Vec<[f64; 2]>> = None;
+        let page =
+            |ring: &[[f64; 3]]| -> Vec<[f64; 2]> { ring.iter().map(|p| map(p[0], p[1])).collect() };
         for t in &r.tiers {
             for ring in [t.rings.first(), t.rings.last()].into_iter().flatten() {
-                let pts: Vec<[f64; 2]> = ring.iter().map(|p| map(p[0], p[1])).collect();
+                let pts = page(ring);
                 if pts.len() >= 3 {
                     outline(&mut shapes, &pts, INK, 0.6, false);
-                    base.get_or_insert(pts);
                 }
             }
         }
@@ -1080,12 +1084,38 @@ pub fn plan_sheet_named_of(
                 });
             }
         }
-        if let (Some(pts), Some(t0)) = (base, r.tiers.first()) {
-            face_labels.push((
-                pts,
-                format!("{}m²", num(r.roof_area(), d)),
-                format!("{}°", num(t0.pitch_deg, 2)),
-            ));
+        let slope = |p: f64| p.min(180.0 - p);
+        for t in r
+            .tiers
+            .iter()
+            .filter(|t| t.kind == crate::tower::TierKind::Roof)
+        {
+            let (Some(bottom), Some(top)) = (t.rings.first(), t.rings.last()) else {
+                continue;
+            };
+            let (outer, inner) = (page(bottom), page(top));
+            if outer.len() < 3 {
+                continue;
+            }
+            // The ring from above: the outer outline and the inner one
+            // backwards, which the even-odd test of `free_spot` takes as
+            // the band between them.
+            let band: Vec<[f64; 2]> = outer.iter().chain(inner.iter().rev()).copied().collect();
+            let pitch = match t.depth_sides {
+                Some(d) => format!(
+                    "{}° / {}°",
+                    num(slope(t.pitch_deg), 2),
+                    num(slope(d.pitch_deg), 2)
+                ),
+                None => format!("{}°", num(slope(t.pitch_deg), 2)),
+            };
+            face_labels.push((band, format!("{}m²", num(t.area, d)), pitch));
+        }
+        if let Some(cap) = &r.cap {
+            let pts = page(&cap.ring);
+            if pts.len() >= 3 {
+                face_labels.push((pts, format!("{}m²", num(cap.area, d)), "0°".to_string()));
+            }
         }
     }
     for (g, shown) in geos.iter().zip(&face_shown) {

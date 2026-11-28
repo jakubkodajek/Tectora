@@ -237,7 +237,17 @@ export const TOWER_PRESETS: TowerPresetKind[] = ["pyramid", "octagon", "cone", "
 /** A curved-wall edit of the plan (core `commands::ArcEdit`). */
 export type ArcEdit =
   | { op: "round_corner"; index: number; radius: number; segments?: number | null }
-  | { op: "bend_wall"; index: number; bulge: number; segments?: number | null };
+  | { op: "bend_wall"; index: number; bulge: number; segments?: number | null }
+  | { op: "straighten_arc"; index: number }
+  | { op: "reshape_arc"; index: number; bulge: number; segments?: number | null };
+
+/** The arc a wall belongs to (core `edit::arcs::ArcRun`): `walls` walls from `start`, its bulge (+ outward) and chord, m. */
+export interface ArcRun {
+  start: number;
+  walls: number;
+  bulge: number;
+  chord: number;
+}
 
 export interface RoofWindow {
   x: number;

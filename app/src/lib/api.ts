@@ -7,6 +7,7 @@ import type {
   AiAssistant,
   ArcEdit,
   ArcInput,
+  ArcRun,
   AiAssistantId,
   ActivityItem,
   AppSettingsView,
@@ -218,7 +219,7 @@ export const api = {
     invoke<Tower>("tower_preset", { kind, center, width, baseHeight }),
   /** The roof of a tower being edited (areas, tiers, rings); refused with its first problem. */
   towerPreview: (tower: Tower) => invoke<TowerPreview>("tower_preview", { tower }),
-  /** A corner of part `part` rounded or a wall bent into an arc (the MCP tool edit_walls' round_corner / bend_wall); "refused" when it does not fit. */
+  /** A corner of part `part` rounded, a wall bent into an arc, an arc straightened or changed (the MCP tool edit_walls' round_corner / bend_wall / straighten_arc / reshape_arc); "refused" when it does not fit. */
   arcEdit: (project: Project, part: number, edit: ArcEdit) => invoke<Project>("arc_edit", { project, part, edit }),
   /** "Delete building": the job without part `part` and the towers on it, and the indices those towers had. */
   deletePart: (project: Project, part: number) => invoke<{ project: Project; towers_removed: number[] }>("delete_part", { project, part }),
@@ -227,6 +228,12 @@ export const api = {
   /** The corners of a regular polygon, counter-clockwise, the first wall along the x axis. */
   regularPolygon: (centre: Point2, sides: number, side: number, rotationDeg = 0) =>
     invoke<{ corners: Point2[] }>("item_geometry", { request: { op: "regular_polygon", centre, sides, side, rotation_deg: rotationDeg } }).then((r) => r.corners),
+  /** The arc wall `edge` of `part` belongs to (core `edit::arcs::arc_run`), or null when it is no part of one. */
+  arcRun: (part: RoofPart, edge: number) =>
+    invoke<{ run: ArcRun | null }>("item_geometry", { request: { op: "arc_run", part, edge } }).then((r) => r.run),
+  /** The rise that gives tier `tier` of `tower` the pitch `pitchDeg`; "refused" (`tower_tier_pitch`) when none does. */
+  towerTierRise: (tower: Tower, tier: number, pitchDeg: number) =>
+    invoke<{ rise: number }>("item_geometry", { request: { op: "tower_tier_rise", tower, tier, pitch_deg: pitchDeg } }).then((r) => r.rise),
   /** The centre of a part's wall outline, the transform dialog's default pivot. */
   partCentre: (part: RoofPart) =>
     invoke<{ centre: Point2 }>("item_geometry", { request: { op: "part_centre", part } }).then((r) => r.centre),

@@ -114,6 +114,75 @@ pub const TOWER_TIERS_LIMIT: &str = "tower_tiers_limit";
 /// silently, where a part name is refused).
 pub const TOWER_LABEL: &str = "tower_label";
 
+/// The code that ends the refusal of a tier pitch that sets no rise: the
+/// tier keeps its width (a lantern), the pitch is not over 0° and under
+/// 180° or not 90° when the tier narrows, or the rise would be over the
+/// limit (audit r2 UX-010).
+pub const TOWER_TIER_PITCH: &str = "tower_tier_pitch";
+
+/// The width tier `tier` of `tower` starts at: the shaft's for the first,
+/// else the tier below's top width; `None` for a tier the tower lacks.
+pub fn tier_bottom_width(tower: &Tower, tier: usize) -> Option<f64> {
+    match tier {
+        0 => (tier < tower.tiers.len()).then_some(tower.width),
+        k => tower
+            .tiers
+            .get(k)
+            .and(tower.tiers.get(k - 1))
+            .map(|t| t.top_width),
+    }
+}
+
+/// The rise that gives a tier from `bottom_width` to `top_width` the pitch
+/// `pitch_deg` along its chord, as `Tower::calculate` measures it (the
+/// sides at half the width; over 90° a tier leaning outward). Refused
+/// with [`TOWER_TIER_PITCH`] when no rise of 0 to 100 m gives it.
+pub fn rise_for_pitch(bottom_width: f64, top_width: f64, pitch_deg: f64) -> Result<f64, String> {
+    let refuse = || {
+        format!(
+            "a pitch sets the rise of a tier that narrows (0° to 90°) or widens (90° to 180°) to a rise of at most {} m ({TOWER_TIER_PITCH})",
+            crate::tower::MAX_RISE
+        )
+    };
+    let run = (bottom_width - top_width) / 2.0;
+    if !(bottom_width.is_finite() && top_width.is_finite() && pitch_deg.is_finite())
+        || !(pitch_deg > 0.0 && pitch_deg < 180.0)
+        || (pitch_deg - 90.0).abs() < 1e-9
+        || run.abs() < 1e-6
+    {
+        return Err(refuse());
+    }
+    let rise = run * pitch_deg.to_radians().tan();
+    if !(rise > 0.0 && rise <= crate::tower::MAX_RISE) {
+        return Err(refuse());
+    }
+    Ok(super::round_to(rise, 4))
+}
+
+/// The job's towers against [`crate::tower::MAX_TOWERS`] and
+/// [`crate::tower::MAX_TIERS_TOTAL`], refused with [`TOWER_LIMIT`] or
+/// [`TOWER_TIERS_LIMIT`] as `set_tower` refuses one tower: what a copy of a
+/// building or of towers (`transform_part`, `transform_items`, the editor's
+/// duplicate) checks before the general count limit (audit r2: it came as
+/// "too many objects").
+pub fn check_tower_counts(project: &Project) -> Result<(), String> {
+    if project.towers.len() > crate::tower::MAX_TOWERS {
+        return Err(format!(
+            "a job has at most {} towers; this change would make {} ({TOWER_LIMIT})",
+            crate::tower::MAX_TOWERS,
+            project.towers.len()
+        ));
+    }
+    let tiers: usize = project.towers.iter().map(|t| t.tiers.len()).sum();
+    if tiers > crate::tower::MAX_TIERS_TOTAL {
+        return Err(format!(
+            "a job has at most {} tiers in all its towers; this change would make {tiers} ({TOWER_TIERS_LIMIT})",
+            crate::tower::MAX_TIERS_TOTAL
+        ));
+    }
+    Ok(())
+}
+
 /// Adds `tower` (`index` `None`) or replaces tower `index`; refuses a
 /// tower with problems, with the first one's English message. Returns the
 /// tower's index. Every refusal ends with its code in parentheses (a
@@ -241,6 +310,53 @@ mod tests {
             l.chars().count()
         );
         assert!(crate::edit::check_texts_change(None, &p).is_ok());
+    }
+
+    /// Audit r2 UX-010: the rise from a pitch gives the tier that pitch in
+    /// the tower's own calculation; a pitch that sets no rise is refused.
+    #[test]
+    fn a_tier_pitch_sets_the_rise_that_gives_it() {
+        let mut t = preset(TowerPreset::Cone, Point2::new(0.0, 0.0), 8.0, 10.0);
+        t.tiers.truncate(1);
+        t.tiers[0].bulge = 0.0;
+        for pitch in [20.0, 43.2, 60.0, 75.0] {
+            let rise = rise_for_pitch(
+                tier_bottom_width(&t, 0).unwrap(),
+                t.tiers[0].top_width,
+                pitch,
+            )
+            .unwrap();
+            t.tiers[0].rise = rise;
+            let r = t.calculate().unwrap();
+            assert!(
+                (r.tiers[0].pitch_deg - pitch).abs() < 0.01,
+                "{pitch}: {}",
+                r.tiers[0].pitch_deg
+            );
+        }
+        // A cornice leaning outward: from 2 m to 3 m wide at 120°.
+        let rise = rise_for_pitch(2.0, 3.0, 120.0).unwrap();
+        assert!(
+            (rise - 0.5 * 60f64.to_radians().tan()).abs() < 1e-4,
+            "{rise}"
+        );
+        for (b, top, p) in [
+            (2.0, 2.0, 45.0),
+            (4.0, 0.0, 90.0),
+            (4.0, 0.0, 0.0),
+            (4.0, 0.0, 120.0),
+            (2.0, 3.0, 30.0),
+            (4.0, 0.0, 89.999),
+            (4.0, 0.0, f64::NAN),
+        ] {
+            let e = rise_for_pitch(b, top, p).unwrap_err();
+            assert!(
+                e.ends_with(&format!("({TOWER_TIER_PITCH})")),
+                "{b} {top} {p}: {e}"
+            );
+        }
+        assert_eq!(tier_bottom_width(&t, 0), Some(8.0));
+        assert_eq!(tier_bottom_width(&t, 1), None);
     }
 
     /// Audit r2 ARCH-002: a tower that takes the job over the tiers all its

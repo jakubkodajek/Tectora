@@ -32,6 +32,7 @@
     oncalc,
     onheight,
     onarc,
+    inarc = false,
     result = null,
     ondraw,
     onstandard,
@@ -57,7 +58,9 @@
     /** Sets the eave height of every wall of the selected building at once. */
     onheight?: (h: number) => unknown;
     /** Curved walls (UX-002): bend this wall, make it a semicircular end, or round the corner at its start. */
-    onarc?: (op: "bend" | "apse" | "round") => void;
+    onarc?: (op: "bend" | "apse" | "round" | "straighten") => void;
+    /** The selected wall belongs to an arc (core `edit::arcs::arc_run`): "Straighten the arc" is offered (UX-007). */
+    inarc?: boolean;
   } = $props();
 
   const part = $derived(selection ? project.parts[selection.part] : null);
@@ -410,6 +413,9 @@
           <button class="btn sm" onclick={(e) => e.detail < 2 && onarc("bend")}>{t("arc.bend")}</button>
           <button class="btn sm" onclick={(e) => e.detail < 2 && onarc("apse")}>{t("arc.apse")}</button>
           <button class="btn sm" onclick={(e) => e.detail < 2 && onarc("round")} title={t("arc.roundBarHint")}>{t("arc.roundStart")}</button>
+          {#if inarc}
+            <button class="btn sm" data-testid="arc-straighten" onclick={(e) => e.detail < 2 && onarc("straighten")} title={t("arc.straightenHint")}>{t("arc.straighten")}</button>
+          {/if}
         </div>
       {/if}
       <div class="actions">

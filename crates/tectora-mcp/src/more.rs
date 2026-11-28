@@ -382,11 +382,11 @@ pub(crate) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "edit_walls",
-            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); round_corner {index, radius, segments?} (rounds the corner at the start of wall `index` into an arc of short walls tangent to both walls; the arc walls carry the roof definition of the wall before the corner); bend_wall {index, bulge, segments?} (bends wall `index` into an arc whose middle stands `bulge` m off the wall, + outward, at most half the wall; the arc walls keep its roof definition, but a gable becomes eaves like its neighbour: an apse). Arcs get 11.25° steps, 15° where a step would be under 0.4 m, unless `segments` (2-64) is given; the roof is calculated on the walls as for any polygon. An arc is refused (the reason ends with its code) when its walls would be under 0.15 m (`arc_too_short`), its corners turn under 2° (`arc_flat`: too many walls or too slight a bend; a tangent arc meets its walls at half a step), it would touch another wall (`arc_touches`), the bend is under 0.005 m or over half the wall (`arc_bulge`) or the radius under 0.01 m or too large for the walls (`arc_radius_min`, `arc_radius_max`). Wall indices after an arc shift by the walls it added. rename {name}.",
+            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); round_corner {index, radius, segments?} (rounds the corner at the start of wall `index` into an arc of short walls tangent to both walls; the arc walls carry the roof definition of the wall before the corner); bend_wall {index, bulge, segments?} (bends wall `index` into an arc whose middle stands `bulge` m off the wall, + outward, at most half the wall; the arc walls keep its roof definition, but a gable becomes eaves like its neighbour: an apse). Arcs get 11.25° steps, 15° where a step would be under 0.4 m, unless `segments` (2-64) is given; the roof is calculated on the walls as for any polygon. An arc is refused (the reason ends with its code) when its walls would be under 0.15 m (`arc_too_short`), its corners turn under 2° (`arc_flat`: too many walls or too slight a bend; a tangent arc meets its walls at half a step), it would touch another wall (`arc_touches`), the bend is under 0.005 m or over half the wall (`arc_bulge`) or the radius under 0.01 m or too large for the walls (`arc_radius_min`, `arc_radius_max`). Wall indices after an arc shift by the walls it added. straighten_arc {index} (the arc wall `index` belongs to, found by its shape: at least 3 consecutive walls of one length whose corners turn alike by 2° to 60°, becomes one straight wall from the arc's start to its end with the roof definition of its first wall; a rounded corner becomes its chord; refused with `arc_none` when the wall is no part of an arc; an arc of 2 walls is not recognised); reshape_arc {index, bulge, segments?} (change an arc: straighten_arc, then bend_wall on the straight wall with the new bulge; the arc's first wall keeps its index; get_project's walls do not mark arcs). rename {name}.",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "operations": { "type": "array", "items": { "type": "object", "properties": {
-                    "op": { "type": "string", "enum": ["move_point", "insert_point", "delete_point", "set_length", "insert_direction_change", "shift_wall", "round_corner", "bend_wall", "rename"] },
+                    "op": { "type": "string", "enum": ["move_point", "insert_point", "delete_point", "set_length", "insert_direction_change", "shift_wall", "round_corner", "bend_wall", "straighten_arc", "reshape_arc", "rename"] },
                     "index": { "type": "integer" }, "after": { "type": "integer" },
                     "x": { "type": "number" }, "y": { "type": "number" },
                     "radius": { "type": "number" }, "bulge": { "type": "number" }, "segments": { "type": "integer", "minimum": 2, "maximum": 64 },
@@ -531,8 +531,9 @@ pub(crate) fn tools() -> Vec<Value> {
                 "overhang": { "type": "number", "minimum": 0, "maximum": tectora_core::tower::MAX_OVERHANG, "description": "Eave overhang of the tower's roof beyond the shaft, m (default 0): the first tier runs on at its pitch to the overhang line, where the eave is, overhang · tan(pitch) below base_height. For a cone on a round building with an overhang." },
                 "tiers": { "type": "array", "items": { "type": "object", "properties": {
                     "rise": { "type": "number" }, "top_width": { "type": "number" },
+                    "pitch_deg": { "type": "number", "description": "In place of `rise`: the tier's pitch along its chord (0-90° narrowing, 90-180° a tier leaning outward), the rise worked out from the width below it and `top_width`; refused with `tower_tier_pitch` when no rise of 0-100 m gives it." },
                     "bulge": { "type": "number" }, "material": { "type": "integer", "minimum": 1, "description": "Roof material as on walls: 1 tiles, 2 sheet metal (default), 3 stone, 4 slate, 5 solar panels." }
-                }, "required": ["rise", "top_width"] } },
+                }, "required": ["top_width"] } },
                 "summary": summary_prop(),
             }), &["id", "summary"]),
         }),
@@ -1260,6 +1261,16 @@ impl Server {
                     let segs = arc_segments(op).map_err(at)?;
                     tectora_core::edit::arcs::bend_wall(part, i, b, segs).map_err(at)?;
                 }
+                "straighten_arc" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    tectora_core::edit::arcs::straighten(part, i).map_err(at)?;
+                }
+                "reshape_arc" => {
+                    let i = edge_index(op, "index", n).map_err(at)?;
+                    let b = arg_f64(op, "bulge")?.ok_or_else(|| at("missing `bulge`".into()))?;
+                    let segs = arc_segments(op).map_err(at)?;
+                    tectora_core::edit::arcs::reshape(part, i, b, segs).map_err(at)?;
+                }
                 other => return Err(at(format!("unknown op `{other}`"))),
             }
         }
@@ -1268,7 +1279,7 @@ impl Server {
         let arcs = ops.iter().any(|o| {
             matches!(
                 o.get("op").and_then(Value::as_str),
-                Some("round_corner" | "bend_wall")
+                Some("round_corner" | "bend_wall" | "straighten_arc" | "reshape_arc")
             )
         });
         if arcs && let Some(e) = tectora_core::edit::arcs::outline_spoiled(&before, &p) {
@@ -1306,6 +1317,8 @@ impl Server {
             return Err("a mirror adds at most 1 copy (a second mirror image lies on the building itself); use copies 0 or 1, or `rotate` / `move` with copies for a row".into());
         }
         transform_part(&mut p, pi, m, copies);
+        tectora_core::edit::towers::check_tower_counts(&p)
+            .map_err(|e| format!("{e}; nothing was saved"))?;
         self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
     }
 
@@ -1440,6 +1453,9 @@ impl Server {
         moved: Vec<ItemRef>,
         unfollowed: bool,
     ) -> ToolResult {
+        // Copies of towers over their limits, as set_tower refuses them.
+        tectora_core::edit::towers::check_tower_counts(p)
+            .map_err(|e| format!("{e}; nothing was saved"))?;
         let mut reply = self.commit(Some(id), Some(before), p, arg_str(args, "summary")?)?;
         if let Some(o) = reply.as_object_mut() {
             o.insert("items".into(), json!(moved));
@@ -1668,15 +1684,31 @@ impl Server {
             t.label = l;
         }
         if let Some(tiers) = opt::<Vec<Value>>(args, "tiers")? {
+            // A tier's `pitch_deg` in place of `rise`, as the tower dialog's
+            // pitch column (audit r2 UX-010): from the width below it.
+            let mut below = t.width;
             t.tiers = tiers
                 .iter()
                 .enumerate()
                 .map(|(k, v)| {
                     let at = |m: String| format!("tier {k}: {m}");
+                    let top_width =
+                        arg_f64(v, "top_width")?.ok_or_else(|| at("missing `top_width`".into()))?;
+                    let rise = match (arg_f64(v, "rise")?, arg_f64(v, "pitch_deg")?) {
+                        (Some(_), Some(_)) => {
+                            return Err(at("give `rise` or `pitch_deg`, not both".into()));
+                        }
+                        (Some(r), None) => r,
+                        (None, Some(p)) => {
+                            tectora_core::edit::towers::rise_for_pitch(below, top_width, p)
+                                .map_err(at)?
+                        }
+                        (None, None) => return Err(at("missing `rise` or `pitch_deg`".into())),
+                    };
+                    below = top_width;
                     Ok(TowerTier {
-                        rise: arg_f64(v, "rise")?.ok_or_else(|| at("missing `rise`".into()))?,
-                        top_width: arg_f64(v, "top_width")?
-                            .ok_or_else(|| at("missing `top_width`".into()))?,
+                        rise,
+                        top_width,
                         bulge: arg_f64(v, "bulge")?.unwrap_or(0.0),
                         // As on walls (audit: 0 counted as tiles).
                         material: match v.get("material") {
@@ -4075,6 +4107,101 @@ mod tests {
         let c = call(&mut s, "calc", json!({ "id": id }));
         assert!(c["total"]["roof_area_m2"].as_f64().unwrap() > 0.0, "{c}");
         assert_eq!(c["towers"], Value::Null);
+    }
+
+    /// Audit r2 UX-010: set_tower takes a tier's pitch in place of its
+    /// rise, as the tower dialog's pitch column.
+    #[test]
+    fn set_tower_takes_a_tier_pitch_for_its_rise() {
+        let (mut s, id) = setup();
+        call(
+            &mut s,
+            "set_tower",
+            json!({ "id": id, "summary": "kužel", "center": [5, 4], "width": 4, "base_height": 12,
+                    "tiers": [{ "pitch_deg": 45, "top_width": 2 }, { "rise": 1, "top_width": 0 }] }),
+        );
+        let t = s.store.load(&id).unwrap().towers[0].clone();
+        assert!((t.tiers[0].rise - 1.0).abs() < 1e-4, "{:?}", t.tiers);
+        let e = s
+            .call_tool(
+                "set_tower",
+                &json!({ "id": id, "summary": "x", "center": [5, 4], "width": 4, "base_height": 12,
+                         "tiers": [{ "pitch_deg": 90, "top_width": 0 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("(tower_tier_pitch)"), "{e}");
+    }
+
+    /// Audit r2: copies of towers or of a building with towers over the
+    /// tiers of all towers are refused with `tower_tiers_limit`, nothing saved.
+    #[test]
+    fn copies_over_the_tower_tier_limit_are_refused_with_its_code() {
+        let (mut s, id) = setup();
+        let mut p = s.store.load(&id).unwrap();
+        let t = tectora_core::edit::towers::preset(
+            tectora_core::edit::towers::TowerPreset::Baroque,
+            Point2::new(5.0, 4.0),
+            2.0,
+            9.0,
+        );
+        let per = t.tiers.len();
+        p.towers = vec![t; tectora_core::tower::MAX_TIERS_TOTAL / per];
+        s.store.save(Some(id.clone()), &p).unwrap();
+        let before = s.store.load(&id).unwrap();
+        let e = s
+            .call_tool(
+                "transform_part",
+                &json!({ "id": id, "summary": "kopie", "op": "move", "dx": 20, "copies": 1 }),
+            )
+            .unwrap_err();
+        assert!(e.contains("(tower_tiers_limit)"), "{e}");
+        let e = s
+            .call_tool(
+                "transform_items",
+                &json!({ "id": id, "summary": "kopie", "op": "move", "dx": 3, "copies": 1,
+                         "items": [{ "kind": "tower", "index": 0 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("(tower_tiers_limit)"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap(), before);
+    }
+
+    /// Audit r2 UX-007: an AI straightens an arc and changes another one;
+    /// a wall of no arc is refused with `arc_none` and nothing is saved.
+    #[test]
+    fn edit_walls_straightens_and_reshapes_an_arc() {
+        let (mut s, id) = setup();
+        let n0 = s.store.load(&id).unwrap().parts[0].edges.len();
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "oblouk", "part": 0,
+                    "operations": [{ "op": "bend_wall", "index": 0, "bulge": 2, "segments": 8 }] }),
+        );
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "jiný oblouk", "part": 0,
+                    "operations": [{ "op": "reshape_arc", "index": 3, "bulge": 1, "segments": 4 }] }),
+        );
+        assert_eq!(s.store.load(&id).unwrap().parts[0].edges.len(), n0 + 3);
+        call(
+            &mut s,
+            "edit_walls",
+            json!({ "id": id, "summary": "rovně", "part": 0,
+                    "operations": [{ "op": "straighten_arc", "index": 2 }] }),
+        );
+        let p = s.store.load(&id).unwrap();
+        assert_eq!(p.parts[0].edges.len(), n0);
+        let e = s
+            .call_tool(
+                "edit_walls",
+                &json!({ "id": id, "summary": "nic", "part": 0,
+                "operations": [{ "op": "straighten_arc", "index": 0 }] }),
+            )
+            .unwrap_err();
+        assert!(e.contains("(arc_none)"), "{e}");
+        assert_eq!(s.store.load(&id).unwrap(), p);
     }
 
     /// The editor's arc (commands::arc_edit) refuses an arc that makes the

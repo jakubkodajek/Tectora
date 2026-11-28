@@ -63,7 +63,10 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    shape and width from the plan, `base_height` and one tier per change of
    slope or curvature from the section; see the guide, "Towers, turrets
    and curved walls"). Rounded corners and apses are `edit_walls`
-   `round_corner` / `bend_wall` on the footprint, not hand-drawn faces.
+   `round_corner` / `bend_wall` on the footprint, not hand-drawn faces;
+   an arc read wrong is changed with `reshape_arc` (new bulge) or taken
+   back with `straighten_arc` on any of its walls. A tier whose section
+   gives a pitch, not a height, takes `pitch_deg` in place of `rise`.
    A cone on a round building whose roof overhangs the wall takes the
    wall's diameter as `width` and the overhang as `overhang`.
    After a tower, check `calc`: `shaft.base_below_roof` and the warning

@@ -362,6 +362,21 @@ pub enum GeometryRequest {
     /// The centre of a part's wall outline, the default pivot
     /// (`edit::transform::part_centre`).
     PartCentre { part: crate::model::RoofPart },
+    /// The arc wall `edge` belongs to (`edit::arcs::arc_run`): `{run}`,
+    /// `null` when it is no part of one.
+    ArcRun {
+        part: crate::model::RoofPart,
+        edge: usize,
+    },
+    /// The rise that gives tier `tier` of `tower` the pitch `pitch_deg`
+    /// (`edit::towers::rise_for_pitch`, the tower dialog's pitch column,
+    /// MCP `set_tower` a tier's `pitch_deg`): `{rise}`; `refused` with
+    /// `tower_tier_pitch` when no rise gives it.
+    TowerTierRise {
+        tower: crate::tower::Tower,
+        tier: usize,
+        pitch_deg: f64,
+    },
 }
 
 /// Answers a [`GeometryRequest`]: `{corners}`, a chimney `{corners, height}`
@@ -459,6 +474,36 @@ pub fn item_geometry(req: &GeometryRequest) -> Result<Value, CommandError> {
             }
             Ok(serde_json::json!({ "points": crate::edit::corners::without_repeats(points) }))
         }
+        GeometryRequest::TowerTierRise {
+            tower,
+            tier,
+            pitch_deg,
+        } => {
+            let top = tower.tiers.get(*tier).map(|t| t.top_width);
+            let (Some(bottom), Some(top)) =
+                (crate::edit::towers::tier_bottom_width(tower, *tier), top)
+            else {
+                return Err(refused(format!(
+                    "tier {tier} does not exist ({})",
+                    crate::edit::towers::TOWER_TIER_PITCH
+                )));
+            };
+            if ![bottom, top, *pitch_deg].into_iter().all(in_range) {
+                return Err(bad());
+            }
+            let rise =
+                crate::edit::towers::rise_for_pitch(bottom, top, *pitch_deg).map_err(refused)?;
+            Ok(serde_json::json!({ "rise": rise }))
+        }
+        GeometryRequest::ArcRun { part, edge } => {
+            let pts = part.outline();
+            if !points_ok(&pts) {
+                return Err(bad());
+            }
+            let run = crate::model::guarded(|| crate::edit::arcs::arc_run(part, *edge))
+                .map_err(CommandError::internal)?;
+            Ok(serde_json::json!({ "run": run }))
+        }
         GeometryRequest::PartCentre { part } => {
             let pts = part.outline();
             if !points_ok(&pts) {
@@ -505,6 +550,8 @@ pub fn transform_part(
     let mut next = project.clone();
     let parts = crate::model::guarded(|| transform_part(&mut next, part, map, copies))
         .map_err(CommandError::internal)?;
+    // Copies over the towers' limits are refused as set_tower refuses them.
+    crate::edit::towers::check_tower_counts(&next).map_err(refused)?;
     check_input(&next)?;
     Ok(serde_json::json!({ "project": next, "parts": parts }))
 }
@@ -628,9 +675,9 @@ pub fn tower_preview(tower: &crate::tower::Tower) -> Result<Value, CommandError>
     }))
 }
 
-/// A curved wall operation of the plan: `round_corner` (radius) or
-/// `bend_wall` (bulge) on part `part` (`edit::arcs`, the MCP tool
-/// edit_walls' operations of the same names).
+/// A curved wall operation of the plan: `round_corner` (radius),
+/// `bend_wall` (bulge), `straighten_arc` or `reshape_arc` on part `part`
+/// (`edit::arcs`, the MCP tool edit_walls' operations of the same names).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ArcEdit {
@@ -641,6 +688,17 @@ pub enum ArcEdit {
         segments: Option<usize>,
     },
     BendWall {
+        index: usize,
+        bulge: f64,
+        #[serde(default)]
+        segments: Option<usize>,
+    },
+    /// The arc wall `index` belongs to made one straight wall again
+    /// (`edit::arcs::straighten`, audit r2 UX-007).
+    StraightenArc { index: usize },
+    /// The arc wall `index` belongs to rebuilt on its chord with a new bend
+    /// (`edit::arcs::reshape`).
+    ReshapeArc {
         index: usize,
         bulge: f64,
         #[serde(default)]
@@ -671,6 +729,12 @@ pub fn arc_edit(project: &Project, part: usize, edit: ArcEdit) -> Result<Project
                 bulge,
                 segments,
             } => crate::edit::arcs::bend_wall(p, index, bulge, segments),
+            ArcEdit::StraightenArc { index } => crate::edit::arcs::straighten(p, index),
+            ArcEdit::ReshapeArc {
+                index,
+                bulge,
+                segments,
+            } => crate::edit::arcs::reshape(p, index, bulge, segments).map(|(_, n)| n),
         }
     })
     .map_err(CommandError::internal)?;
@@ -686,6 +750,12 @@ pub fn arc_edit(project: &Project, part: usize, edit: ArcEdit) -> Result<Project
 /// window the write makes unusable or larger than its face
 /// (`edit::check_windows_write`); `before` is the job as it was.
 pub fn check_write(before: Option<&Project>, after: &Project) -> Result<(), CommandError> {
+    // The towers' limits with their own codes (a tower duplicated in the
+    // editor), still `too_many` as the general count limit.
+    crate::edit::towers::check_tower_counts(after).map_err(|detail| CommandError {
+        code: "too_many",
+        detail,
+    })?;
     check_input(after)?;
     crate::model::guarded(|| crate::edit::check_windows_write(before, after))
         .map_err(CommandError::internal)?
@@ -836,6 +906,121 @@ mod tests {
             height: 6.0,
         });
         assert_eq!(runs(|| drop(calc(&p).unwrap())), 2, "with a chimney");
+    }
+
+    /// Audit r2: copies of a building whose towers take the job over the
+    /// tiers of all towers are refused with `tower_tiers_limit`, as
+    /// set_tower refuses one tower, and a save of such a job says the same.
+    #[test]
+    fn copies_over_the_tier_limit_are_refused_with_its_code() {
+        let t = crate::edit::towers::preset(
+            crate::edit::towers::TowerPreset::Baroque,
+            crate::geom::Point2::new(6.0, 4.0),
+            2.0,
+            9.0,
+        );
+        let mut p = hip();
+        let per = t.tiers.len();
+        p.towers = vec![t; crate::tower::MAX_TIERS_TOTAL / per];
+        let map = crate::edit::transform::PlanMap::Move { dx: 20.0, dy: 0.0 };
+        let e = transform_part(&p, 0, map, 1).unwrap_err();
+        assert_eq!(e.code, "refused", "{e}");
+        assert!(
+            e.detail
+                .ends_with(&format!("({})", crate::edit::towers::TOWER_TIERS_LIMIT)),
+            "{e}"
+        );
+        let mut over = p.clone();
+        over.towers.push(over.towers[0].clone());
+        let e = check_write(Some(&p), &over).unwrap_err();
+        assert_eq!(e.code, "too_many", "{e}");
+        assert!(
+            e.detail
+                .ends_with(&format!("({})", crate::edit::towers::TOWER_TIERS_LIMIT)),
+            "{e}"
+        );
+    }
+
+    /// Audit r2 UX-010: the tower dialog's pitch column asks for the rise.
+    #[test]
+    fn the_rise_of_a_tier_comes_from_its_pitch() {
+        let t = crate::tower::Tower::pyramid(crate::geom::Point2::new(0.0, 0.0), 4.0, 9.0, 1.0);
+        let v = item_geometry(&GeometryRequest::TowerTierRise {
+            tower: t.clone(),
+            tier: 0,
+            pitch_deg: 45.0,
+        })
+        .unwrap();
+        assert!((v["rise"].as_f64().unwrap() - 2.0).abs() < 1e-4, "{v}");
+        let e = item_geometry(&GeometryRequest::TowerTierRise {
+            tower: t.clone(),
+            tier: 3,
+            pitch_deg: 45.0,
+        })
+        .unwrap_err();
+        assert_eq!(e.code, "refused");
+        assert!(e.detail.ends_with("(tower_tier_pitch)"), "{e}");
+        let e = item_geometry(&GeometryRequest::TowerTierRise {
+            tower: t,
+            tier: 0,
+            pitch_deg: 90.0,
+        })
+        .unwrap_err();
+        assert!(e.detail.ends_with("(tower_tier_pitch)"), "{e}");
+    }
+
+    /// Audit r2 UX-007: the editor straightens and reshapes an arc, finds
+    /// it from any of its walls and refuses a wall of no arc with its code.
+    #[test]
+    fn an_arc_is_found_straightened_and_reshaped() {
+        let bent = arc_edit(
+            &hip(),
+            0,
+            ArcEdit::BendWall {
+                index: 0,
+                bulge: 2.0,
+                segments: None,
+            },
+        )
+        .unwrap();
+        let walls = bent.parts[0].edges.len();
+        let v = item_geometry(&GeometryRequest::ArcRun {
+            part: bent.parts[0].clone(),
+            edge: 2,
+        })
+        .unwrap();
+        assert_eq!(v["run"]["start"], 0);
+        assert!(
+            (v["run"]["bulge"].as_f64().unwrap() - 2.0).abs() < 2e-3,
+            "{v}"
+        );
+        let none = item_geometry(&GeometryRequest::ArcRun {
+            part: hip().parts[0].clone(),
+            edge: 0,
+        })
+        .unwrap();
+        assert!(none["run"].is_null(), "{none}");
+        let flat = arc_edit(&bent, 0, ArcEdit::StraightenArc { index: 1 }).unwrap();
+        assert_eq!(flat.parts[0].edges.len(), hip().parts[0].edges.len());
+        let again = arc_edit(
+            &bent,
+            0,
+            ArcEdit::ReshapeArc {
+                index: 1,
+                bulge: 1.0,
+                segments: Some(4),
+            },
+        )
+        .unwrap();
+        assert!(walls > 4 + 3);
+        assert_eq!(again.parts[0].edges.len(), 4 + 3);
+        let e = arc_edit(&hip(), 0, ArcEdit::StraightenArc { index: 0 }).unwrap_err();
+        assert_eq!(e.code, "refused");
+        assert!(
+            e.detail
+                .ends_with(&format!("({})", crate::edit::arcs::ARC_NONE)),
+            "{e}"
+        );
     }
 
     /// Audit ERR-004: refusals that are not about a value carry their own

@@ -348,11 +348,21 @@ The tools cover every operation of the Tectora editor:
   parentheses. Towers: a problem's code (`tower_size`, `tower_tier_size`,
   `tower_bulge`, `tower_overhang`, …), `(tower_limit)` (a job has at most 50
   towers), `(tower_tiers_limit)` (at most 120 tiers in all towers of a job),
-  `(tower_label)` (a label too long or with a line break), `(tower_missing)`.
+  `(tower_label)` (a label too long or with a line break), `(tower_missing)`,
+  `(tower_tier_pitch)` (a tier's `pitch_deg` no rise of 0-100 m gives).
+  `tower_bulge` names the tier and the largest curve it takes ("tier 3
+  takes a curve of at most 0.412 m"). Copies of towers or of a building
+  with towers (`transform_part`, `transform_items`) over the job's 50
+  towers or 120 tiers are refused with `(tower_limit)` /
+  `(tower_tiers_limit)`, nothing saved.
+- A tier may give `pitch_deg` in place of `rise` (the pitch along its
+  chord, as `calc` reports it; 0-90° narrowing, 90-180° leaning outward):
+  the rise comes from the width below it and `top_width`.
   Arcs: `(arc_no_wall)`, `(arc_no_corner)`, `(arc_no_part)`,
   `(arc_segments)`, `(arc_too_short)`, `(arc_flat)`, `(arc_bulge)`,
   `(arc_radius_min)`, `(arc_radius_max)`, `(arc_straight)`,
-  `(arc_no_length)`, `(arc_touches)`, `(arc_invalid)`.
+  `(arc_no_length)`, `(arc_touches)`, `(arc_invalid)`, `(arc_none)` (the
+  wall of `straighten_arc` / `reshape_arc` is no part of an arc).
 - A cone on a round building drawn as walls (DACAD's way) still works; a
   tower is simpler and exact.
 - A rounded building corner is `edit_walls` `round_corner {index, radius}`
@@ -368,6 +378,14 @@ The tools cover every operation of the Tectora editor:
   (`arc_too_short`, `arc_flat`); an inward arc that would touch another wall
   is refused (`arc_touches`). A bend is 0.005 m to half the wall, a radius
   0.01 m up to what the walls at the corner allow.
+- The project stores no arcs, only walls. `straighten_arc {index}` finds
+  the arc wall `index` belongs to by its shape (at least 3 consecutive
+  walls of one length whose corners turn alike by 2° to 60°; an arc of 2
+  walls is not recognised) and replaces it by one straight wall from its
+  start to its end with the roof definition of its first wall: a bent wall
+  is the wall again, a rounded corner becomes its chord (a chamfer).
+  `reshape_arc {index, bulge, segments?}` changes an arc: straighten, then
+  `bend_wall` on that straight wall. Both shift the later wall indices.
 
 ## Stored result
 

@@ -37,8 +37,11 @@ pub const ARC_STRAIGHT: &str = "arc_straight";
 pub const ARC_NO_LENGTH: &str = "arc_no_length";
 pub const ARC_TOUCHES: &str = "arc_touches";
 pub const ARC_INVALID: &str = "arc_invalid";
+/// The code of a straightened or reshaped arc on a wall that is no part of
+/// an arc (audit r2 UX-007).
+pub const ARC_NONE: &str = "arc_none";
 /// Every code an arc's refusal ends with.
-pub const ARC_CODES: [&str; 13] = [
+pub const ARC_CODES: [&str; 14] = [
     ARC_NO_WALL,
     ARC_NO_CORNER,
     ARC_NO_PART,
@@ -52,6 +55,7 @@ pub const ARC_CODES: [&str; 13] = [
     ARC_NO_LENGTH,
     ARC_TOUCHES,
     ARC_INVALID,
+    ARC_NONE,
 ];
 
 /// Most walls one arc may become.
@@ -390,6 +394,172 @@ pub fn round_corner(
     Ok(segs)
 }
 
+/// A run of walls that an arc made: `walls` consecutive walls from wall
+/// `start` (taken round the outline) of one length whose corners all turn
+/// by the same angle, with the bend and wall count [`bend_wall`] would
+/// give it on its chord (audit r2 UX-007). The outline stores no arc
+/// (ADR 0008): the run is found by its shape.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct ArcRun {
+    pub start: usize,
+    pub walls: usize,
+    /// How far the arc's middle stands off its chord, m, + outward.
+    pub bulge: f64,
+    /// The chord's length, m.
+    pub chord: f64,
+}
+
+/// The fewest walls a run must have to be taken as an arc: two equal walls
+/// at a corner are any isosceles corner.
+pub const MIN_RUN_WALLS: usize = 3;
+/// The most an arc's corners may turn, degrees: three walls of a
+/// semicircle turn by 60°; a rectangle's 90° corners are no arc.
+const MAX_RUN_TURN_DEG: f64 = 60.0;
+/// How much the walls of one arc may differ in length, m, and their turns,
+/// degrees: arc corners are stored to 0.1 mm, so a 0.15 m wall's direction
+/// is off by at most 0.03°.
+const RUN_LENGTH_TOL: f64 = 2e-3;
+const RUN_TURN_TOL_DEG: f64 = 0.1;
+
+/// The signed turn of the outline at corner `k`, degrees (+ to the left).
+fn signed_turn_deg(pts: &[Point2], k: usize) -> f64 {
+    let n = pts.len();
+    let (a, b, c) = (pts[(k + n - 1) % n], pts[k], pts[(k + 1) % n]);
+    let (ux, uy) = (b.x - a.x, b.y - a.y);
+    let (vx, vy) = (c.x - b.x, c.y - b.y);
+    (ux * vy - uy * vx).atan2(ux * vx + uy * vy).to_degrees()
+}
+
+/// The arc that wall `wall` of `part` belongs to, or `None` when it is no
+/// part of one: the longest run of at least [`MIN_RUN_WALLS`] walls of the
+/// wall's length whose corners inside the run turn alike (between
+/// [`MIN_ARC_TURN_DEG`] and 60°), leaving at least three other walls'
+/// worth of outline (a regular polygon is a building, not an arc).
+pub fn arc_run(part: &RoofPart, wall: usize) -> Option<ArcRun> {
+    let n = part.edges.len();
+    if wall >= n || n < MIN_RUN_WALLS + 2 {
+        return None;
+    }
+    let pts = part.outline();
+    if !pts.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+        return None;
+    }
+    let len = |k: usize| pts[k % n].distance(pts[(k + 1) % n]);
+    let l = len(wall);
+    if !(l > 0.01) || part.edges[wall].direction_rad.is_some() {
+        return None;
+    }
+    let same = |k: usize| (len(k) - l).abs() <= RUN_LENGTH_TOL;
+    // The run grown both ways from `wall` with corners turning by `turn`.
+    let grow = |turn: f64| -> (usize, usize) {
+        let fits =
+            |corner: usize| (signed_turn_deg(&pts, corner % n) - turn).abs() <= RUN_TURN_TOL_DEG;
+        let (mut start, mut walls) = (wall, 1usize);
+        // Back: wall start-1 joins when it has the length and the corner at
+        // `start` turns alike.
+        while walls < n - 2 {
+            let prev = (start + n - 1) % n;
+            if !(same(prev) && fits(start)) {
+                break;
+            }
+            start = prev;
+            walls += 1;
+        }
+        while walls < n - 2 {
+            let next = (start + walls) % n;
+            if !(same(next) && fits(next)) {
+                break;
+            }
+            walls += 1;
+        }
+        // A run that ends only at the cap is a regular outline (an octagon),
+        // no arc: one more wall would close it.
+        let prev = (start + n - 1) % n;
+        let next = (start + walls) % n;
+        let bounded = !(same(prev) && fits(start)) && !(same(next) && fits(next));
+        (start, if bounded { walls } else { 0 })
+    };
+    let seeds = [wall, (wall + 1) % n].map(|c| signed_turn_deg(&pts, c));
+    let (start, walls, turn) = seeds
+        .into_iter()
+        .filter(|t| (MIN_ARC_TURN_DEG - RUN_TURN_TOL_DEG..=MAX_RUN_TURN_DEG).contains(&t.abs()))
+        .map(|t| {
+            let (s, w) = grow(t);
+            (s, w, t)
+        })
+        .max_by_key(|&(_, w, _)| w)?;
+    if walls < MIN_RUN_WALLS {
+        return None;
+    }
+    let (a, b) = (pts[start], pts[(start + walls) % n]);
+    let chord = a.distance(b);
+    // The bulge from the circle through the arc's ends and its corner
+    // farthest from the chord (all lie on it): the turns, summed, would
+    // carry each corner's 0.1 mm rounding 16 times into a semicircle's.
+    let off = |p: Point2| to_segment(p, a, b);
+    let mid = (1..walls)
+        .map(|k| pts[(start + k) % n])
+        .max_by(|p, q| off(*p).total_cmp(&off(*q)))?;
+    let (pa, pb) = (mid.distance(a), mid.distance(b));
+    let twice_area = ((mid.x - a.x) * (b.y - a.y) - (mid.y - a.y) * (b.x - a.x)).abs();
+    if !(twice_area > 1e-9) {
+        return None;
+    }
+    let r = pa * pb * chord / (2.0 * twice_area);
+    let s = (r - (r * r - chord * chord / 4.0).max(0.0).sqrt()).min(chord / 2.0);
+    let ccw = crate::geom::signed_area(&pts) >= 0.0;
+    let bulge = if (turn > 0.0) == ccw { s } else { -s };
+    (bulge.is_finite() && chord > 0.01).then_some(ArcRun {
+        start,
+        walls,
+        bulge: round_to(bulge, 4),
+        chord,
+    })
+}
+
+/// Replaces the arc that wall `wall` belongs to ([`arc_run`]) by one
+/// straight wall from the arc's start to its end, with the roof definition
+/// of the arc's first wall. Returns the straight wall's index; refused with
+/// [`ARC_NONE`] when the wall is no part of an arc.
+pub fn straighten(part: &mut RoofPart, wall: usize) -> Result<usize, String> {
+    let n = part.edges.len();
+    if wall >= n {
+        return Err(format!("wall {wall} does not exist ({ARC_NO_WALL})"));
+    }
+    let Some(run) = arc_run(part, wall) else {
+        return Err(format!("wall {wall} is no part of an arc ({ARC_NONE})"));
+    };
+    let gone: Vec<usize> = (1..run.walls).map(|k| (run.start + k) % n).collect();
+    let kept = run.start - gone.iter().filter(|&&k| k < run.start).count();
+    let mut k = 0;
+    part.edges.retain(|_| {
+        let keep = !gone.contains(&k);
+        k += 1;
+        keep
+    });
+    if let Some(e) = part.edges.get_mut(kept) {
+        e.source = None;
+    }
+    Ok(kept)
+}
+
+/// "Change the arc": the arc that wall `wall` belongs to straightened
+/// ([`straighten`]) and its chord bent again with `bulge` and `segments`
+/// ([`bend_wall`]). Returns the new arc's first wall and its wall count;
+/// the part is left as it was when either step is refused.
+pub fn reshape(
+    part: &mut RoofPart,
+    wall: usize,
+    bulge: f64,
+    segments: Option<usize>,
+) -> Result<(usize, usize), String> {
+    let mut work = part.clone();
+    let i = straighten(&mut work, wall)?;
+    let segs = bend_wall(&mut work, i, bulge, segments)?;
+    *part = work;
+    Ok((i, segs))
+}
+
 /// Why an arc made an outline invalid: the first problem of a building in
 /// `after` that `before` did not have (an outline crossing itself, a wall
 /// too short); `None` when there is none. The editor's command and MCP
@@ -696,5 +866,105 @@ mod tests {
                 .unwrap_or_else(|| panic!("no code: {e}"));
             assert!(ARC_CODES.contains(&code), "{code} not in ARC_CODES: {e}");
         }
+    }
+    /// Audit r2 UX-007: a bent wall straightened is the wall it was, with
+    /// its roof definition; the other walls keep their indices.
+    #[test]
+    fn a_bent_wall_straightened_is_the_wall_again() {
+        for (wall, bulge) in [(0, 1.0), (1, -2.0), (3, 5.0), (2, 0.8)] {
+            let before = rect(12.0, 10.0);
+            let mut part = before.clone();
+            let segs = bend_wall(&mut part, wall, bulge, None).unwrap();
+            let run = arc_run(&part, wall + segs / 2).expect("an arc");
+            assert_eq!((run.start, run.walls), (wall, segs));
+            assert!((run.bulge - bulge).abs() < 5e-4, "{} vs {bulge}", run.bulge);
+            assert!(run.bulge.abs() <= run.chord / 2.0, "{run:?}");
+            let i = straighten(&mut part, wall + segs - 1).unwrap();
+            assert_eq!(i, wall);
+            assert_eq!(part.edges.len(), 4);
+            for (a, b) in part.edges.iter().zip(&before.edges) {
+                assert!(a.start.approx_eq(b.start, 1e-4), "{wall}: {a:?}");
+                assert_eq!(a.pitch_deg, b.pitch_deg);
+            }
+        }
+    }
+
+    /// An arc running over the outline's first corner is found and
+    /// straightened round it.
+    #[test]
+    fn an_arc_across_the_first_corner_is_straightened() {
+        let mut part = rect(12.0, 10.0);
+        let segs = round_corner(&mut part, 0, 3.0, None).unwrap();
+        // The arc's walls are 0..segs; turned by two, they run over the
+        // end of the list into its start.
+        part.edges.rotate_left(2);
+        let n = part.edges.len();
+        assert_eq!(n, 4 + segs);
+        let run = arc_run(&part, n - 1).expect("an arc");
+        assert_eq!((run.start, run.walls), (n - 2, segs));
+        let i = straighten(&mut part, 1).unwrap();
+        assert_eq!(i, 5 - 1);
+        assert_eq!(part.edges.len(), 5);
+        // The chord from (0, 3) to (3, 0) replaces the arc.
+        let a = part.edges[i].start;
+        let b = part.edges[(i + 1) % 5].start;
+        assert!(a.approx_eq(Point2::new(0.0, 3.0), 1e-4), "{a:?}");
+        assert!(b.approx_eq(Point2::new(3.0, 0.0), 1e-4), "{b:?}");
+        let mut prj = crate::Project::new("t");
+        prj.parts.push(part);
+        assert!(prj.problems().is_empty(), "{:?}", prj.problems());
+    }
+
+    /// A wall of a rectangle, of a regular polygon or a marker is no arc.
+    #[test]
+    fn a_wall_of_no_arc_is_refused_with_its_code() {
+        let mut part = square(10.0);
+        let e = straighten(&mut part, 1).unwrap_err();
+        assert!(e.ends_with(&format!("({ARC_NONE})")), "{e}");
+        let mut octagon = RoofPart::new(
+            "O",
+            crate::edit::transform::regular_polygon(Point2::new(0.0, 0.0), 8, 3.0, 0.0)
+                .into_iter()
+                .map(|p| plain_edge(p, 30.0, 3.0, 0.5))
+                .collect(),
+        );
+        assert_eq!(arc_run(&octagon, 2), None);
+        assert!(straighten(&mut octagon, 2).is_err());
+        assert!(
+            straighten(&mut square(10.0), 9)
+                .unwrap_err()
+                .ends_with(&format!("({ARC_NO_WALL})"))
+        );
+        assert_eq!(part, square(10.0));
+    }
+
+    /// "Change the arc": a bend of an arc wall rebuilds the arc on its
+    /// chord, the same as bending the straight wall with that bulge.
+    #[test]
+    fn reshaping_an_arc_bends_its_chord_again() {
+        let mut part = rect(12.0, 10.0);
+        bend_wall(&mut part, 0, 1.0, None).unwrap();
+        let (i, segs) = reshape(&mut part, 3, 3.0, Some(8)).unwrap();
+        let mut direct = rect(12.0, 10.0);
+        bend_wall(&mut direct, 0, 3.0, Some(8)).unwrap();
+        assert_eq!((i, segs), (0, 8));
+        assert_eq!(part, direct);
+        let before = part.clone();
+        assert!(reshape(&mut part, 3, 9.0, None).is_err());
+        assert_eq!(part, before);
+        assert!(
+            reshape(&mut rect(12.0, 10.0), 0, 1.0, None)
+                .unwrap_err()
+                .ends_with(&format!("({ARC_NONE})"))
+        );
+    }
+
+    /// Two equal walls at a corner are any corner (a pointed end): a bow
+    /// of two walls is not taken as an arc.
+    #[test]
+    fn an_arc_of_two_walls_is_not_taken_for_one() {
+        let mut part = rect(12.0, 10.0);
+        assert_eq!(bend_wall(&mut part, 2, 0.5, None), Ok(2));
+        assert_eq!(arc_run(&part, 2), None);
     }
 }

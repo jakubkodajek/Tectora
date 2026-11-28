@@ -452,3 +452,56 @@ test("UX-002 / UX-008: a tower roof below the roof is a warning on the Results t
   await page.getByRole("tab", { name: cs("dock.breakdown") }).click();
   await expect(page.getByTestId("bd-tower-shaft")).toBeVisible();
 });
+
+test("UX-007: an apse is straightened again from the roof bar, and a bend of an arc wall changes the arc", async ({ app, page }) => {
+  const id = await job("hip", "E2E narovnat oblouk");
+  await open(app, "E2E narovnat oblouk");
+  await firstArea(page);
+  const p0 = await loadProject(id);
+  const n0 = p0.parts[0].edges.length;
+  await selectWall(page, 1);
+  // A straight wall of the hip roof is no arc: no button.
+  await expect(page.getByTestId("def-arcs")).toBeVisible();
+  await expect(page.getByTestId("arc-straighten")).toHaveCount(0);
+  await page.getByTestId("def-arcs").getByRole("button", { name: cs("arc.apse") }).click();
+  const p1 = await waitForProject(id, (x) => x.parts[0].edges.length > n0);
+  // The bar now shows a wall of the arc: it can be changed, then straightened.
+  await selectWall(page, 3);
+  await page.getByTestId("def-arcs").getByRole("button", { name: cs("arc.bend") }).click();
+  await expect(page.getByTestId("arc-ok")).toBeVisible();
+  const value = page.getByTestId("arc-value");
+  await value.fill("1");
+  await page.getByTestId("arc-ok").click();
+  await waitForProject(id, (x) => x.parts[0].edges.length > n0 && x.parts[0].edges.length < p1.parts[0].edges.length);
+  await matchesCore(page, id, "after the arc was changed");
+  await selectWall(page, 3);
+  await expect(page.getByTestId("arc-straighten")).toBeVisible();
+  await page.getByTestId("arc-straighten").click();
+  const p2 = await waitForProject(id, (x) => x.parts[0].edges.length === n0);
+  for (const [i, e] of p2.parts[0].edges.entries()) {
+    expect(e.start.x, `corner ${i}`).toBeCloseTo(p0.parts[0].edges[i].start.x, 3);
+    expect(e.start.y, `corner ${i}`).toBeCloseTo(p0.parts[0].edges[i].start.y, 3);
+  }
+  await noToast(app.toasts(), 1000, "a toast after straightening");
+  await matchesCore(page, id, "after straightening");
+});
+
+test("UX-010: a tier's pitch typed in the tower dialog sets its rise", async ({ app, page }) => {
+  await job("hip", "E2E sklon pasu");
+  await open(app, "E2E sklon pasu");
+  await firstArea(page);
+  const dlg = await newTowerDialog(page);
+  const tiers = dlg.getByTestId("tower-tier");
+  const first = tiers.last();
+  const pitch = first.getByTestId("tower-tier-pitch");
+  await expect(pitch).toBeVisible();
+  // Width 3 to a point at 45°: the rise is half the width.
+  const top = first.getByLabel(`${cs("tower.tierN", { n: 1 })}: ${cs("tower.topWidth")}`);
+  await top.fill("0");
+  await top.press("Enter");
+  await pitch.fill("45");
+  await pitch.press("Enter");
+  const rise = first.getByLabel(`${cs("tower.tierN", { n: 1 })}: ${cs("tower.rise")}`);
+  await expect(rise).toHaveValue("1,5");
+  await expect(pitch).toHaveValue("45");
+});

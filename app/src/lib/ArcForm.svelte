@@ -16,8 +16,11 @@
     refused = $bindable(null),
     detail = $bindable(null),
     typing = $bindable(null),
+    reshape = false,
   }: {
     mode: "bend" | "round";
+    /** Bend: an arc changed (straightened and bent again on its chord, `reshape_arc`), `max` half its chord (UX-007). */
+    reshape?: boolean;
     /** The bulge (bend) or the radius (round), m. */
     value: number;
     segments?: number | null;
@@ -59,7 +62,7 @@
         use:numeric={{ value, step: 0.05, min: mode === "bend" ? -(max ?? 1e5) : 0.01, max: mode === "bend" ? (max ?? 1e5) : 1e5, live: true, onchange: (v) => { edited(); value = v; }, onvalidity: validity("value", mode === "bend" ? t("arc.bulge") : t("arc.radius")) }} /><em>m</em>
     </div>
   </label>
-  <p class="hint">{mode === "bend" ? t("arc.bulgeHint", { max: num(max ?? 0) }) : t("arc.roundHint")}</p>
+  <p class="hint">{mode === "bend" ? t(reshape ? "arc.reshapeHint" : "arc.bulgeHint", { max: num(max ?? 0) }) : t("arc.roundHint")}</p>
   <label>
     <span>{t("arc.segments")}</span>
     <div class="unit">

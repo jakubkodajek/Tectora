@@ -23,6 +23,7 @@
     blocked = $bindable(null),
     blockedDetail = $bindable(null),
     typing = $bindable(null),
+    track = (p) => p,
   }: {
     project: Project;
     tower: Tower;
@@ -32,6 +33,8 @@
     blockedDetail?: string | null;
     /** A field holds text it refuses ("Šířka: Povolený rozsah …"): OK must not take the old value (audit ERR-003). */
     typing?: string | null;
+    /** Registers a call to the core the dialog makes for a field (a pitch's rise), so OK waits for it. */
+    track?: <T>(p: Promise<T>) => Promise<T>;
   } = $props();
 
   /** At most this many tiers (core `tower::MAX_TIERS`). */
@@ -147,6 +150,27 @@
     edited = true;
     presetWhy = null;
     tower.tiers[i] = { ...tower.tiers[i], ...patch };
+  }
+  /**
+   * A typed pitch of tier `i`: the core works out the rise that gives it
+   * (`tower_tier_rise`, MCP `set_tower` a tier's `pitch_deg`); the widths
+   * stay. A pitch no rise gives is refused with the core's reason (UX-010).
+   */
+  function setPitch(i: number, pitch: number): Promise<string | undefined> {
+    const snap = $state.snapshot(tower) as Tower;
+    return track(
+      api.towerTierRise(snap, i, pitch).then(
+        (rise) => {
+          if (tower.tiers[i]) setTier(i, { rise });
+          return undefined;
+        },
+        (e) => {
+          const r = towerRefusal(e);
+          if (!r) notifyError(e, "calc");
+          return r?.text ?? t("tower.previewFailed");
+        },
+      ),
+    );
   }
   /** Width at the bottom of tier `i`: the top of the tier below, or the shaft's width. */
   const bottomWidth = (i: number) => (i > 0 ? tower.tiers[i - 1].top_width : tower.width);
@@ -413,7 +437,15 @@
               {#each materialIds(project) as mt}<option value={mt}>{materialName(project, mt)}</option>{/each}
             </select>
           </span>
-          <span class="ro" role="cell" title={lean ? t("tower.pitchHint") : r?.kind === "wall" ? t("tower.kind.wall") : undefined}>{r ? pitchText(r) : "—"}</span>
+          {#if r && r.kind === "roof" && x.top_width !== bottomWidth(i)}
+            <!-- A tier that narrows or widens: its pitch sets the rise (UX-010); a rectangle's other sides' pitch follows. -->
+            <span role="cell" class="pitch" title={lean ? t("tower.pitchHint") : t("tower.pitchEdit")}>
+              <span class="unit"><input type="text" data-testid="tower-tier-pitch" aria-label="{t('tower.tierN', { n: i + 1 })}: {t('tower.pitch')}" use:numeric={{ value: +r.pitch_deg.toFixed(1), step: 1, min: 0.1, max: 179.9, spinner: false, onchange: (v) => setPitch(i, v), onvalidity: validity(`t${i}.pitch`, `${t("tower.tierN", { n: i + 1 })}, ${t("tower.pitch")}`) }} /><em>°</em></span>
+              {#if r.depth_sides}<span class="ro">/ {deg(r.depth_sides.pitch_deg)}</span>{/if}
+            </span>
+          {:else}
+            <span class="ro" role="cell" title={lean ? t("tower.pitchHint") : r?.kind === "wall" ? t("tower.kind.wall") : undefined}>{r ? pitchText(r) : "—"}</span>
+          {/if}
           <span class="acts" role="cell">
             <button class="icon-btn" data-act="up" title={t("tower.tierUp", { n: i + 1 })} aria-label={t("tower.tierUp", { n: i + 1 })} disabled={i >= tower.tiers.length - 1} onclick={() => moveTier(i, 1)}><Icon name="up" size={15} /></button>
             <button class="icon-btn" data-act="down" title={t("tower.tierDown", { n: i + 1 })} aria-label={t("tower.tierDown", { n: i + 1 })} disabled={i === 0} onclick={() => moveTier(i, -1)}><Icon name="down" size={15} /></button>
@@ -580,7 +612,7 @@
   }
   .tr {
     display: grid;
-    grid-template-columns: 24px repeat(3, minmax(78px, 1fr)) minmax(100px, 1.3fr) 48px 96px;
+    grid-template-columns: 24px repeat(3, minmax(78px, 1fr)) minmax(100px, 1.3fr) minmax(72px, 0.9fr) 96px;
     gap: 6px;
     align-items: center;
   }
@@ -601,6 +633,11 @@
   .th {
     font-size: 11.5px;
     color: var(--text-2);
+  }
+  .pitch {
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
   .no,
   .ro {
@@ -664,7 +701,7 @@
       overflow: visible;
     }
     .tr {
-      grid-template-columns: 18px repeat(3, minmax(58px, 1fr)) minmax(80px, 1.1fr) 44px 94px;
+      grid-template-columns: 18px repeat(3, minmax(58px, 1fr)) minmax(80px, 1.1fr) minmax(62px, 0.8fr) 94px;
       gap: 4px;
     }
     .tiers :global(.num-spin) {

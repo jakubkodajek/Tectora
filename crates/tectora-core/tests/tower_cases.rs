@@ -553,3 +553,114 @@ fn the_line_details_list_the_towers_lines() {
     assert!(!hip.closed && hip.z_high > hip.z_low, "{hip:?}");
     assert!((hip.length - hip.plan_length.hypot(hip.z_high - hip.z_low)).abs() < 1e-9);
 }
+
+/// The texts of the plan sheet.
+fn sheet_texts(p: &tectora_core::Project) -> Vec<String> {
+    use tectora_core::export::{Shape, SheetInfo, plan_sheet};
+    let info = SheetInfo {
+        stamp: "28.11.2026 10:00".into(),
+        decimals: 3,
+    };
+    plan_sheet(p, &info)
+        .into_iter()
+        .filter_map(|s| match s {
+            Shape::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Audit r2 UX-006: the list's rows of a tower carry the tier's number as
+/// the tower dialog and the results' steps count it (the lantern, tier 5,
+/// has no row; the flat top none here), so row `2.04` is "Pás 4".
+#[test]
+fn the_list_rows_of_a_tower_carry_the_dialogs_tier_numbers() {
+    use tectora_core::export::{ListOptions, list_summary};
+    let mut p = host();
+    p.towers.push(turret());
+    let s = list_summary(&p, &ListOptions::new("t", "28.11.2026 10:00"));
+    let r = turret().calculate().unwrap();
+    let want: Vec<String> = r
+        .tiers
+        .iter()
+        .filter(|t| t.kind == TierKind::Roof)
+        .map(|t| format!("2.{:02}", t.index + 1))
+        .collect();
+    let got: Vec<String> = s
+        .faces
+        .iter()
+        .filter(|f| f.name.starts_with("2."))
+        .map(|f| f.name.clone())
+        .collect();
+    assert_eq!(got, want);
+    assert!(!got.contains(&"2.05".to_string()), "the lantern has no row");
+    for t in r.tiers.iter().filter(|t| t.kind == TierKind::Roof) {
+        let row = s
+            .faces
+            .iter()
+            .find(|f| f.name == format!("2.{:02}", t.index + 1))
+            .unwrap();
+        assert!((row.area - t.area).abs() < 1e-3, "{}: {row:?}", t.index);
+    }
+}
+
+/// Audit r2 UX-006: a rectangle's tier of two pitches is two rows of the
+/// tier's number, and its flat top the number after the last tier.
+#[test]
+fn a_rectangular_tower_lists_both_pitches_of_a_tier_under_its_number() {
+    use tectora_core::export::{ListOptions, list_summary};
+    let mut p = host();
+    let mut t = Tower::pyramid(Point2::new(15.0, 6.0), 3.0, 14.0, 1.5);
+    t.shape = TowerShape::Rectangle;
+    t.depth = Some(2.0);
+    t.tiers = vec![tier(1.5, 1.0, 0.0)];
+    p.towers.push(t.clone());
+    let r = t.calculate().unwrap();
+    assert!(r.tiers[0].depth_sides.is_some() && r.cap.is_some());
+    let s = list_summary(&p, &ListOptions::new("t", "28.11.2026 10:00"));
+    let names: Vec<&str> = s
+        .faces
+        .iter()
+        .filter(|f| f.name.starts_with("2."))
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["2.01", "2.01", "2.02"]);
+    let texts = sheet_texts(&p);
+    let d = r.tiers[0].depth_sides.unwrap();
+    let pitch = format!(
+        "{}° / {}°",
+        tectora_core::export::num(r.tiers[0].pitch_deg, 2),
+        tectora_core::export::num(d.pitch_deg, 2)
+    );
+    assert!(texts.contains(&pitch), "{pitch} not in {texts:?}");
+}
+
+/// Audit r2 UX-006: the plan sheet labels every roof tier of a turret with
+/// its own area and pitch, not the whole tower with its lowest tier's pitch.
+#[test]
+fn the_plan_sheet_labels_every_roof_tier_of_a_tower() {
+    use tectora_core::export::num;
+    let mut p = host();
+    p.towers.push(turret());
+    let r = turret().calculate().unwrap();
+    let texts = sheet_texts(&p);
+    for t in r.tiers.iter().filter(|t| t.kind == TierKind::Roof) {
+        let area = format!("{}m²", num(t.area, 3));
+        assert!(
+            texts.contains(&area),
+            "tier {}: {area} not in {texts:?}",
+            t.index + 1
+        );
+        let pitch = format!("{}°", num(t.pitch_deg.min(180.0 - t.pitch_deg), 2));
+        assert!(
+            texts.contains(&pitch),
+            "tier {}: {pitch} not in {texts:?}",
+            t.index + 1
+        );
+    }
+    let whole = format!("{}m²", num(r.roof_area(), 3));
+    assert!(
+        !texts.contains(&whole),
+        "{whole}: one label for the whole tower"
+    );
+}

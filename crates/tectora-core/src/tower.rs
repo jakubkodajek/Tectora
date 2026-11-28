@@ -305,8 +305,25 @@ impl Tower {
         ),
     ];
 
-    /// What is wrong with the tower, as `(code, English message)`.
-    pub fn problems(&self) -> Vec<(&'static str, &'static str)> {
+    /// What is wrong with the tower, as `(code, English message)`; the
+    /// messages are those of [`Tower::PROBLEMS`], `tower_bulge`'s with the
+    /// tier and the largest curve it takes appended.
+    pub fn problems(&self) -> Vec<(&'static str, String)> {
+        self.problem_list()
+            .into_iter()
+            .map(|(code, msg)| {
+                let msg = match (code, self.bulge_limit()) {
+                    ("tower_bulge", Some((k, max))) => {
+                        format!("{msg}: tier {} takes a curve of at most {max:.3} m", k + 1)
+                    }
+                    _ => msg.to_string(),
+                };
+                (code, msg)
+            })
+            .collect()
+    }
+
+    fn problem_list(&self) -> Vec<(&'static str, &'static str)> {
         let mut out = Vec::new();
         let finite = [
             self.center.x,
@@ -449,22 +466,36 @@ impl Tower {
         let (mut h, mut z) = (self.width / 2.0, self.base_height);
         for t in &self.tiers {
             let (h1, z1) = (t.top_width / 2.0, z + t.rise);
-            let pts = if t.bulge == 0.0 {
-                vec![(h, z), (h1, z1)]
-            } else {
-                arc_points((h, z), (h1, z1), t.bulge, substeps)?
-            };
-            // Never across the axis, and never above or below the tier's
-            // own heights: a dome would end in a dimple over its top, a
-            // bell dip into the shaft (audit MATH-007).
-            let (lo, hi) = (z.min(z1) - 1e-6, z.max(z1) + 1e-6);
-            if pts.iter().any(|&(ph, pz)| ph < -1e-9 || pz < lo || pz > hi) {
-                return None;
-            }
-            out.push(pts.into_iter().map(|(ph, pz)| (ph.max(0.0), pz)).collect());
+            let pts = tier_points((h, z), (h1, z1), t.bulge, substeps)?;
+            out.push(pts);
             (h, z) = (h1, z1);
         }
         Some(out)
+    }
+
+    /// The first tier whose curve [`Tower::bare_profiles`] refuses, and the
+    /// largest curve of the same direction it takes, m, rounded down to
+    /// the millimetre (audit r2: `tower_bulge` names the allowed value).
+    fn bulge_limit(&self) -> Option<(usize, f64)> {
+        let (mut h, mut z) = (self.width / 2.0, self.base_height);
+        for (k, t) in self.tiers.iter().enumerate() {
+            let (a, b) = ((h, z), (t.top_width / 2.0, z + t.rise));
+            if tier_points(a, b, t.bulge, FINE_ARC_SUBSTEPS).is_none() {
+                // A straight tier always fits: halve the gap to the curve.
+                let (mut lo, mut hi) = (0.0, t.bulge.abs());
+                for _ in 0..40 {
+                    let mid = (lo + hi) / 2.0;
+                    if tier_points(a, b, mid * t.bulge.signum(), FINE_ARC_SUBSTEPS).is_some() {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Some((k, (lo * 1000.0).floor() / 1000.0));
+            }
+            (h, z) = b;
+        }
+        None
     }
 
     /// The plan point of a point of the tower's own axes at scale `k`.
@@ -1456,6 +1487,23 @@ fn fillet(corners: &[Point2], r: f64, step: f64) -> Outline {
 /// Points of a circular arc from `a` to `b` in the profile plane
 /// (half width, height) whose middle lies `bulge` from the chord, positive
 /// away from the axis; `None` for more than a semicircle.
+/// The profile of one tier from `a` to `b` (half width, height) with
+/// `bulge`; `None` when the curve does not fit. Never across the axis, and
+/// never above or below the tier's own heights: a dome would end in a
+/// dimple over its top, a bell dip into the shaft (audit MATH-007).
+fn tier_points(a: (f64, f64), b: (f64, f64), bulge: f64, substeps: usize) -> Option<Profile> {
+    let pts = if bulge == 0.0 {
+        vec![a, b]
+    } else {
+        arc_points(a, b, bulge, substeps)?
+    };
+    let (lo, hi) = (a.1.min(b.1) - 1e-6, a.1.max(b.1) + 1e-6);
+    if pts.iter().any(|&(ph, pz)| ph < -1e-9 || pz < lo || pz > hi) {
+        return None;
+    }
+    Some(pts.into_iter().map(|(ph, pz)| (ph.max(0.0), pz)).collect())
+}
+
 fn arc_points(a: (f64, f64), b: (f64, f64), bulge: f64, substeps: usize) -> Option<Profile> {
     let (dh, dz) = (b.0 - a.0, b.1 - a.1);
     let l = dh.hypot(dz);
@@ -1753,6 +1801,35 @@ mod tests {
             ["tower_bulge"]
         );
         assert!(Tower { width: 0.0, ..ok }.calculate().is_none());
+    }
+
+    /// Audit r2: a curve too large names its tier and the largest curve
+    /// the tier takes, and that value is taken while a little more is not.
+    #[test]
+    fn a_curve_too_large_names_the_largest_it_may_be() {
+        let ok = square(4.0, vec![tier(3.0, 0.0, 0.0)]);
+        for bulge in [5.0, -2.0, 0.9] {
+            let t = Tower {
+                tiers: vec![tier(1.0, 2.0, 0.0), tier(2.0, 0.2, bulge)],
+                ..ok.clone()
+            };
+            let probs = t.problems();
+            let Some((_, msg)) = probs.iter().find(|p| p.0 == "tower_bulge") else {
+                assert!(bulge.abs() < 1.0, "{bulge}: {probs:?}");
+                continue;
+            };
+            let (_, max) = msg
+                .rsplit_once("tier 2 takes a curve of at most ")
+                .unwrap_or_else(|| panic!("{msg}"));
+            let max: f64 = max.trim_end_matches(" m").parse().unwrap();
+            assert!(max > 0.0 && max < bulge.abs(), "{bulge}: {max}");
+            let with = |b: f64| Tower {
+                tiers: vec![tier(1.0, 2.0, 0.0), tier(2.0, 0.2, b * bulge.signum())],
+                ..ok.clone()
+            };
+            assert!(with(max).problems().is_empty(), "{bulge}: {max}");
+            assert!(!with(max + 0.002).problems().is_empty(), "{bulge}: {max}");
+        }
     }
 
     #[test]

@@ -222,7 +222,8 @@
   let towerTyping = $state<string | null>(null);
   let towerDialog = $state<ReturnType<typeof TowerDialog> | undefined>();
   /** The curved-wall dialog: wall `index` bent by `value` m, or corner `index` rounded with radius `value` m. */
-  let arcDlg = $state<{ part: number; index: number; mode: "bend" | "round"; value: number; segments: number | null; max: number | null; refused: string | null; detail: string | null; typing: string | null } | null>(null);
+  /** `run`: a bend of a wall of an arc changes that arc (`reshape_arc`, UX-007). */
+  let arcDlg = $state<{ part: number; index: number; mode: "bend" | "round"; value: number; segments: number | null; max: number | null; refused: string | null; detail: string | null; typing: string | null; run?: (import("./types").ArcRun & { n: number }) | null } | null>(null);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
   /** Points picked so far for the line or face being added. */
@@ -2486,12 +2487,62 @@
     return Math.hypot(b.x - a.x, b.y - a.y);
   }
 
+  /**
+   * The arc the selected wall belongs to (core `edit::arcs::arc_run`), for
+   * "Straighten the arc" and for a bend that changes the arc (UX-007).
+   */
+  let selArc = $state<(import("./types").ArcRun & { part: number; edge: number }) | null>(null);
+  let arcSeq = 0;
+  $effect(() => {
+    const sel = selection;
+    const p = sel ? project?.parts[sel.part] : undefined;
+    const mine = ++arcSeq;
+    if (!sel || !p?.edges[sel.edge] || isMarker(p.edges[sel.edge])) {
+      selArc = null;
+      return;
+    }
+    const snap = $state.snapshot(p) as RoofPart;
+    api
+      .arcRun(snap, sel.edge)
+      .then((r) => {
+        if (mine === arcSeq) selArc = r ? { ...r, part: sel.part, edge: sel.edge } : null;
+      })
+      .catch(() => {
+        // Not knowing the arc only hides its button; the edit itself reports.
+        if (mine === arcSeq) selArc = null;
+      });
+  });
+  /** The arc of wall `edge` of part `part` when it is the selected one's. */
+  const arcOf = (part: number, edge: number) => (selArc && selArc.part === part && selArc.edge === edge ? selArc : null);
+
   function openArc(part: number, index: number, mode: "bend" | "round") {
     if (!project?.parts[part]) return;
     dialogHolds.arc = jobEdits.hold("parts", part);
+    const run = mode === "bend" ? arcOf(part, index) : null;
+    if (run) {
+      // A wall of an arc: the arc is changed, from its present bulge; its walls by the
+      // usual steps for the new bulge unless the roofer types a count.
+      const max = Math.floor((run.chord / 2) * 1000) / 1000;
+      arcDlg = { part, index, mode, value: +run.bulge.toFixed(3), segments: null, max, refused: null, detail: null, typing: null, run: { ...run, n: project.parts[part].edges.length } };
+      return;
+    }
     const half = Math.floor((wallLength(part, index) / 2) * 1000) / 1000;
     arcDlg = { part, index, mode, value: mode === "bend" ? +Math.min(1, half).toFixed(3) : 1, segments: null, max: mode === "bend" ? half : null, refused: null, detail: null, typing: null };
   }
+
+  /**
+   * "Straighten the arc": the arc wall `edge` belongs to becomes one wall
+   * (core `edit::arcs::straighten`); the selection moves to it. Once per press.
+   */
+  const straightenArc = exclusive(async (part: number, edge: number) => {
+    const run = arcOf(part, edge);
+    const n = project?.parts[part]?.edges.length ?? 0;
+    await pendingEdits.track(runArc(jobEdits.hold("parts", part), { op: "straighten_arc", index: edge }, null));
+    // The straight wall keeps the arc's first index, less the arc walls that stood before it in the list.
+    if (run && selection?.part === part && project?.parts[part] && project.parts[part].edges.length < n) {
+      selection = { part, edge: run.start - Math.max(0, run.start + run.walls - n) };
+    }
+  });
 
   /**
    * A semicircular end on wall `edge` (an apse: the bulge is half the wall),
@@ -2518,7 +2569,7 @@
       return;
     }
     const segments = d.segments ?? undefined;
-    const edit = d.mode === "bend" ? ({ op: "bend_wall", index: d.index, bulge: d.value, segments } as const) : ({ op: "round_corner", index: d.index, radius: d.value, segments } as const);
+    const edit = d.mode === "round" ? ({ op: "round_corner", index: d.index, radius: d.value, segments } as const) : d.run ? ({ op: "reshape_arc", index: d.index, bulge: d.value, segments } as const) : ({ op: "bend_wall", index: d.index, bulge: d.value, segments } as const);
     const why = await pendingEdits.track(runArc(dialogHolds.arc, edit, d));
     if (why === null) arcDlg = null;
     else if (arcDlg === d) {
@@ -3279,6 +3330,7 @@
           { label: t("edge.addMarker"), icon: "right", action: insertMarker },
           { label: t("arc.bend"), icon: "arc", action: () => openArc(part, edge, "bend") },
           { label: t("arc.apse"), icon: "arc", action: () => apseWall(part, edge) },
+          { label: t("arc.straighten"), icon: "arc", action: () => straightenArc(part, edge) },
         ]),
         ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => openCalc(part, edge) }] : []),
         { sep: true },
@@ -3997,7 +4049,8 @@
             onmarker={insertMarker}
             onround={opposite !== null ? openRound : undefined}
             oncalc={() => selection && openCalc(selection.part, selection.edge)}
-            onarc={(op) => selection && (op === "apse" ? apseWall(selection.part, selection.edge) : openArc(selection.part, selection.edge, op))}
+            inarc={!!(selection && arcOf(selection.part, selection.edge))}
+            onarc={(op) => selection && (op === "apse" ? apseWall(selection.part, selection.edge) : op === "straighten" ? straightenArc(selection.part, selection.edge) : openArc(selection.part, selection.edge, op))}
           />
         {/if}
       </div>
@@ -4088,7 +4141,7 @@
 
 {#if towerDlg && project}
   <Modal title={towerDlg.index === null ? t("tower.dialogNew") : towerDlg.tower.label || t("tower.n", { n: towerDlg.index + 1 })} width={860} onclose={() => void closeTowerDialog()}>
-    <TowerDialog bind:this={towerDialog} {project} bind:tower={towerDlg.tower} bind:blocked={towerBlocked} bind:blockedDetail={towerBlockedDetail} bind:typing={towerTyping} />
+    <TowerDialog bind:this={towerDialog} {project} track={(p) => pendingEdits.track(p)} bind:tower={towerDlg.tower} bind:blocked={towerBlocked} bind:blockedDetail={towerBlockedDetail} bind:typing={towerTyping} />
     {#snippet footer()}
       {@const why = towerTyping ?? towerBlocked}
       {#if why}<p class="dlg-why" role="alert" data-testid="tower-ok-blocked"><span>{why}{#if !towerTyping && towerBlockedDetail}<code data-testid="tower-ok-detail">{towerBlockedDetail}</code>{/if}</span></p>{/if}
@@ -4099,8 +4152,8 @@
 {/if}
 
 {#if arcDlg && project?.parts[arcDlg.part]}
-  <Modal title={arcDlg.mode === "bend" ? t("arc.bendTitle", { n: arcDlg.index + 1 }) : t("arc.roundTitle", { n: arcDlg.index + 1 })} width={420} onclose={() => (arcDlg = null)}>
-    <ArcForm mode={arcDlg.mode} bind:value={arcDlg.value} bind:segments={arcDlg.segments} max={arcDlg.max} bind:refused={arcDlg.refused} bind:detail={arcDlg.detail} bind:typing={arcDlg.typing} />
+  <Modal title={arcDlg.run ? t("arc.reshapeTitle", { from: arcDlg.run.start + 1, to: ((arcDlg.run.start + arcDlg.run.walls - 1) % arcDlg.run.n) + 1 }) : arcDlg.mode === "bend" ? t("arc.bendTitle", { n: arcDlg.index + 1 }) : t("arc.roundTitle", { n: arcDlg.index + 1 })} width={420} onclose={() => (arcDlg = null)}>
+    <ArcForm mode={arcDlg.mode} reshape={!!arcDlg.run} bind:value={arcDlg.value} bind:segments={arcDlg.segments} max={arcDlg.max} bind:refused={arcDlg.refused} bind:detail={arcDlg.detail} bind:typing={arcDlg.typing} />
     {#snippet footer()}
       <button class="btn" onclick={() => (arcDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" data-testid="arc-ok" aria-disabled={acting.arc} aria-busy={acting.arc} onclick={() => !acting.arc && applyArcDialog()}>{t("common.ok")}</button>
