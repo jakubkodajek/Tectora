@@ -80,8 +80,9 @@
   const multiMaterial = $derived((data?.materials.length ?? 0) > 1);
 
   /** Face reference in sums: "3" for one part, "2.3" for several. */
-  const faceRef = (part: number | null, face: number | null) =>
-    part === null ? t("bd.manualRef", { n: face ?? 0 }) : face === null ? t("bd.cladRef", { n: part + 1 }) : many ? `${part + 1}.${face}` : `${face}`;
+  const faceRef = (part: number | null, face: number | null, tower?: number) =>
+    tower !== undefined ? t("bd.towerRef", { n: tower + 1, k: face ?? 0 })
+    : part === null ? t("bd.manualRef", { n: face ?? 0 }) : face === null ? t("bd.cladRef", { n: part + 1 }) : many ? `${part + 1}.${face}` : `${face}`;
 
   /** Every code by its own name: WV, WS and WH are no longer all "wall abutment" (UX-013). */
   const lineLabel = lineName;
@@ -108,7 +109,7 @@
     <div class="err" role="status"><i></i><span>{t("bd.error")}</span><code>{error}</code></div>
   {:else if !data}
     <p class="muted">…</p>
-  {:else if !data.parts.length && !data.manual_faces.length}
+  {:else if !data.parts.length && !data.manual_faces.length && !data.towers?.length}
     <p class="muted">{t("bd.empty")}</p>
   {:else}
     {@const D = data.decimals}
@@ -232,6 +233,43 @@
       </section>
     {/if}
 
+    {#if data.towers?.length}
+      <section data-testid="bd-towers">
+        <h4><span>{t("bd.towers")}</span></h4>
+        {#each data.towers as tw}
+          {@const roofTiers = tw.tiers.filter((x) => x.kind === "roof")}
+          <div class="face tower">
+            <div class="face-head">
+              <span class="no">{t("tower.n", { n: tw.no })}</span>
+              <span>{tw.label}</span>
+              <b>{tw.calculated ? a2(tw.roof_area) : "—"}</b>
+            </div>
+            {#if !tw.calculated}
+              <p class="muted">{t("tower.notCalculated")}</p>
+            {/if}
+            {#each tw.tiers as x}
+              <div class="calc tier">
+                <span><span class="no">{faceRef(null, x.no, tw.no - 1)}</span> {x.kind === "wall" ? t("tower.kind.wall") : deg(x.pitch_deg, 2)}{#if multiMaterial} · {materialName(project, x.material)}{/if}
+                  · {t("bd.towerTier", { a: fixed(x.bottom_height, 3), b: fixed(x.top_height, 3), p: fixed(x.bottom_perimeter, 3), q: fixed(x.top_perimeter, 3) })}</span>
+                <span>= {fixed(x.area, 3)} m²</span>
+              </div>
+            {/each}
+            {#if tw.cap !== undefined}
+              <div class="calc tier"><span><span class="no">{faceRef(null, tw.tiers.length + 1, tw.no - 1)}</span> {t("tower.cap")}</span><span>= {fixed(tw.cap, 3)} m²</span></div>
+            {/if}
+            {#if tw.calculated && roofTiers.length + (tw.cap !== undefined ? 1 : 0) > 1}
+              <div class="sum">
+                Σ {terms(roofTiers.map((x) => x.area).concat(tw.cap !== undefined ? [tw.cap] : []), 3)} ≐ <b>{a2(tw.roof_area)}</b>
+              </div>
+            {/if}
+            {#if tw.wall_area >= 0.0005}
+              <p class="muted">{t("bd.towerWalls", { v: a2(tw.wall_area) })}</p>
+            {/if}
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     {#if multiMaterial || (data.materials.length === 1 && data.materials[0].material !== 1)}
       <section>
         <h4><span>{t("res.byMaterial")}</span></h4>
@@ -239,7 +277,7 @@
           {@const sf = sumFmt(mt.digits)}
           <div class="sum">
             <span class="mat-name">{materialName(project, mt.material)}</span>
-            {mt.items.map((i, k) => `${k ? "+ " : ""}${faceRef(i.part, i.face)}: ${fixed(i.area, sf.d)}`).join(" ")} {sf.eq} <b>{fixed(mt.area, sf.d)}</b> ≐ <b>{a2(mt.area)}</b>
+            {mt.items.map((i, k) => `${k ? "+ " : ""}${faceRef(i.part, i.face, i.tower)}: ${fixed(i.area, sf.d)}`).join(" ")} {sf.eq} <b>{fixed(mt.area, sf.d)}</b> ≐ <b>{a2(mt.area)}</b>
           </div>
         {/each}
       </section>
@@ -260,6 +298,13 @@
           <table>
             <tbody>
               {#each g.items as l, li}
+                {#if l.tower}
+                  <tr data-testid="bd-tower-line">
+                    <td class="no">{li + 1}</td>
+                    <td class="delta">{t("bd.towerLine", { n: l.tower[0] + 1, k: l.tower[1] + 1 })}</td>
+                    <td class="v">{fixed(l.length, sf.d)}</td>
+                  </tr>
+                {:else}
                 {@const openLine = () => (open = { title: t("bdd.lineTitle", { code: g.code, label: lineLabel(g.code), n: li + 1 }), detail: { kind: "line", code: g.code, line: l }, deductions: null })}
                 {@const markLine = () => onmark?.({ line: [[l.a[0], l.a[1]], [l.b[0], l.b[1]]] })}
                 <!-- A row is a button: Tab reaches it, Enter or Space opens its detail, focus shows its line in the plan (UI-008). -->
@@ -286,6 +331,7 @@
                   </td>
                   <td class="v">{fixed(l.length, sf.d)}</td>
                 </tr>
+                {/if}
               {/each}
             </tbody>
           </table>
@@ -300,10 +346,10 @@
 
     <section class="total">
       <h4><span>{t("bd.total")}</span><b>{a2(data.roof_area)}</b></h4>
-      {#if data.parts.length + data.manual_faces.length > 1}
+      {#if data.parts.length + data.manual_faces.length + (data.towers?.length ?? 0) > 1}
         {@const sf = sumFmt(data.digits)}
         <div class="sum">
-          Σ {terms(data.parts.map((p) => p.roof_area).concat(data.manual_faces.map((f) => f.area)), sf.d)} {sf.eq} <b>{fixed(data.roof_area, sf.d)}</b> ≐ <b>{a2(data.roof_area)}</b>
+          Σ {terms(data.parts.map((p) => p.roof_area).concat(data.manual_faces.map((f) => f.area), (data.towers ?? []).map((x) => x.roof_area)), sf.d)} {sf.eq} <b>{fixed(data.roof_area, sf.d)}</b> ≐ <b>{a2(data.roof_area)}</b>
         </div>
       {/if}
       <p class="check" class:bad={!agrees}>

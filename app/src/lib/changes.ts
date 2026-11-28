@@ -6,7 +6,8 @@ import { partLabel } from "./partname";
 import { materialName } from "./materials";
 import { windowOutline } from "./openings";
 import { lineName } from "./linecodes";
-import type { CalcResult, Change, Chimney, Dormer, FigureDifference, HalfHip, ManualFace, ManualLine, Point2, Project, RoofWindow } from "./types";
+import { roughFootprint } from "./towers";
+import type { CalcResult, Change, Chimney, Dormer, FigureDifference, HalfHip, ManualFace, ManualLine, Point2, Project, RoofWindow, Tower } from "./types";
 
 const isVertical = (p: number) => Math.abs(p - 90) <= 0.001;
 const deg = (v: unknown) => `${num(Number(v)).replace(/[.,]00$/, "")}°`;
@@ -20,6 +21,7 @@ const ITEM_LABEL: Record<string, string> = {
   roof_opening: "opening.holeN",
   manual_line: "manual.lineN",
   manual_face: "manual.faceN",
+  tower: "tower.n",
 };
 
 /** True for a change of one dormer, chimney, window, opening or hand-drawn line or face. */
@@ -263,6 +265,11 @@ export function ghostOf(
         case "manual_face": {
           const pts = (c.before as ManualFace).points;
           if (isPts(pts)) ghost.shapes.push(pts);
+          break;
+        }
+        case "tower": {
+          const o = roughFootprint(c.before as Tower);
+          if (isPts(o)) ghost.shapes.push(o);
           break;
         }
         case "manual_line": {

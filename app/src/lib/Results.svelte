@@ -6,7 +6,7 @@
   import { m, m2, num } from "./format";
   import { numberLocale, t } from "./i18n.svelte";
   import { materialName, materialToken } from "./materials";
-  import { areaListShown, areaRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, resultWarnings, roofState } from "./results";
+  import { areaListShown, areaRows, towerRows, failedParts, isFacesOnly, joinedWith, lineRowsShown, missingResult, objectCounts, resultWarnings, roofState } from "./results";
   import type { Described } from "./errors";
   import { inputWarnings } from "./plausible";
   import { legend, lineName, SUB_CODES } from "./linecodes";
@@ -106,6 +106,9 @@
   const joins = $derived(joinedWith(result));
   /** Parts and hand-drawn faces with their areas: everything the total counts (UX-009). */
   const areas = $derived(areaRows(result));
+  /** Every tower's roof, lantern walls and shaft cladding (their roof areas are in the total already). */
+  const towers = $derived(towerRows(result));
+  const deg = (v: number) => `${new Intl.NumberFormat(numberLocale(), { maximumFractionDigits: 1 }).format(v)}°`;
 
   /** Area per material, shown once the roof has more than one material or a non-default one. */
   const materials = $derived(
@@ -190,11 +193,13 @@
               {a.name}
               {#if a.manual}
                 <small class="joined">{t("bd.manual")}</small>
+              {:else if a.tower}
+                <small class="joined">{t("res.towerTag")}</small>
               {:else if joins[a.part]?.length}
                 <small class="joined">{t("res.joinedTo", { names: joins[a.part].map((j) => (result.parts[j] ? partLabel(result.parts[j].name, j) : "")).join(", ") })}</small>
               {/if}
             </td>
-            <td class="v">{failed || (!a.manual && failedSet.includes(a.part)) ? NONE : m2(a.area)}</td>
+            <td class="v">{failed || (!a.manual && !a.tower && failedSet.includes(a.part)) ? NONE : m2(a.area)}</td>
           </tr>
         {/each}
       </tbody>
@@ -210,6 +215,36 @@
         {/each}
       </tbody>
     </table>
+  {/if}
+
+  {#if towers.length}
+    <h4>{t("res.towers")}</h4>
+    {#each towers as tw}
+      <table class="tower" data-testid="res-tower">
+        <tbody>
+          <tr class="tower-head"><td colspan="2"><b>{tw.name}</b>
+            {#if !tw.calculated}<small class="joined">{t("tower.notCalculated")}</small>{/if}
+            {#if tw.calculated && tw.on_ground}<small class="joined">{t("tower.onGround")}</small>{/if}
+            {#if tw.calculated && tw.base_below_roof}<small class="joined">{t("tower.baseBelowRoof")}</small>{/if}
+          </td></tr>
+          {#if tw.calculated}
+            <tr><td>{t("tower.roofArea")}</td><td class="v">{m2(tw.roof_area)}</td></tr>
+            {#if tw.wall_area >= 0.005}<tr><td>{t("tower.wallArea")}</td><td class="v">{m2(tw.wall_area)}</td></tr>{/if}
+            {#if tw.shaft_area >= 0.005}<tr><td>{t("tower.shaftArea")}</td><td class="v">{m2(tw.shaft_area)}</td></tr>{/if}
+            <tr><td>{t("tower.topHeight")}</td><td class="v">{m(tw.top_height)}</td></tr>
+            {#each tw.tiers as x}
+              <tr class="tier">
+                <td>{t("tower.tierN", { n: x.n })}
+                  <small class="joined"><i class="mat-sw" style:background={`var(${materialToken(x.material)})`}></i>{x.wall ? t("tower.kind.wall") : `${t("tower.pitch")} ${deg(x.pitch_deg)}`} · {materialName(project, x.material)}</small>
+                </td>
+                <td class="v">{m2(x.area)}</td>
+              </tr>
+            {/each}
+            {#if tw.cap !== null}<tr class="tier"><td>{t("tower.cap")}</td><td class="v">{m2(tw.cap)}</td></tr>{/if}
+          {/if}
+        </tbody>
+      </table>
+    {/each}
   {/if}
 
   {#if hasObjects && objects}
@@ -508,6 +543,12 @@
     color: var(--text-3);
   }
   /* The material's colour in the plan and 3D (tiles clay, sheet metal steel grey). */
+  table.tower + table.tower {
+    margin-top: 6px;
+  }
+  .tower .tier td:first-child {
+    padding-left: 12px;
+  }
   .mat-sw {
     display: inline-block;
     width: 10px;

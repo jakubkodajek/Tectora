@@ -1,7 +1,7 @@
 // What the bottom bar says while a placing tool is active (review UX-012):
 // the tool's name and the next click, as translation keys.
 
-export type PlaceKind = "dormer" | "chimney" | "window" | "hole" | "line" | "face";
+export type PlaceKind = "dormer" | "chimney" | "window" | "hole" | "line" | "face" | "tower";
 
 /** The bar's title and step keys for a placing tool; `counted` when the tool picks several points. */
 export function placeSteps(kind: PlaceKind, points: number): { title: string; text: string; counted: boolean } {
@@ -12,6 +12,8 @@ export function placeSteps(kind: PlaceKind, points: number): { title: string; te
         ? "plan.placeChimney"
         : kind === "hole"
           ? "plan.placeHole"
+          : kind === "tower"
+            ? "plan.placeTower"
           : kind === "line"
             ? points > 0
               ? "plan.placeLineEnd"

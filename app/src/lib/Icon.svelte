@@ -47,6 +47,10 @@
     line: "M5 19L19 5M3 21l4-4M17 7l4-4",
     face: "M4 18l5-12 11 3-4 10z",
     flat: "M3 7h18M5 7v10h14V7",
+    tower: "M9 21V11l3-8 3 8v10M7 11h10M5 21h14",
+    up: "M6 15l6-6 6 6",
+    down: "M6 9l6 6 6-6",
+    arc: "M4 20v-8a8 8 0 0 1 16 0v8",
   };
   let { name, size = 18 }: { name: string; size?: number } = $props();
 </script>

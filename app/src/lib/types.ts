@@ -68,6 +68,8 @@ export interface Project {
   manual_lines?: ManualLine[];
   /** Roof faces added by hand (DACAD: Neue Dachfläche). */
   manual_faces?: ManualFace[];
+  /** Towers and turrets standing through the roof, each with its own roof profile (core `tower`). */
+  towers?: Tower[];
   /** Calculate as a flat roof at the highest eave (DACAD: Flachdach). */
   flat_roof?: boolean;
   /** Own names of the roof materials, index 0 = material 1 (DACAD: Materialnamen). */
@@ -129,6 +131,97 @@ export interface Chimney {
   corners: Point2[];
   height: number;
 }
+
+/** Plan shape of a tower (core `tower::TowerShape`). */
+export type TowerShape = "rectangle" | "polygon" | "circle";
+
+/** One tier of a tower's roof profile, from the top of the tier below up (core `tower::TowerTier`). */
+export interface TowerTier {
+  /** Height the tier rises, m (0: a flat ledge). */
+  rise: number;
+  /** Width of the plan at the tier's top, m (0: it ends in a point). */
+  top_width: number;
+  /** The profile's arc height over its chord, m; + outward (onion), − inward (bell). */
+  bulge?: number;
+  /** Roof material number (2 sheet metal by default). */
+  material?: number;
+}
+
+/** A tower or turret (core `tower::Tower`). */
+export interface Tower {
+  label?: string;
+  center: Point2;
+  /** Turn of the tower's x axis, degrees anticlockwise. */
+  rotation_deg?: number;
+  shape?: TowerShape;
+  /** Shaft width, m (rectangle: along its x axis; polygon: across the flats; circle: diameter). */
+  width: number;
+  /** Depth of a rectangle, m; absent: a square. */
+  depth?: number | null;
+  /** Sides of a polygon (8 when absent). */
+  sides?: number;
+  corner_radius?: number;
+  /** Height where the tower's roof starts (top of the shaft), m. */
+  base_height: number;
+  tiers: TowerTier[];
+}
+
+/** One calculated tier (core `tower::TierResult`). */
+export interface TierResult {
+  index: number;
+  kind: "roof" | "wall";
+  material: number;
+  pitch_deg: number;
+  area: number;
+  bottom_height: number;
+  top_height: number;
+  bottom_perimeter: number;
+  top_perimeter: number;
+  hip_count: number;
+  hip_length: number;
+  /** Plan rings [x, y, z] from the tier's bottom to its top, to draw. */
+  rings: [number, number, number][][];
+}
+
+/** A tower's calculated roof (core `tower::TowerResult`). */
+export interface TowerResult {
+  top_height: number;
+  base_perimeter: number;
+  base_area: number;
+  tiers: TierResult[];
+  cap?: { area: number; height: number; material: number; ring: [number, number, number][] };
+  lines: { code: string; tier: number; length: number; points: [number, number, number][]; closed: boolean }[];
+}
+
+/** A tower in the calculation's answer (core `report::tower_report`); `result` null for a tower with problems. */
+export interface TowerReport {
+  label: string;
+  result: TowerResult | null;
+  roof_area?: number;
+  wall_area?: number;
+  shaft?: {
+    /** The footprint's corners where the shaft leaves the roof or the ground. */
+    bottom: [number, number, number][];
+    wall_area: number;
+    on_roof: boolean;
+    base_below_roof: boolean;
+  };
+}
+
+/** The tower dialog's preview (core `commands::tower_preview`). */
+export interface TowerPreview {
+  result: TowerResult;
+  roof_area: number;
+  wall_area: number;
+}
+
+export type TowerPresetKind = "pyramid" | "octagon" | "cone" | "helm" | "onion" | "baroque";
+export const TOWER_PRESETS: TowerPresetKind[] = ["pyramid", "octagon", "cone", "helm", "onion", "baroque"];
+
+/** A curved-wall edit of the plan (core `commands::ArcEdit`). */
+export type ArcEdit =
+  | { op: "round_corner"; index: number; radius: number; segments?: number | null }
+  | { op: "bend_wall"; index: number; bulge: number; segments?: number | null };
 
 export interface RoofWindow {
   x: number;
@@ -290,7 +383,7 @@ export interface CalcError {
 
 /** An input the roof engine cannot work with (that part is not calculated). */
 export interface Problem {
-  item: "part" | "dormer" | "chimney" | "opening" | "window";
+  item: "part" | "dormer" | "chimney" | "opening" | "window" | "tower";
   index: number;
   edge?: number;
   code:
@@ -310,7 +403,17 @@ export interface Problem {
     | "half_hip_below_eave"
     | "end_nan"
     | "bad_corners"
-    | "bad_size";
+    | "bad_size"
+    | "tower_nan"
+    | "tower_size"
+    | "tower_sides"
+    | "tower_corner_radius"
+    | "tower_base"
+    | "tower_no_tiers"
+    | "tower_tiers"
+    | "tower_tier_size"
+    | "tower_flat_bulge"
+    | "tower_bulge";
 }
 
 /** What looks wrong with a calculated roof (tectora_core::check). */
@@ -398,6 +501,8 @@ export interface CalcResult {
   }[];
   /** Every face added by hand with its area (already in `totals`). */
   manual_faces?: { label: string; pitch_deg: number; area: number }[];
+  /** Every tower's roof and shaft, in project order (their roof areas and lines are already in `totals`). */
+  towers?: TowerReport[];
   /** Warnings that belong to no building (a crossing hand-drawn face in a job without one). */
   warnings?: RoofWarning[];
   totals: RoofQuantities;
@@ -706,10 +811,13 @@ export interface CalcBreakdown {
     calculated: boolean;
   }[];
   manual_faces: BreakdownManualFace[];
+  /** Towers and their tiers (core `breakdown::TowerStep`; absent without towers); their roof areas are in `roof_area`. */
+  towers?: BreakdownTower[];
   materials: {
     material: number;
     name?: string;
-    items: { part: number | null; face: number | null; area: number }[];
+    /** `tower`: tower index from 0, `face` then its tier number from 1 (the flat top after the tiers). */
+    items: { part: number | null; tower?: number; face: number | null; area: number }[];
     area: number;
     digits: number;
   }[];
@@ -782,8 +890,33 @@ export interface BreakdownManualFace {
   pitch_out_of_range?: boolean;
 }
 
+/** A tower in the breakdown (core `breakdown::TowerStep`). */
+export interface BreakdownTower {
+  /** Tower number from 1. */
+  no: number;
+  label: string;
+  tiers: {
+    no: number;
+    kind: "roof" | "wall";
+    material: number;
+    pitch_deg: number;
+    bottom_height: number;
+    top_height: number;
+    bottom_perimeter: number;
+    top_perimeter: number;
+    area: number;
+  }[];
+  cap?: number;
+  /** Σ of the roof tiers and the flat top (the vertical tiers are wall area). */
+  roof_area: number;
+  wall_area: number;
+  calculated: boolean;
+}
+
 export interface BreakdownLine {
   part: number | null;
+  /** A tower's line: tower index and tier index from 0. Its length is the outline's or the profile's, not √(Δx² + Δy² + Δz²). */
+  tower?: [number, number];
   a: [number, number, number];
   b: [number, number, number];
   delta: [number, number, number];

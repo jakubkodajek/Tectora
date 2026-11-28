@@ -133,9 +133,11 @@ export function objectCounts(project: Project, result: CalcResult | null): Objec
 export interface AreaRow {
   name: string;
   area: number;
-  /** Index into `result.parts`, or -1 for a hand-drawn face. */
+  /** Index into `result.parts`, or -1 for a hand-drawn face or a tower. */
   part: number;
   manual: boolean;
+  /** A tower's roof (the core's `towers`, already in the total). */
+  tower?: boolean;
 }
 
 /**
@@ -152,7 +154,58 @@ export function areaRows(result: CalcResult | null): AreaRow[] {
     part: -1,
     manual: true,
   }));
-  return [...parts, ...faces];
+  const towers = (result.towers ?? []).flatMap((tw, i) =>
+    tw.result ? [{ name: tw.label || t("tower.n", { n: i + 1 }), area: tw.roof_area ?? 0, part: -1, manual: false, tower: true }] : [],
+  );
+  return [...parts, ...faces, ...towers];
+}
+
+/** One tier of a tower in Results. */
+export interface TowerTierRow {
+  n: number;
+  /** A vertical tier (a lantern) counts as wall, not as roof. */
+  wall: boolean;
+  pitch_deg: number;
+  area: number;
+  material: number;
+}
+
+/** One tower in Results: what its roof, its lantern and its shaft take (core `report::tower_report`). */
+export interface TowerRow {
+  name: string;
+  /** False for a tower with problems: no figures. */
+  calculated: boolean;
+  roof_area: number;
+  wall_area: number;
+  shaft_area: number;
+  top_height: number;
+  cap: number | null;
+  on_ground: boolean;
+  base_below_roof: boolean;
+  tiers: TowerTierRow[];
+}
+
+/**
+ * The Results tower list: per tower its roof area (already in the total and
+ * in the area list), the vertical walls of its lanterns, the cladding of
+ * its shaft above the roof and each tier.
+ */
+export function towerRows(result: CalcResult | null): TowerRow[] {
+  return (result?.towers ?? []).map((tw, i) => {
+    const r = tw.result;
+    return {
+      name: tw.label || t("tower.n", { n: i + 1 }),
+      calculated: !!r,
+      roof_area: tw.roof_area ?? 0,
+      wall_area: tw.wall_area ?? 0,
+      shaft_area: tw.shaft?.wall_area ?? 0,
+      top_height: r?.top_height ?? 0,
+      cap: r?.cap ? r.cap.area : null,
+      on_ground: !!tw.shaft && !tw.shaft.on_roof,
+      base_below_roof: !!tw.shaft?.base_below_roof,
+      tiers: (r?.tiers ?? []).map((x) => ({ n: x.index + 1, wall: x.kind === "wall", pitch_deg: x.pitch_deg, area: x.area, material: x.material })),
+    };
+  });
 }
 
 /**
@@ -218,7 +271,7 @@ export function roofState(result: CalcResult | null): "none" | "partial" | "ok" 
  * job, or a footprint still being drawn). Its zeros are no figures (UX-011).
  */
 export function emptyRoof(result: CalcResult | null): boolean {
-  return !result || (result.parts.length === 0 && !(result.manual_faces?.length));
+  return !result || (result.parts.length === 0 && !(result.manual_faces?.length) && !(result.towers?.length));
 }
 
 /**
@@ -229,7 +282,7 @@ export function emptyRoof(result: CalcResult | null): boolean {
  * (`project` null) only the result decides, as `emptyRoof`.
  */
 export function missingResult(
-  project: Pick<Project, "parts" | "manual_faces"> | null,
+  project: (Pick<Project, "parts" | "manual_faces"> & Partial<Pick<Project, "towers">>) | null,
   result: CalcResult | null,
   failure: unknown,
 ): "empty" | "calculating" | "failed" | null {
@@ -238,9 +291,9 @@ export function missingResult(
   return failure ? "failed" : "calculating";
 }
 
-/** A roof of hand-drawn faces only, no building: it has no ridge and no lines of its own (UX-302). */
-export function isFacesOnly(project: Pick<Project, "parts" | "manual_faces"> | null | undefined): boolean {
-  return !!project && project.parts.length === 0 && (project.manual_faces?.length ?? 0) > 0;
+/** A roof of hand-drawn faces or towers only, no building: it has no ridge and no lines of its own (UX-302). */
+export function isFacesOnly(project: (Pick<Project, "parts" | "manual_faces"> & Partial<Pick<Project, "towers">>) | null | undefined): boolean {
+  return !!project && project.parts.length === 0 && ((project.manual_faces?.length ?? 0) > 0 || (project.towers?.length ?? 0) > 0);
 }
 
 /**

@@ -5,6 +5,7 @@ import type { HostSlope } from "./dormers";
 import type { OpeningBox } from "./openings";
 import type {
   AiAssistant,
+  ArcEdit,
   ArcInput,
   AiAssistantId,
   ActivityItem,
@@ -36,6 +37,9 @@ import type {
   ReviewStatus,
   RoofPart,
   StandardKind,
+  Tower,
+  TowerPresetKind,
+  TowerPreview,
   TrashEntry,
   UpdateProgress,
 } from "./types";
@@ -206,6 +210,16 @@ export const api = {
   /** Wall `edge` moved outward by `dist` m, its neighbours stretched to meet it; "refused" where a neighbour runs parallel. */
   offsetWall: (project: Project, part: number, edge: number, dist: number) =>
     invoke<Project>("offset_wall", { project, part, edge, dist }),
+  /** Tower `index` replaced, or `tower` added (index null); a tower with problems is refused (the MCP tool set_tower). */
+  setTower: (project: Project, index: number | null, tower: Tower) =>
+    invoke<{ project: Project; index: number }>("set_tower", { project, index, tower }),
+  /** A new tower of a preset profile on `center`, `width` wide, its roof starting at `baseHeight`. */
+  towerPreset: (kind: TowerPresetKind, center: Point2, width: number, baseHeight: number) =>
+    invoke<Tower>("tower_preset", { kind, center, width, baseHeight }),
+  /** The roof of a tower being edited (areas, tiers, rings); refused with its first problem. */
+  towerPreview: (tower: Tower) => invoke<TowerPreview>("tower_preview", { tower }),
+  /** A corner of part `part` rounded or a wall bent into an arc (the MCP tool edit_walls' round_corner / bend_wall); "refused" when it does not fit. */
+  arcEdit: (project: Project, part: number, edit: ArcEdit) => invoke<Project>("arc_edit", { project, part, edit }),
   /** The corners of a regular polygon, counter-clockwise, the first wall along the x axis. */
   regularPolygon: (centre: Point2, sides: number, side: number, rotationDeg = 0) =>
     invoke<{ corners: Point2[] }>("item_geometry", { request: { op: "regular_polygon", centre, sides, side, rotation_deg: rotationDeg } }).then((r) => r.corners),

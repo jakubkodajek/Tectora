@@ -51,8 +51,8 @@ import { partLabel } from "./partname";
 import type { Project } from "./types";
 
 /** The lists of a job whose items an edit can be for. */
-export type ListName = "parts" | "dormers" | "chimneys" | "windows" | "roof_openings" | "manual_faces" | "manual_lines";
-export const LISTS: readonly ListName[] = ["parts", "dormers", "chimneys", "windows", "roof_openings", "manual_faces", "manual_lines"];
+export type ListName = "parts" | "dormers" | "chimneys" | "windows" | "roof_openings" | "manual_faces" | "manual_lines" | "towers";
+export const LISTS: readonly ListName[] = ["parts", "dormers", "chimneys", "windows", "roof_openings", "manual_faces", "manual_lines", "towers"];
 
 const key = (v: unknown) => JSON.stringify(v ?? null);
 
@@ -121,6 +121,7 @@ const ITEM_NAME: Record<Exclude<ListName, "parts">, string> = {
   roof_openings: "opening.holeN",
   manual_lines: "manual.lineN",
   manual_faces: "manual.faceN",
+  towers: "tower.n",
 };
 
 /**

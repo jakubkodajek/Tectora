@@ -127,6 +127,28 @@
     return m;
   }
 
+  /**
+   * The band between two rings of equal length (plan x, y, z), flat-shaded:
+   * a tower tier between its rings, or a shaft between its foot and its top.
+   */
+  function bandMesh(a: Poly3, b: Poly3, mat: THREE.Material, target?: PlanTarget): THREE.Mesh | null {
+    const n = Math.min(a.length, b.length);
+    if (n < 2) return null;
+    const pos: number[] = [];
+    const put = (p: [number, number, number]) => pos.push(p[0], p[2], -p[1]);
+    for (let k = 0; k < n; k++) {
+      const j = (k + 1) % n;
+      put(a[k]); put(a[j]); put(b[j]);
+      put(a[k]); put(b[j]); put(b[k]);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, mat);
+    if (target) m.userData.target = target;
+    return m;
+  }
+
   /** True when the vertical polygon `g` stands on the wall line a–b (within 2 cm). */
   function onWall(g: Poly3, a: Point2, b: Point2): boolean {
     const len = Math.hypot(b.x - a.x, b.y - a.y);
@@ -416,6 +438,31 @@
         return { x: p.x + ((p.x - cx) / l) * 0.05, y: p.y + ((p.y - cy) / l) * 0.05 };
       });
       content.add(selectable(prism(cap, top - 0.08, top, capMat, target), key, selObjMat));
+    });
+
+    // Towers: each tier as the band between its rings, the flat top, and the
+    // shaft from where it leaves the roof (or the ground) up to the tower's
+    // roof (core `report::tower_report`), in the roof's material colours.
+    (project.towers ?? []).forEach((_, index) => {
+      const rep = result?.towers?.[index];
+      const r = rep?.result;
+      if (!r) return;
+      const target: PlanTarget = { type: "item", item: { kind: "tower", index } };
+      const key = itemKey(target.item);
+      for (const tier of r.tiers) {
+        for (let k = 0; k + 1 < tier.rings.length; k++) {
+          const m = bandMesh(tier.rings[k], tier.rings[k + 1], faceMat(tier.material), target);
+          if (m) content.add(selectable(m, key, selDormerMat));
+        }
+      }
+      if (r.cap && r.cap.ring.length >= 3) content.add(selectable(polyMesh(r.cap.ring, [], faceMat(r.cap.material), target), key, selDormerMat));
+      const foot = rep.shaft?.bottom ?? [];
+      const base = r.tiers[0]?.rings[0];
+      if (foot.length >= 3) {
+        const top = foot.map((p) => [p[0], p[1], Math.max(p[2], r.tiers[0]?.bottom_height ?? p[2])] as [number, number, number]);
+        const m = bandMesh(foot, base && base.length === foot.length ? base : top, wallMat, target);
+        if (m) content.add(selectable(m, key, selWallMat));
+      }
     });
 
     // Roof windows: a frame box standing 9 cm proud of the roof face under

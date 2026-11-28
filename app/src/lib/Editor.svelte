@@ -27,6 +27,9 @@
   import DormerDialog from "./DormerDialog.svelte";
   import OpeningBar from "./OpeningBar.svelte";
   import ManualBar from "./ManualBar.svelte";
+  import TowerDialog from "./TowerDialog.svelte";
+  import ArcForm from "./ArcForm.svelte";
+  import { defaultTowerBase } from "./towers";
   import { commitFocused } from "./commitfocus";
   import { textfield } from "./textfield";
   import ContextMenu, { type MenuEntry, type MenuState } from "./ContextMenu.svelte";
@@ -35,7 +38,7 @@
   import { snapToRoof, type ManualSel } from "./manual";
   import { keptSelection } from "./selection";
   import { fitlabels } from "./fitlabels";
-  import { describeCalcError, describeError, describeProblem, toAppError, type AppError, type Described } from "./errors";
+  import { describeCalcError, describeError, describeProblem, refusalReason, toAppError, type AppError, type Described } from "./errors";
   import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning, toasts } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
@@ -67,7 +70,7 @@
   import { tabIds, tablist } from "./tabs";
   import { actorName, entryText, isFresh, live, liveText, pillText, receivedRecalculation, refreshedNotice } from "./live.svelte";
   import { prefs, presets, reviewedAt, savePrefs } from "./settings.svelte";
-  import type { ActivityItem, Arc, HelperRequest, Recalculation, RefreshedEntry, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, LineRef, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
+  import type { ActivityItem, Arc, HelperRequest, Recalculation, RefreshedEntry, ReviewStatus, CalcBreakdown, CalcResult, Change, Chimney, Dormer, EdgeDef, ManualFace, ManualLine, Tower, LineRef, PlanLabel, PlanMark, Point2, Project, RoofPart, RoofWindow, Selection } from "./types";
   import { GABLE_PITCH, buildingHeight, emptyProject, isAi, isGable, isMarker } from "./types";
   import { eavePitchFor, pruneEavePitches, rememberEavePitch, useEavePitchJob } from "./walltype";
   import { pressKeepingFocus } from "./press";
@@ -199,7 +202,22 @@
   let dormerDialog = $state<ReturnType<typeof DormerDialog> | undefined>();
   /** A warning of the dormer dialog OK does not wait for, repeated next to OK. */
   let dormerNotice = $state<string | null>(null);
-  let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face">(false);
+  let placing = $state<false | "dormer" | "chimney" | "window" | "hole" | "line" | "face" | "tower">(false);
+  /** The selected tower, or null. */
+  let towerSel = $state<number | null>(null);
+  $effect(() => {
+    if (towerSel !== null && (!project || towerSel >= (project.towers?.length ?? 0))) towerSel = null;
+  });
+  // A wall or a building picked (the menu, the bars, the search) ends the tower's selection.
+  $effect(() => {
+    if (selection) untrack(() => towerSel !== null && (towerSel = null));
+  });
+  /** The tower dialog: a new tower (index null) or tower `index`. */
+  let towerDlg = $state<{ index: number | null; tower: Tower } | null>(null);
+  /** Why the tower dialog's OK cannot store the tower (the dialog says it), else null. */
+  let towerBlocked = $state<string | null>(null);
+  /** The curved-wall dialog: wall `index` bent by `value` m, or corner `index` rounded with radius `value` m. */
+  let arcDlg = $state<{ part: number; index: number; mode: "bend" | "round"; value: number; segments: number | null; max: number | null; refused: string | null } | null>(null);
   // Hand-drawn roof lines and faces (DACAD: Dachlinieneingabe, Neue Dachfläche).
   let manualSel = $state<ManualSel>(null);
   /** Points picked so far for the line or face being added. */
@@ -396,11 +414,11 @@
   }
   const plain = (p: Project) => $state.snapshot(p) as Project;
   /** One-shot actions under way: their buttons are off and a second press does nothing (UI-302, UI-308). */
-  let acting = $state({ transform: false, calc: false, round: false, face: false, store: false, dormer: false, copy: false });
+  let acting = $state({ transform: false, calc: false, round: false, face: false, store: false, dormer: false, copy: false, tower: false, arc: false });
   /** What the open dialogs are for (kept out of the reactive state: the holds are moved by `edits`). */
-  const dialogHolds: { calc?: Hold; xform?: Hold; round?: Hold; dormer?: Hold } = {};
+  const dialogHolds: { calc?: Hold; xform?: Hold; round?: Hold; dormer?: Hold; tower?: Hold; arc?: Hold } = {};
   const SEL_LIST: Record<NonNullable<OpeningSel>["kind"], ListName> = { chimney: "chimneys", window: "windows", hole: "roof_openings" };
-  const ITEM_LIST: Record<ItemRef["kind"], ListName> = { dormer: "dormers", chimney: "chimneys", window: "windows", hole: "roof_openings", line: "manual_lines", face: "manual_faces" };
+  const ITEM_LIST: Record<ItemRef["kind"], ListName> = { dormer: "dormers", chimney: "chimneys", window: "windows", hole: "roof_openings", line: "manual_lines", face: "manual_faces", tower: "towers" };
 
   /**
    * For the bars: a core-backed edit of item `index` of `list`, held now and
@@ -429,12 +447,14 @@
     const dormer = dormerSel !== null ? jobEdits.hold("dormers", dormerSel, true) : null;
     const opening = openSel ? jobEdits.hold(SEL_LIST[openSel.kind], openSel.index, true) : null;
     const manual = manualSel ? jobEdits.hold(manualSel.kind === "line" ? "manual_lines" : "manual_faces", manualSel.index, true) : null;
+    const towerHold = towerSel !== null ? jobEdits.hold("towers", towerSel, true) : null;
     project = next;
     jobEdits.outside(base, remote, plain(before), next);
     if (wall && selection) selection = wall.gone ? null : keptSelection(next, { part: wall.index, edge: selection.edge });
     if (dormer) dormerSel = dormer.gone ? null : dormer.index;
     if (opening && openSel) openSel = opening.gone ? null : { kind: openSel.kind, index: opening.index };
     if (manual && manualSel) manualSel = manual.gone ? null : { kind: manualSel.kind, index: manual.index };
+    if (towerHold) towerSel = towerHold.gone ? null : towerHold.index;
   }
 
   /** AI changes since the user's last own action or accept, newest first. */
@@ -1892,6 +1912,8 @@
     if (xform) gone(dialogHolds.xform, acting.transform) ? (xform = null) : (xform.part = dialogHolds.xform!.index);
     if (round) gone(dialogHolds.round, acting.round) ? (round = null) : (round.part = dialogHolds.round!.index);
     if (dormerDlg && dormerDlg.index !== null) gone(dialogHolds.dormer, acting.dormer) ? (dormerDlg = null) : (dormerDlg.index = dialogHolds.dormer!.index);
+    if (towerDlg && towerDlg.index !== null) gone(dialogHolds.tower, acting.tower) ? (towerDlg = null) : (towerDlg.index = dialogHolds.tower!.index);
+    if (arcDlg) gone(dialogHolds.arc, acting.arc) ? (arcDlg = null) : (arcDlg.part = dialogHolds.arc!.index);
     if (closed) info(t("editor.dialogStale"));
   }
 
@@ -1956,6 +1978,7 @@
     if (next.roof_openings) project.roof_openings = next.roof_openings;
     if (next.manual_lines) project.manual_lines = next.manual_lines;
     if (next.manual_faces) project.manual_faces = next.manual_faces;
+    if (next.towers) project.towers = next.towers;
   }
 
   /** The dialog's OK: the core applies the helper's values (the MCP tool roof_helper with apply). */
@@ -2356,6 +2379,131 @@
     else if (placing === "hole") placeHole(x, y);
     else if (placing === "line") placeLinePoint(x, y);
     else if (placing === "face") placeFacePoint(x, y);
+    else if (placing === "tower") placeTower(x, y);
+  }
+
+  // ---- Towers (core `tower`, MCP set_tower) ------------------------------
+
+  /** A new tower's width, m [no source: editor choice, a small turret]. */
+  const NEW_TOWER_WIDTH = 3;
+
+  /** Opens the tower dialog for a new pyramid tower on the click, its roof 3 m above the roof under it. */
+  const placeTower = (x: number, y: number) => pendingEdits.track(placeTowerNow(x, y));
+  async function placeTowerNow(x: number, y: number) {
+    if (!project) return;
+    placing = false;
+    const eaves = project.parts.flatMap((p) => p.edges.map((e) => e.eave_height));
+    const base = defaultTowerBase((p) => roofHeightAt(result, p), { x, y }, NEW_TOWER_WIDTH, eaves.length ? maxOf(eaves) : presets.eave_height);
+    try {
+      const tower = await api.towerPreset("pyramid", { x: +x.toFixed(3), y: +y.toFixed(3) }, NEW_TOWER_WIDTH, base);
+      towerBlocked = null;
+      towerDlg = { index: null, tower };
+    } catch (e) {
+      notifyError(e, "calc");
+    }
+  }
+
+  function editTower(i: number) {
+    if (!project?.towers?.[i]) return;
+    towerBlocked = null;
+    dialogHolds.tower = jobEdits.hold("towers", i);
+    towerDlg = { index: i, tower: JSON.parse(JSON.stringify($state.snapshot(project.towers[i]))) as Tower };
+  }
+
+  /** The tower dialog's OK: the core stores the tower (`set_tower`), or the dialog says why not. */
+  // Not tracked itself: it waits for the edits under way first (a typed value commits on blur).
+  const applyTowerDialog = exclusive(applyTowerDialogNow, (b) => (acting.tower = b));
+  async function applyTowerDialogNow() {
+    await tick();
+    await pendingEdits.settled();
+    if (!project || !towerDlg || towerBlocked) return;
+    const tower = $state.snapshot(towerDlg.tower) as Tower;
+    const done = (r: { project: Project; index: number }) => {
+      if (!project) return;
+      project.towers = r.project.towers ?? [];
+      selectItem({ kind: "tower", index: r.index });
+      towerDlg = null;
+      commit();
+    };
+    try {
+      if (towerDlg.index === null) {
+        const r = await pendingEdits.track(api.setTower(plain(project), null, tower));
+        if (!towerDlg) return;
+        done(r);
+        return;
+      }
+      if (dialogHolds.tower?.gone !== false) {
+        towerDlg = null;
+        info(t("editor.dialogStale"));
+        return;
+      }
+      const o = await pendingEdits.track(jobEdits.run(dialogHolds.tower, (job, i) => api.setTower(plain(job), i, tower), done));
+      if (o === "gone") towerDlg = null;
+    } catch (e) {
+      const err = toAppError(e);
+      if (err.code === "refused") towerBlocked = refusalReason(err.detail);
+      else notifyError(e, "calc");
+    }
+  }
+
+  // ---- Curved walls (core `edit::arcs`, MCP edit_walls) ------------------
+
+  /** Length of wall `edge` of part `part`, m. */
+  function wallLength(part: number, edge: number): number {
+    const es = project?.parts[part]?.edges;
+    if (!es?.[edge]) return 0;
+    const a = es[edge].start;
+    const b = es[(edge + 1) % es.length].start;
+    return Math.hypot(b.x - a.x, b.y - a.y);
+  }
+
+  function openArc(part: number, index: number, mode: "bend" | "round") {
+    if (!project?.parts[part]) return;
+    dialogHolds.arc = jobEdits.hold("parts", part);
+    const half = Math.floor((wallLength(part, index) / 2) * 1000) / 1000;
+    arcDlg = { part, index, mode, value: mode === "bend" ? +Math.min(1, half).toFixed(3) : 1, segments: null, max: mode === "bend" ? half : null, refused: null };
+  }
+
+  /** A semicircular end on wall `edge` (an apse: the bulge is half the wall), made at once. */
+  function apseWall(part: number, edge: number) {
+    const half = Math.floor((wallLength(part, edge) / 2) * 1000) / 1000;
+    if (half < 0.005) return;
+    void runArc(jobEdits.hold("parts", part), { op: "bend_wall", index: edge, bulge: half }, null);
+  }
+
+  // Not tracked itself: it waits for the edits under way first (a typed value commits on blur).
+  const applyArcDialog = exclusive(applyArcDialogNow, (b) => (acting.arc = b));
+  async function applyArcDialogNow() {
+    await tick();
+    await pendingEdits.settled();
+    if (!arcDlg || !dialogHolds.arc) return;
+    const d = arcDlg;
+    const segments = d.segments ?? undefined;
+    const edit = d.mode === "bend" ? ({ op: "bend_wall", index: d.index, bulge: d.value, segments } as const) : ({ op: "round_corner", index: d.index, radius: d.value, segments } as const);
+    const why = await pendingEdits.track(runArc(dialogHolds.arc, edit, d));
+    if (why === null) arcDlg = null;
+    else if (arcDlg === d) arcDlg.refused = why;
+  }
+
+  /**
+   * Bends a wall or rounds a corner of the held part with the core; null
+   * when made, else the reason (also shown as a toast when no dialog is open).
+   */
+  async function runArc(hold: Hold, edit: import("./types").ArcEdit, dlg: unknown): Promise<string | null> {
+    try {
+      const o = await jobEdits.run(hold, (job, pi) => api.arcEdit(plain(job), pi, edit), (next) => {
+        adoptProject(next);
+        if (selection && !project?.parts[selection.part]?.edges[selection.edge]) selection = { part: selection.part, edge: 0 };
+        commit();
+      });
+      if (o === "gone") return dlg ? t("editor.dialogStale") : null;
+      return null;
+    } catch (e) {
+      const err = toAppError(e);
+      if (err.code === "refused" && dlg) return refusalReason(err.detail);
+      if (!notifyRefusal(e, "arc")) notifyError(e, "calc");
+      return dlg ? t("refuse.other") : null;
+    }
   }
 
   // Snap radius to the calculated roof's points, m [no source: picked to
@@ -2440,6 +2588,7 @@
     selection = null;
     dormerSel = null;
     openSel = null;
+    towerSel = null;
     manualSel = s;
   }
 
@@ -2565,6 +2714,7 @@
     selection = null;
     dormerSel = null;
     manualSel = null;
+    towerSel = null;
     openSel = s;
   }
 
@@ -2638,6 +2788,7 @@
   /** The selected single object, if any. */
   const selectedItem = $derived.by((): ItemRef | null => {
     if (dormerSel !== null) return { kind: "dormer", index: dormerSel };
+    if (towerSel !== null) return { kind: "tower", index: towerSel };
     if (openSel) return { kind: openSel.kind, index: openSel.index };
     if (manualSel) return { kind: manualSel.kind, index: manualSel.index };
     return null;
@@ -2648,6 +2799,7 @@
     dormerSel = it?.kind === "dormer" ? it.index : null;
     openSel = it && (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") ? { kind: it.kind, index: it.index } : null;
     manualSel = it && (it.kind === "line" || it.kind === "face") ? { kind: it.kind, index: it.index } : null;
+    towerSel = it?.kind === "tower" ? it.index : null;
   }
 
   /** The object dialog of a chimney, roof window or opening (Properties, double-click). */
@@ -2686,6 +2838,7 @@
     if (!project || inputClosed() || !itemExists(project, it)) return;
     selectItem(it);
     if (it.kind === "dormer") editDormer();
+    else if (it.kind === "tower") editTower(it.index);
     else if (it.kind === "chimney" || it.kind === "window" || it.kind === "hole") {
       objDlgAt = at;
       objDlg = true;
@@ -2899,7 +3052,7 @@
       : it.kind === "face" ? (project.manual_faces ?? [])[it.index]?.points ?? []
       : it.kind === "line" ? (() => { const l = project.manual_lines![it.index]; return [{ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] }]; })()
       : [];
-    const w = it.kind === "window" ? project.windows![it.index].width : pts.length ? maxOf(pts, (p) => p.x) - minOf(pts, (p) => p.x) : 0.5;
+    const w = it.kind === "window" ? project.windows![it.index].width : it.kind === "tower" ? project.towers![it.index].width : pts.length ? maxOf(pts, (p) => p.x) - minOf(pts, (p) => p.x) : 0.5;
     return { x: +(Math.max(w, 0.2) + 0.3).toFixed(3), y: 0 };
   }
 
@@ -2960,13 +3113,14 @@
       hole: t("opening.holeN", { n }),
       line: t("manual.lineN", { n }),
       face: t("manual.faceN", { n }),
+      tower: project?.towers?.[it.index]?.label || t("tower.n", { n }),
     }[it.kind];
   }
 
   /** "Add … here" entries, for a press on the roof or next to it. */
   function placeEntries(at: Point2): MenuEntry[] {
     if (!project?.parts.length) return [];
-    const go = (kind: "dormer" | "chimney" | "window" | "hole") => () => {
+    const go = (kind: "dormer" | "chimney" | "window" | "hole" | "tower") => () => {
       placing = kind;
       place(at.x, at.y);
     };
@@ -2975,6 +3129,7 @@
       { label: t("menu.placeWindow"), icon: "window", action: go("window") },
       { label: t("menu.placeHole"), icon: "hole", action: go("hole") },
       { label: t("menu.placeDormer"), icon: "roof", action: go("dormer") },
+      { label: t("menu.placeTower"), icon: "tower", action: go("tower") },
     ];
   }
 
@@ -3075,6 +3230,8 @@
             : { label: t("menu.makeGable"), icon: "house", action: () => { const w = project?.parts[part]?.edges[edge]; if (w) rememberEavePitch(part, w); patchEdge({ pitch_deg: GABLE_PITCH }); } },
           { label: t("menu.insertPoint"), icon: "plus", action: () => insertVertex(part, edge, on.x, on.y) },
           { label: t("edge.addMarker"), icon: "right", action: insertMarker },
+          { label: t("arc.bend"), icon: "arc", action: () => openArc(part, edge, "bend") },
+          { label: t("arc.apse"), icon: "arc", action: () => apseWall(part, edge) },
         ]),
         ...(!marker && !gable ? [{ label: t("calc.button"), icon: "chart", action: () => openCalc(part, edge) }] : []),
         { sep: true },
@@ -3089,6 +3246,7 @@
       const canDelete = isMarker(es[vertex]) || es.filter((x) => !isMarker(x)).length > 3;
       entries = [
         { label: t("menu.properties"), icon: "sliders", action: focusProperties },
+        ...(isMarker(es[vertex]) ? [] : [{ label: t("arc.round"), icon: "arc", action: () => openArc(part, vertex, "round") }]),
         { label: t("menu.deletePoint"), icon: "trash", danger: true, hint: deleteKeyHint(isMac), disabled: !canDelete, action: deleteVertex },
       ];
     } else if (target.type === "part") {
@@ -3125,7 +3283,7 @@
     return true;
   }
 
-  async function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face") {
+  async function togglePlacing(kind: "dormer" | "chimney" | "window" | "hole" | "line" | "face" | "tower") {
     // Another tool ends the footprint being drawn: ask as Escape does (UX-013).
     if (drawing && !(await cancelDraw(true))) return;
     placing = placing === kind ? false : kind;
@@ -3164,7 +3322,7 @@
   /** Whether anything is drawn that Clear would remove. */
   function hasDrawing(p: Project | null): boolean {
     if (!p) return false;
-    return [p.parts, p.dormers, p.chimneys, p.windows, p.roof_openings, p.manual_lines, p.manual_faces].some((l) => (l?.length ?? 0) > 0);
+    return [p.parts, p.dormers, p.chimneys, p.windows, p.roof_openings, p.manual_lines, p.manual_faces, p.towers].some((l) => (l?.length ?? 0) > 0);
   }
 
   // Removes everything drawn and leaves an empty canvas (MCP clear_roof);
@@ -3190,10 +3348,12 @@
       project.roof_openings = [];
       project.manual_lines = [];
       project.manual_faces = [];
+      project.towers = [];
       selection = null;
       dormerSel = null;
       openSel = null;
       manualSel = null;
+      towerSel = null;
       placing = false;
       commit();
     });
@@ -3243,6 +3403,7 @@
     dormerSel = null;
     openSel = null;
     manualSel = null;
+    towerSel = null;
   }
 
   /**
@@ -3421,7 +3582,7 @@
     } else if (mod && e.key.toLowerCase() === "d" && selectedItem && !drawing) {
       e.preventDefault();
       duplicateItem(selectedItem);
-    } else if (!drawing && !placing && dormerSel === null && !openSel && !manualSel && project?.parts.length && wallStepKey(e, false)) {
+    } else if (!drawing && !placing && dormerSel === null && towerSel === null && !openSel && !manualSel && project?.parts.length && wallStepKey(e, false)) {
       // PageDown / PageUp, Alt+→ / Alt+←: the next or previous wall (UX-006).
       e.preventDefault();
       selection = stepWall(project, selection, wallStepKey(e, false));
@@ -3451,6 +3612,9 @@
       dormerSel = null;
       openSel = null;
       manualSel = null;
+      towerSel = null;
+    } else if (del && towerSel !== null && !drawing) {
+      removeItem({ kind: "tower", index: towerSel });
     } else if (del && dormerSel !== null && !drawing) {
       deleteDormer();
     } else if (del && openSel && !drawing) {
@@ -3505,6 +3669,7 @@
       <button class="tool" class:on={placing === "chimney"} aria-pressed={placing === "chimney"} disabled={!project?.parts.length} onclick={() => togglePlacing("chimney")} title={t("tool.chimneyHint")}><Icon name="chimney" /><span>{t("tool.chimney")}</span></button>
       <button class="tool" class:on={placing === "window"} aria-pressed={placing === "window"} disabled={!project?.parts.length} onclick={() => togglePlacing("window")} title={t("tool.windowHint")}><Icon name="window" /><span>{t("tool.window")}</span></button>
       <button class="tool" class:on={placing === "hole"} aria-pressed={placing === "hole"} disabled={!project?.parts.length} onclick={() => togglePlacing("hole")} title={t("tool.holeHint")}><Icon name="hole" /><span>{t("tool.hole")}</span></button>
+      <button class="tool" class:on={placing === "tower"} aria-pressed={placing === "tower"} onclick={() => togglePlacing("tower")} title={t("tool.towerHint")}><Icon name="tower" /><span>{t("tool.tower")}</span></button>
     </div>
     <div class="group">
       <button class="tool" class:on={placing === "line"} aria-pressed={placing === "line"} disabled={!result} onclick={() => togglePlacing("line")} title={t("tool.lineHint")}><Icon name="line" /><span>{t("tool.line")}</span></button>
@@ -3633,6 +3798,7 @@
                 bind:dormerSel
                 bind:openSel
                 bind:manualSel
+                bind:towerSel
                 {manualDraft}
                 {placing}
                 onplace={place}
@@ -3690,6 +3856,22 @@
         {:else if dormerSel !== null}
           <DormerBar {project} {result} bind:index={dormerSel} onchange={setDormer} ondelete={deleteDormer} onedit={editDormer} edit={barEdit}
             onplace={(e, l, r) => (dormerSel !== null ? placeItem({ kind: "dormer", index: dormerSel }, e, l, r) : undefined)} />
+        {:else if towerSel !== null && project.towers?.[towerSel]}
+          {@const tw = project.towers[towerSel]}
+          {@const tr = result?.towers?.[towerSel]}
+          <div class="bar tower-bar" role="toolbar" aria-label={tw.label || t("tower.n", { n: towerSel + 1 })} data-testid="tower-bar">
+            <strong>{tw.label || t("tower.n", { n: towerSel + 1 })}</strong>
+            <span class="tower-facts">
+              {#if tr?.result}
+                {t("tower.summary", { n: tw.tiers.length, h: num(tr.result.top_height) })} · {t("tower.roofArea")} {m2(tr.roof_area ?? 0)}
+              {:else}
+                {t("tower.notCalculated")}
+              {/if}
+            </span>
+            <span class="spacer"></span>
+            <button class="btn sm" onclick={() => towerSel !== null && editTower(towerSel)}><Icon name="sliders" size={15} />{t("tower.edit")}</button>
+            <button class="btn sm ghost danger" onclick={() => towerSel !== null && removeItem({ kind: "tower", index: towerSel })}><Icon name="trash" size={15} />{t("tower.delete")}</button>
+          </div>
         {:else if openSel}
           <OpeningBar {project} bind:sel={openSel} onchimney={setChimney} onwindow={setWindow} ondelete={deleteOpening} edit={barEdit}
             placement={openSel ? placementOf(result, openSel) : null}
@@ -3796,6 +3978,27 @@
       {:else if dormerNotice}<p class="dlg-why" role="status" data-testid="dormer-ok-notice">{dormerNotice}</p>{/if}
       <button class="btn" onclick={() => (dormerDlg = null)}>{t("common.cancel")}</button>
       <button class="btn primary" disabled={!!dormerBlocked} aria-disabled={acting.dormer} aria-busy={acting.dormer} title={dormerBlocked ?? undefined} onclick={() => !acting.dormer && applyDormerDialog()}>{t("common.ok")}</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if towerDlg && project}
+  <Modal title={towerDlg.index === null ? t("tower.dialogNew") : towerDlg.tower.label || t("tower.n", { n: towerDlg.index + 1 })} width={860} onclose={() => (towerDlg = null)}>
+    <TowerDialog {project} bind:tower={towerDlg.tower} bind:blocked={towerBlocked} />
+    {#snippet footer()}
+      {#if towerBlocked}<p class="dlg-why" role="alert" data-testid="tower-ok-blocked">{towerBlocked}</p>{/if}
+      <button class="btn" onclick={() => (towerDlg = null)}>{t("common.cancel")}</button>
+      <button class="btn primary" data-testid="tower-ok" disabled={!!towerBlocked} aria-disabled={acting.tower} aria-busy={acting.tower} title={towerBlocked ?? undefined} onclick={() => !acting.tower && applyTowerDialog()}>{t("common.ok")}</button>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if arcDlg && project?.parts[arcDlg.part]}
+  <Modal title={arcDlg.mode === "bend" ? t("arc.bendTitle", { n: arcDlg.index + 1 }) : t("arc.roundTitle", { n: arcDlg.index + 1 })} width={420} onclose={() => (arcDlg = null)}>
+    <ArcForm mode={arcDlg.mode} bind:value={arcDlg.value} bind:segments={arcDlg.segments} max={arcDlg.max} refused={arcDlg.refused} />
+    {#snippet footer()}
+      <button class="btn" onclick={() => (arcDlg = null)}>{t("common.cancel")}</button>
+      <button class="btn primary" data-testid="arc-ok" aria-disabled={acting.arc} aria-busy={acting.arc} onclick={() => !acting.arc && applyArcDialog()}>{t("common.ok")}</button>
     {/snippet}
   </Modal>
 {/if}
@@ -4698,5 +4901,28 @@
     .review:not(.open) .review-figures {
       display: none;
     }
+  }
+  .tower-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 14px 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    min-height: 70px;
+  }
+  .tower-bar .tower-facts {
+    font-size: 12.5px;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .tower-bar .spacer {
+    flex: 1;
+  }
+  .tower-bar .btn.sm {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
   }
 </style>

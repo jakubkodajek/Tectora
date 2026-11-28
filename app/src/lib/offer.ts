@@ -39,9 +39,9 @@ export function roofInput(p: Project): string {
   return JSON.stringify(rest);
 }
 
-/** Whether the job has anything to calculate: a building or a hand-drawn face (UX-102, UX-111). */
-export function hasBuilding(p: Pick<Project, "parts" | "manual_faces">): boolean {
-  return p.parts.length > 0 || (p.manual_faces?.length ?? 0) > 0;
+/** Whether the job has anything to calculate: a building, a hand-drawn face (UX-102, UX-111) or a tower. */
+export function hasBuilding(p: Pick<Project, "parts" | "manual_faces"> & Partial<Pick<Project, "towers">>): boolean {
+  return p.parts.length > 0 || (p.manual_faces?.length ?? 0) > 0 || (p.towers?.length ?? 0) > 0;
 }
 
 /** Smallest change of a figure that counts, m or m² (core `snapshot::TOLERANCE`). */

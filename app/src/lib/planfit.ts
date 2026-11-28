@@ -49,6 +49,7 @@ export interface PlanContent {
   parts: { edges: { start: Pt }[] }[];
   manual_faces?: { points: Pt[] }[] | null;
   manual_lines?: { a: number[]; b: number[] }[] | null;
+  towers?: { center: Pt; width: number; depth?: number | null }[] | null;
 }
 
 /**
@@ -62,6 +63,11 @@ export function contentPoints(project: PlanContent, faces: readonly (readonly nu
   const pts: Pt[] = project.parts.flatMap((p) => p.edges.map((e) => e.start));
   for (const f of project.manual_faces ?? []) pushAll(pts, f.points);
   for (const l of project.manual_lines ?? []) pts.push({ x: l.a[0], y: l.a[1] }, { x: l.b[0], y: l.b[1] });
+  // A tower's footprint, whichever way it is turned (it may stand beside the buildings).
+  for (const tw of project.towers ?? []) {
+    const r = Math.max(tw.width, tw.depth ?? 0) * 0.75;
+    if (Number.isFinite(r) && Number.isFinite(tw.center.x) && Number.isFinite(tw.center.y)) pts.push({ x: tw.center.x - r, y: tw.center.y - r }, { x: tw.center.x + r, y: tw.center.y + r });
+  }
   for (const polygon of faces) for (const q of polygon) pts.push({ x: q[0], y: q[1] });
   if (drawing) pushAll(pts, drawing);
   return pts;

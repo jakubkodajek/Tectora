@@ -18,6 +18,8 @@
   import { draftWalls } from "./drawstep";
   import { coveredPieces, visibleFaceTags } from "./planjoin";
   import { numberLocale } from "./i18n.svelte";
+  import { maxOf } from "./extent";
+  import { roughFootprint } from "./towers";
 
   let {
     project,
@@ -41,6 +43,7 @@
     onplace,
     openSel = $bindable(null),
     manualSel = $bindable(null),
+    towerSel = $bindable(null),
     manualDraft = [],
     ondrag,
     ondragarm,
@@ -80,12 +83,14 @@
     /** Index of the selected dormer, or null. */
     dormerSel?: number | null;
     /** What the next click places: a dormer's front corner, a chimney, a window or a roof opening. */
-    placing?: false | "dormer" | "chimney" | "window" | "hole" | "line" | "face";
+    placing?: false | "dormer" | "chimney" | "window" | "hole" | "line" | "face" | "tower";
     onplace?: (x: number, y: number) => void;
     /** The selected chimney, roof window or roof opening, or null. */
     openSel?: OpeningSel;
     /** The selected hand-drawn line or face, or null. */
     manualSel?: ManualSel;
+    /** Index of the selected tower, or null. */
+    towerSel?: number | null;
     /** Points picked so far for a line or face being added. */
     manualDraft?: [number, number, number][];
     /** A step of the drag of an item or the selected part, by (dx, dy) from the press. */
@@ -293,6 +298,10 @@
     }
     return out;
   });
+  /** A closed ring of [x, y, z] points as a screen path. */
+  const ringPath = (ring: [number, number, number][]) => "M" + ring.map((p) => `${sx(p[0])},${sy(p[1])}`).join("L") + "Z";
+  /** How far a ring's points lie apart in plan, m (a tier ending in a point has none). */
+  const spread = (ring: [number, number, number][]) => maxOf(ring, (p) => Math.hypot(p[0] - ring[0][0], p[1] - ring[0][1]));
   /** One dimension line in screen space with end ticks; null when too short to draw. */
   function dimLine(a: Point2, b: Point2) {
     const [x1, y1, x2, y2] = [sx(a.x), sy(a.y), sx(b.x), sy(b.y)];
@@ -462,6 +471,7 @@
     dormerSel = item.kind === "dormer" ? item.index : null;
     openSel = item.kind === "chimney" || item.kind === "window" || item.kind === "hole" ? { kind: item.kind, index: item.index } : null;
     manualSel = item.kind === "line" || item.kind === "face" ? { kind: item.kind, index: item.index } : null;
+    towerSel = item.kind === "tower" ? item.index : null;
   }
 
   /** Captures the pointer for a press that goes on (a drag, a pan); false
@@ -587,6 +597,7 @@
           dormerSel = null;
           openSel = null;
           manualSel = null;
+          towerSel = null;
         }
         oncontext?.(target, client, snapPoint(local.x, local.y, false));
       }, LONG_MS),
@@ -641,6 +652,7 @@
       dormerSel = null;
       openSel = null;
       manualSel = null;
+      towerSel = null;
       return;
     }
     startObjDrag(e, { type: "part", part });
@@ -653,6 +665,7 @@
     dormerSel = null;
     openSel = null;
     manualSel = null;
+    towerSel = null;
     if (button(e) === 2) rcTarget = { type: "edge", part, edge };
     else e.stopPropagation();
   }
@@ -707,6 +720,7 @@
         dormerSel = null;
         openSel = null;
         manualSel = null;
+        towerSel = null;
       }
       capture(e);
     }
@@ -772,6 +786,7 @@
       dormerSel = null;
       openSel = null;
       manualSel = null;
+      towerSel = null;
       rcTarget = { type: "vertex", part, vertex };
       return;
     }
@@ -1202,6 +1217,32 @@
         role="button" tabindex="-1" aria-label={t("opening.chimneyN", { n: ci + 1 })}
         onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "chimney", index: ci } })} />
     {/each}
+    {#each project.towers ?? [] as tw, ti}
+      {@const tr = result?.towers?.[ti]?.result ?? null}
+      {@const name = tw.label || t("tower.n", { n: ti + 1 })}
+      <!-- A tower from its calculated rings: the base, each tier's top, the hips (G); a tower with problems as a dashed outline. -->
+      <g class="tower" class:sel={towerSel === ti} class:changed={highlightItems.has(`tower:${ti}`)} data-testid="plan-tower">
+        {#if tr && tr.tiers[0]?.rings[0]?.length}
+          <path class="tower-base" d={ringPath(tr.tiers[0].rings[0])}
+            role="button" tabindex="-1" aria-label={name}
+            onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "tower", index: ti } })} />
+          {#each tr.tiers as x}
+            {@const top = x.rings[x.rings.length - 1] ?? []}
+            {#if top.length > 1 && spread(top) > 0.01}<path class="tower-ring" d={ringPath(top)} />{/if}
+          {/each}
+          {#each tr.lines as l}
+            {#if l.code === "G" && l.points.length > 1}<path class="tower-hip" d={"M" + l.points.map((p) => `${sx(p[0])},${sy(p[1])}`).join("L")} />{/if}
+          {/each}
+        {:else}
+          {@const fp = roughFootprint(tw)}
+          {#if fp.length > 2}
+            <path class="tower-base bad" d={"M" + fp.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
+              role="button" tabindex="-1" aria-label={name}
+              onpointerdown={(ev) => press(ev, { on: "item", item: { kind: "tower", index: ti } })} />
+          {/if}
+        {/if}
+      </g>
+    {/each}
     {#each project.roof_openings ?? [] as c, hi}
       <path class="opening hole" class:sel={openSel?.kind === "hole" && openSel.index === hi} class:changed={highlightItems.has(`roof_opening:${hi}`)}
         d={"M" + c.corners.map((p) => `${sx(p.x)},${sy(p.y)}`).join("L") + "Z"}
@@ -1549,6 +1590,36 @@
   .edge.changed .wall {
     stroke: var(--ai);
     stroke-dasharray: none;
+  }
+  .tower-base {
+    fill: color-mix(in srgb, var(--mat-sheet) 30%, transparent);
+    stroke: var(--text-2);
+    stroke-width: 1.5;
+    cursor: pointer;
+  }
+  .tower.sel .tower-base {
+    stroke: var(--accent);
+    stroke-width: 2.5;
+    cursor: move;
+  }
+  .tower-base.bad {
+    fill: none;
+    stroke-dasharray: 5 4;
+  }
+  .tower-ring,
+  .tower-hip {
+    fill: none;
+    stroke: var(--text-2);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+  .tower-hip {
+    stroke: var(--line-hip);
+  }
+  .tower.changed .tower-base {
+    stroke: var(--ai);
+    stroke-width: 2.5;
+    animation: pulse-stroke 1.6s ease-in-out infinite;
   }
   /* Items the AI added or changed: same orange as changed walls. */
   .opening.changed,

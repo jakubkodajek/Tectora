@@ -1,13 +1,13 @@
 // Single objects on the roof (dormers, chimneys, roof windows, roof
-// openings, hand-drawn lines and faces) as the plan selects, drags,
+// openings, hand-drawn lines and faces, towers) as the plan selects, drags,
 // rotates and duplicates them. Same rules as tectora-core
 // `edit::transform::{transform_items, follow_roof}` (MCP `transform_items`).
 
 import type { CalcResult, Placement, Point2, Project } from "./types";
-import { mapChimney, mapDormer, mapManualFace, mapManualLine, mapWindow, power, rotation, translation, type PlanMap } from "./transform";
+import { mapChimney, mapDormer, mapManualFace, mapManualLine, mapTower, mapWindow, power, rotation, translation, type PlanMap } from "./transform";
 import { hostHeightAt } from "./dormers";
 
-export type ItemKind = "dormer" | "chimney" | "window" | "hole" | "line" | "face";
+export type ItemKind = "dormer" | "chimney" | "window" | "hole" | "line" | "face" | "tower";
 export interface ItemRef {
   kind: ItemKind;
   index: number;
@@ -21,6 +21,7 @@ export const MCP_KIND: Record<ItemKind, string> = {
   hole: "roof_opening",
   line: "manual_line",
   face: "manual_face",
+  tower: "tower",
 };
 
 /** An object's distances on its roof face from the calculation, if it has any (lines and faces have none). */
@@ -56,23 +57,25 @@ function list(project: Project, kind: ItemKind): unknown[] {
       return (project.manual_lines ??= []);
     case "face":
       return (project.manual_faces ??= []);
+    case "tower":
+      return (project.towers ??= []);
   }
 }
 
 export function itemExists(project: Project, it: ItemRef): boolean {
-  const n = { dormer: project.dormers.length, chimney: project.chimneys.length, window: project.windows?.length ?? 0, hole: project.roof_openings?.length ?? 0, line: project.manual_lines?.length ?? 0, face: project.manual_faces?.length ?? 0 }[it.kind];
+  const n = { dormer: project.dormers.length, chimney: project.chimneys.length, window: project.windows?.length ?? 0, hole: project.roof_openings?.length ?? 0, line: project.manual_lines?.length ?? 0, face: project.manual_faces?.length ?? 0, tower: project.towers?.length ?? 0 }[it.kind];
   return it.index >= 0 && it.index < n;
 }
 
 /** The object `it` refers to in `project`, or undefined when there is none. */
 export function itemOf(project: Project | null | undefined, it: ItemRef): unknown {
   if (!project) return undefined;
-  const list = { dormer: project.dormers, chimney: project.chimneys, window: project.windows, hole: project.roof_openings, line: project.manual_lines, face: project.manual_faces }[it.kind];
+  const list = { dormer: project.dormers, chimney: project.chimneys, window: project.windows, hole: project.roof_openings, line: project.manual_lines, face: project.manual_faces, tower: project.towers }[it.kind];
   return list?.[it.index];
 }
 
 /** Pivot of an item: centre of a chimney, opening or face, middle of a
- *  line or of a dormer's front, a window's anchor corner. */
+ *  line or of a dormer's front, a window's anchor corner, a tower's axis. */
 export function itemCentre(project: Project, it: ItemRef): Point2 | null {
   if (!itemExists(project, it)) return null;
   switch (it.kind) {
@@ -95,6 +98,10 @@ export function itemCentre(project: Project, it: ItemRef): Point2 | null {
     }
     case "face":
       return avg(project.manual_faces![it.index].points);
+    case "tower": {
+      const c = project.towers![it.index].center;
+      return { x: c.x, y: c.y };
+    }
   }
 }
 
@@ -112,6 +119,8 @@ function mapItem(project: Project, it: ItemRef, m: PlanMap): unknown {
       return mapManualLine(project.manual_lines![it.index], m);
     case "face":
       return mapManualFace(project.manual_faces![it.index], m);
+    case "tower":
+      return mapTower(project.towers![it.index], m);
   }
 }
 

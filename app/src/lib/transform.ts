@@ -5,7 +5,7 @@
 // (`api.transformPart`); wall shift, regular polygon and part centre are the
 // core's too.
 
-import type { Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanMapSpec, Point2, Project, RoofPart, RoofWindow } from "./types";
+import type { Chimney, Dormer, EdgeDef, ManualFace, ManualLine, PlanMapSpec, Point2, Project, RoofPart, RoofWindow, Tower } from "./types";
 import { roundTo } from "./rounding";
 import { pushAll } from "./extent";
 
@@ -119,6 +119,16 @@ export function mapChimney(c: Chimney, m: PlanMap): Chimney {
   return { ...clone(c), corners };
 }
 
+/**
+ * A tower moves with its axis and turns with the map; its shapes are
+ * symmetric, so a mirror only maps its turn (tectora-core
+ * `edit::transform::map_tower`).
+ */
+export function mapTower(t: Tower, m: PlanMap): Tower {
+  const deg = (m.angle(((t.rotation_deg ?? 0) * Math.PI) / 180) * 180) / Math.PI;
+  return { ...clone(t), center: m.apply(t.center), rotation_deg: r3(((deg % 360) + 360) % 360) };
+}
+
 /** A roof window is placed by its anchor point; the roof face it lands on gives its slope. */
 export function mapWindow(w: RoofWindow, m: PlanMap): RoofWindow {
   const p = m.apply({ x: w.x, y: w.y });
@@ -161,8 +171,8 @@ const centre = (pts: Point2[]): Point2 => ({
 });
 
 /**
- * Applies `m` to part `pi` and to the dormers, chimneys, openings, windows
- * and hand-drawn lines and faces lying on it. With `copies` > 0 the part
+ * Applies `m` to part `pi` and to the dormers, chimneys, openings, windows,
+ * hand-drawn lines and faces and towers lying on it (a tower by its centre). With `copies` > 0 the part
  * stays and that many copies are added, the k-th mapped k times (DACAD's
  * copy functions). Returns the indices of the new or moved parts.
  */
@@ -176,6 +186,7 @@ export function transformPart(project: Project, pi: number, m: PlanMap, copies =
   const windows = (project.windows ?? []).filter((w) => on({ x: w.x, y: w.y }));
   const lines = (project.manual_lines ?? []).filter((l) => on({ x: (l.a[0] + l.b[0]) / 2, y: (l.a[1] + l.b[1]) / 2 }));
   const faces = (project.manual_faces ?? []).filter((f) => on(centre(f.points)));
+  const towers = (project.towers ?? []).filter((t) => on(t.center));
 
   if (copies <= 0) {
     project.parts[pi] = mapPart(part, m);
@@ -189,6 +200,7 @@ export function transformPart(project: Project, pi: number, m: PlanMap, copies =
     swap(project.windows, windows, mapWindow);
     swap(project.manual_lines, lines, mapManualLine);
     swap(project.manual_faces, faces, mapManualFace);
+    swap(project.towers, towers, mapTower);
     return [pi];
   }
   const added: number[] = [];
@@ -202,6 +214,7 @@ export function transformPart(project: Project, pi: number, m: PlanMap, copies =
     if (windows.length) pushAll((project.windows ??= []), windows.map((w) => mapWindow(w, mk)));
     if (lines.length) pushAll((project.manual_lines ??= []), lines.map((l) => mapManualLine(l, mk)));
     if (faces.length) pushAll((project.manual_faces ??= []), faces.map((f) => mapManualFace(f, mk)));
+    if (towers.length) pushAll((project.towers ??= []), towers.map((t) => mapTower(t, mk)));
   }
   return added;
 }

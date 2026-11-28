@@ -197,7 +197,7 @@ export function describeProblem(p: Problem, project: Project): string {
 }
 
 /** What the user tried when the core refused a value (the toast's title). */
-export type RefusedAction = "height" | "place" | "face" | "helper" | "transform";
+export type RefusedAction = "height" | "place" | "face" | "helper" | "transform" | "tower" | "arc";
 
 const REFUSED_TITLE: Record<RefusedAction, string> = {
   height: "refuse.title.height",
@@ -205,6 +205,8 @@ const REFUSED_TITLE: Record<RefusedAction, string> = {
   face: "refuse.title.face",
   helper: "refuse.title.helper",
   transform: "refuse.title.transform",
+  tower: "refuse.title.tower",
+  arc: "refuse.title.arc",
 };
 
 /**
@@ -219,12 +221,38 @@ export function refusalReason(detail: string | undefined): string {
   if (/leave its roof face/.test(d)) return t("place.refused");
   if (/stands on no roof face/.test(d)) return t("refuse.noFace");
   if (/the helper gives values a wall does not take/.test(d)) return t("refuse.helperRange");
+  // A tower's problem ends with its code (`edit::towers::set_tower`, `tower_preview`).
+  const tower = d.match(/\((tower_[a-z_]+)\)\s*$/);
+  if (tower && TOWER_CODES.has(tower[1])) return t(`prob.${tower[1]}`);
+  const arc = arcReason(d);
+  if (arc) return arc;
   const range = d.match(/out of range \((-?[\d.]+) to (-?[\d.]+) m/);
   if (range) {
     const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
     return t("num.range", { min: f(range[1]), max: f(range[2]) });
   }
   return t("refuse.other");
+}
+
+const TOWER_CODES = new Set(["tower_nan", "tower_size", "tower_sides", "tower_corner_radius", "tower_base", "tower_no_tiers", "tower_tiers", "tower_tier_size", "tower_flat_bulge", "tower_bulge"]);
+
+/**
+ * Why the core refused a rounded corner or a bent wall (`edit::arcs`,
+ * `commands::arc_edit`), in the user's language; null for another reason.
+ */
+export function arcReason(detail: string): string | null {
+  const f = (x: string) => new Intl.NumberFormat(numberLocale(), { useGrouping: false, maximumFractionDigits: 3 }).format(+x);
+  let m = detail.match(/an arc has 2 to (\d+) walls/);
+  if (m) return t("arc.err.segments", { max: m[1] });
+  m = detail.match(/the bend must be at least [\d.]+ m and at most half the wall \(([\d.]+) m\)/);
+  if (m) return t("arc.err.bulge", { max: f(m[1]) });
+  if (/the radius must be at least/.test(detail)) return t("arc.err.radiusMin");
+  m = detail.match(/the radius is too large for the walls at the corner \(at most ([\d.]+) m\)/);
+  if (m) return t("arc.err.radiusMax", { max: f(m[1]) });
+  if (/the walls at the corner run straight on/.test(detail)) return t("arc.err.straight");
+  if (/(the wall|a wall at the corner) has no length/.test(detail)) return t("arc.err.noLength");
+  if (/the arc would make the outline invalid/.test(detail)) return t("arc.err.invalid");
+  return null;
 }
 
 /**
