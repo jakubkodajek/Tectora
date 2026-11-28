@@ -147,9 +147,11 @@
     userView = true;
   }
 
-  /** The plan as the user sees it, as a standalone SVG file (bug report); null when it cannot be taken. */
-  export function snapshotSvg(): string | null {
-    return svg ? serializePlan(svg) : null;
+  /** The plan as the user sees it, as a standalone SVG file (bug report), or why it cannot be taken. */
+  export function snapshotSvg(): { svg: string } | { reason: string } {
+    if (!svg) return { reason: "failed" };
+    const out = serializePlan(svg);
+    return out ? { svg: out } : { reason: "too_many_nodes" };
   }
 
   export function fit() {

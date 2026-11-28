@@ -2,16 +2,19 @@
 // needs from it (the job, the pictures of its two views, its unsaved copy);
 // pressing the top-bar button takes those before the dialog covers the
 // views, then the dialog (mounted in App.svelte) shows them.
-import { fitPng, rescalePng } from "./bugreport";
+import { fitPng, rescalePng, type LeftOut } from "./bugreport";
+
+/** What a view gives: the thing, why it could not, or null when the view is not shown. */
+export type Taken<K extends string, T> = ({ [P in K]: T } | { reason: string }) | null;
 
 export interface ReportContext {
   jobId: string;
   jobName: string;
   layout: string;
-  /** The plan view as a standalone SVG, null when it is not shown. */
-  planSvg: () => string | null;
-  /** The 3D view as a PNG, null when it is not shown or WebGL is missing. */
-  modelPng: () => Promise<Uint8Array | null>;
+  /** The plan view as a standalone SVG. */
+  planSvg: () => Taken<"svg", string>;
+  /** The 3D view as a PNG. */
+  modelPng: () => Promise<Taken<"png", Uint8Array>>;
   /** The editor's job as JSON (its unsaved copy included). */
   editorProject: () => string | null;
   /** Saves the pending edits first. */
@@ -27,13 +30,20 @@ export interface Capture {
   planSvg: string | null;
   modelPng: Uint8Array | null;
   editorProject: string | null;
-  /** Whether a 3D picture could be taken (false: no WebGL or the view is hidden). */
+  /** What could not be pictured, with the reason. */
+  leftOut: LeftOut[];
+  /** False only when the 3D view has no WebGL. */
   webgl: boolean;
 }
 
 let context: ReportContext | null = null;
 
-export const report = $state<{ capture: Capture | null }>({ capture: null });
+export const report = $state<{ capture: Capture | null; busy: boolean; draft: string }>({
+  capture: null,
+  busy: false,
+  /** What was typed, kept until the report is saved: closing the dialog keeps it. */
+  draft: "",
+});
 
 /** Registered by the editor while it is open; `release` removes it only if it is still the registered one. */
 export function setReportContext(c: ReportContext | null) {
@@ -47,40 +57,57 @@ export function releaseReportContext(c: ReportContext) {
 const PICTURE_WAIT = 2500;
 
 export async function openReport() {
-  if (report.capture) return;
+  if (report.capture || report.busy) return;
   const c = context;
   if (!c) {
-    report.capture = { jobId: null, jobName: null, screen: "library", layout: "", planSvg: null, modelPng: null, editorProject: null, webgl: true };
+    report.capture = { jobId: null, jobName: null, screen: "library", layout: "", planSvg: null, modelPng: null, editorProject: null, leftOut: [], webgl: true };
     return;
   }
+  // The button shows busy from the first press: preparing takes a moment.
+  report.busy = true;
   try {
-    await c.prepare();
-  } catch {
-    // The edits stay in memory; the report carries the editor's copy.
+    try {
+      await c.prepare();
+    } catch {
+      // The edits stay in memory; the report carries the editor's copy.
+    }
+    const leftOut: LeftOut[] = [];
+    let png: Uint8Array | null = null;
+    let webgl = true;
+    try {
+      const taken = await Promise.race([c.modelPng(), new Promise<{ reason: string }>((r) => setTimeout(() => r({ reason: "timeout" }), PICTURE_WAIT))]);
+      if (taken && "png" in taken) {
+        png = await fitPng(taken.png, (side) => rescalePng(taken.png, side));
+        if (!png) leftOut.push({ part: "model", reason: "too_large" });
+      } else if (taken) {
+        if (taken.reason === "no_webgl") webgl = false;
+        leftOut.push({ part: "model", reason: taken.reason });
+      }
+    } catch {
+      leftOut.push({ part: "model", reason: "failed" });
+    }
+    let plan: string | null = null;
+    try {
+      const taken = c.planSvg();
+      if (taken && "svg" in taken) plan = taken.svg;
+      else if (taken) leftOut.push({ part: "plan", reason: taken.reason });
+    } catch {
+      leftOut.push({ part: "plan", reason: "failed" });
+    }
+    report.capture = {
+      jobId: c.jobId,
+      jobName: c.jobName,
+      screen: "editor",
+      layout: c.layout,
+      planSvg: plan,
+      modelPng: png,
+      editorProject: c.editorProject(),
+      leftOut,
+      webgl,
+    };
+  } finally {
+    report.busy = false;
   }
-  let png: Uint8Array | null = null;
-  try {
-    png = await Promise.race([c.modelPng(), new Promise<null>((r) => setTimeout(() => r(null), PICTURE_WAIT))]);
-    if (png) png = await fitPng(png, (side) => rescalePng(png as Uint8Array, side));
-  } catch {
-    png = null;
-  }
-  let plan: string | null = null;
-  try {
-    plan = c.planSvg();
-  } catch {
-    plan = null;
-  }
-  report.capture = {
-    jobId: c.jobId,
-    jobName: c.jobName,
-    screen: "editor",
-    layout: c.layout,
-    planSvg: plan,
-    modelPng: png,
-    editorProject: c.editorProject(),
-    webgl: png !== null || c.layout === "plan",
-  };
 }
 
 export function closeReport() {

@@ -88,7 +88,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     logAction({ kind: "command", name: cmd, ok: true, ms: performance.now() - t0 });
     return r;
   } catch (e) {
-    const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
+    // A bare string is the code itself (open_folder answers "not_writable").
+    const code = typeof e === "string" ? e : e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
     logAction({ kind: "command", name: cmd, ok: false, code, ms: performance.now() - t0 });
     throw e;
   }
@@ -100,7 +101,7 @@ export interface SavedReport {
   file_name: string;
   size: number;
   /** Parts left out because they were too large or of the wrong type. */
-  left_out: string[];
+  left_out: { part: string; reason: string }[];
 }
 
 export const api = {

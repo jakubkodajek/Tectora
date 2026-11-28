@@ -566,22 +566,23 @@
 
   /**
    * The view as a PNG (bug report). Rendered and read in the same task: the
-   * canvas keeps no drawing buffer between frames. Null without WebGL.
+   * canvas keeps no drawing buffer between frames. `no_webgl` without a
+   * renderer, `failed` when the canvas gives no picture.
    */
-  export function snapshotPng(): Promise<Uint8Array | null> {
+  export function snapshotPng(): Promise<{ png: Uint8Array } | { reason: string }> {
     return new Promise((resolve) => {
       try {
-        if (!renderer) return resolve(null);
+        if (!renderer) return resolve({ reason: "no_webgl" });
         renderer.render(scene, camera);
         renderer.domElement.toBlob(async (blob) => {
           try {
-            resolve(blob ? new Uint8Array(await blob.arrayBuffer()) : null);
+            resolve(blob ? { png: new Uint8Array(await blob.arrayBuffer()) } : { reason: "failed" });
           } catch {
-            resolve(null);
+            resolve({ reason: "failed" });
           }
         }, "image/png");
       } catch {
-        resolve(null);
+        resolve({ reason: "failed" });
       }
     });
   }

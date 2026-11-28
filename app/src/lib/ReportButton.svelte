@@ -3,10 +3,10 @@
   // at the compact breakpoint (the icon keeps the name for screen readers).
   import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
-  import { openReport } from "./report.svelte";
+  import { openReport, report } from "./report.svelte";
 </script>
 
-<button class="report-btn" onclick={openReport} title={t("report.button")} aria-label={t("report.button")}>
+<button class="report-btn" aria-busy={report.busy} disabled={report.busy} onclick={openReport} title={t("report.button")} aria-label={t("report.button")}>
   <Icon name="bug" size={16} /><span class="label">{t("report.button")}</span>
 </button>
 
@@ -25,7 +25,11 @@
     white-space: nowrap;
     cursor: pointer;
   }
-  .report-btn:hover {
+  .report-btn:disabled {
+    opacity: 0.6;
+    cursor: progress;
+  }
+  .report-btn:hover:not(:disabled) {
     background: var(--surface-2);
     color: var(--text);
   }

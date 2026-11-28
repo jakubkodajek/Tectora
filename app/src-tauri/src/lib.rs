@@ -945,7 +945,7 @@ struct SavedReport {
     path: String,
     file_name: String,
     size: u64,
-    left_out: Vec<String>,
+    left_out: Vec<bugreport::LeftOut>,
 }
 
 /// Writes a bug report (`bugreport::create`). `path` is the file the user

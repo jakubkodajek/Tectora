@@ -1,6 +1,7 @@
 // Helpers of the bug report (crates/tectora-core/src/bugreport.rs): the
 // request the core takes, the size caps the core enforces (so a report is
 // never refused for a picture), and the plan as a standalone SVG file.
+import { t } from "./i18n.svelte";
 import { recentActions, recentNotices } from "./reportlog";
 
 export const MAX_DESCRIPTION = 5000;
@@ -29,6 +30,12 @@ export interface UiState {
   webgl: boolean;
 }
 
+/** A part of the report the UI could not take, with a reason code of the core (`bugreport::REASONS`). */
+export interface LeftOut {
+  part: string;
+  reason: string;
+}
+
 export interface ReportInput {
   description: string;
   jobId: string | null;
@@ -37,6 +44,8 @@ export interface ReportInput {
   modelPng: Uint8Array | null;
   editorProject: string | null;
   ui: UiState;
+  /** What the UI could not picture (the core copies only the plan and the 3D picture). */
+  leftOut?: LeftOut[];
 }
 
 /** The request of the core's `bugreport::Request`. */
@@ -47,7 +56,7 @@ export interface ReportRequest {
   source: "app";
   reporter: string;
   local_stamp: string;
-  client: { ui: UiState; actions: unknown[]; notices: unknown[] };
+  client: { ui: UiState; actions: unknown[]; notices: unknown[]; left_out: LeftOut[] };
   editor_project: string | null;
   plan_svg: string | null;
   model_png: number[] | null;
@@ -77,7 +86,13 @@ export function buildRequest(i: ReportInput): ReportRequest {
     source: "app",
     reporter: "user",
     local_stamp: reportStamp(),
-    client: { ui: i.ui, actions: recentActions(), notices: recentNotices() },
+    // Steps and notices are part of the technical record.
+    client: {
+      ui: i.ui,
+      actions: include.log ? recentActions() : [],
+      notices: include.log ? recentNotices() : [],
+      left_out: include.snapshot ? (i.leftOut ?? []) : [],
+    },
     editor_project: hasJob && include.job ? i.editorProject : null,
     plan_svg: include.snapshot ? i.planSvg : null,
     model_png: include.snapshot && i.modelPng ? Array.from(i.modelPng) : null,
@@ -166,4 +181,21 @@ export function serializePlan(svg: SVGSVGElement): string | null {
   if (!copy.getAttribute("viewBox") && box.width > 0) copy.setAttribute("viewBox", `0 0 ${Math.round(box.width)} ${Math.round(box.height)}`);
   const root = getComputedStyle(document.documentElement);
   return standalonePlanSvg(copy.outerHTML, (name) => root.getPropertyValue(name));
+}
+
+const PARTS = ["files", "history", "log", "plan", "model", "preview", "editor_project", "job"];
+const REASONS = ["too_large", "too_many", "unreadable", "unavailable", "invalid", "failed", "timeout", "too_many_nodes", "no_webgl"];
+
+/**
+ * A line for what the report left out, in the user's language: the part and
+ * why. An entry of an older core (a plain string) gives the part it names;
+ * an unknown reason gives the part alone.
+ */
+export function leftOutText(e: LeftOut | string): string {
+  if (typeof e === "string") {
+    const part = PARTS.find((p) => e.includes(p)) ?? "job";
+    return `${t(`report.part.${part}`)}: ${t("report.left.failed")}`;
+  }
+  const part = PARTS.includes(e.part) ? t(`report.part.${e.part}`) : e.part;
+  return REASONS.includes(e.reason) ? `${part}: ${t(`report.left.${e.reason}`)}` : part;
 }
