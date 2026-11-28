@@ -413,3 +413,31 @@ fn the_turrets_lines_are_added_under_their_codes() {
     }
     assert_eq!(code(&with, "K"), code(&alone, "K"));
 }
+
+/// Audit MATH-006: a tent roof on a 3 × 2 m shaft, 3 m high: the faces
+/// over the 3 m sides stand at atan(3 / 1) = 71.57° (2 · ½ · 3 · √10 m²),
+/// the others at atan(3 / 1.5) = 63.43°; both pitches are listed.
+#[test]
+fn a_rectangular_towers_two_pitches_are_both_listed() {
+    let mut t = Tower::pyramid(Point2::new(60.0, 6.0), 3.0, 5.0, 3.0);
+    t.depth = Some(2.0);
+    let r = t.calculate().unwrap();
+    let d = r.tiers[0].depth_sides.expect("a second pitch");
+    assert!(
+        (d.pitch_deg - 3f64.atan().to_degrees()).abs() < 1e-9,
+        "{d:?}"
+    );
+    assert!((d.area - 3.0 * 10f64.sqrt()).abs() < 1e-6, "{d:?}");
+    assert!((r.tiers[0].pitch_deg - 2f64.atan().to_degrees()).abs() < 1e-9);
+    let mut p = host();
+    p.towers.push(t);
+    let by = tectora_core::quantities::area_by_pitch(&p);
+    let at = |deg: f64| -> f64 {
+        by.iter()
+            .filter(|(pd, _)| (pd - deg).abs() < 0.01)
+            .map(|(_, a)| a)
+            .sum()
+    };
+    assert!((at(71.57) - 3.0 * 10f64.sqrt()).abs() < 0.01, "{by:?}");
+    assert!(at(63.43) > 6.0, "{by:?}");
+}

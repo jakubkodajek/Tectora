@@ -516,6 +516,11 @@ impl Tower {
         let draw_profiles = self.profiles(DRAW_ARC_SUBSTEPS)?;
         let half = self.width / 2.0;
         let edges = fine.edges();
+        // A rectangle that is not square has a second pitch on the sides
+        // at distance depth/2.
+        let depth_half = (self.shape == TowerShape::Rectangle
+            && (self.depth_or_width() - self.width).abs() > 1e-9)
+            .then(|| self.depth_or_width() / 2.0);
         let perimeter = fine.perimeter();
         let plan_area = fine.area();
         let sharp_radii: Vec<f64> = fine
@@ -534,16 +539,20 @@ impl Tower {
                 TierKind::Roof
             };
             let mut area = 0.0;
+            let mut depth_area = 0.0;
             let mut hip = 0.0;
             for w in prof.windows(2) {
                 let (ka, za) = (w[0].0 / half, w[0].1);
                 let (kb, zb) = (w[1].0 / half, w[1].1);
                 let dz = zb - za;
                 let dk = kb - ka;
-                area += edges
-                    .iter()
-                    .map(|&(l, d)| (ka + kb) / 2.0 * l * dz.hypot(dk * d))
-                    .sum::<f64>();
+                for &(l, d) in &edges {
+                    let a = (ka + kb) / 2.0 * l * dz.hypot(dk * d);
+                    area += a;
+                    if depth_half.is_some_and(|hy| (d - hy).abs() < (d - half).abs()) {
+                        depth_area += a;
+                    }
+                }
                 hip += dz.hypot(dk * sharp_radii.first().copied().unwrap_or(0.0));
             }
             // Pitch of the sides at distance width/2 (all sides of a square,
@@ -554,6 +563,16 @@ impl Tower {
             } else {
                 (t.rise.atan2(h0 - h1)).to_degrees()
             };
+            let depth_sides = depth_half
+                .filter(|_| kind == TierKind::Roof)
+                .map(|hy| SidePitch {
+                    pitch_deg: if t.rise <= EPS {
+                        0.0
+                    } else {
+                        (t.rise.atan2((h0 - h1) * hy / half)).to_degrees()
+                    },
+                    area: depth_area,
+                });
             let hips = if kind == TierKind::Roof && t.rise > EPS {
                 // All sharp corners of a regular shape are alike; a
                 // rectangle's are too (they lie on its diagonals).
@@ -567,6 +586,7 @@ impl Tower {
                 material: t.material,
                 pitch_deg,
                 area,
+                depth_sides,
                 bottom_height: z0,
                 top_height: z1,
                 bottom_perimeter: perimeter * h0 / half,
@@ -757,6 +777,12 @@ pub struct TierResult {
     pub pitch_deg: f64,
     /// True area, m².
     pub area: f64,
+    /// A rectangle that is not square: the pitch and area of the sides
+    /// facing along its depth (at distance depth/2), which have their own
+    /// pitch; `pitch_deg` is then that of the other two sides and of the
+    /// rest of `area` (audit MATH-006).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth_sides: Option<SidePitch>,
     pub bottom_height: f64,
     pub top_height: f64,
     pub bottom_perimeter: f64,
@@ -766,6 +792,13 @@ pub struct TierResult {
     pub hip_length: f64,
     /// Plan rings from the tier's bottom to its top, to draw.
     pub rings: Vec<Vec<[f64; 3]>>,
+}
+
+/// The pitch and area of some sides of a tier.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct SidePitch {
+    pub pitch_deg: f64,
+    pub area: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -835,7 +868,13 @@ pub fn area_by_pitch(project: &crate::Project) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
     for r in results(project).iter().flatten() {
         for t in r.tiers.iter().filter(|t| t.kind == TierKind::Roof) {
-            out.push((t.pitch_deg, t.area));
+            match t.depth_sides {
+                Some(d) => {
+                    out.push((t.pitch_deg, t.area - d.area));
+                    out.push((d.pitch_deg, d.area));
+                }
+                None => out.push((t.pitch_deg, t.area)),
+            }
         }
         if let Some(c) = &r.cap {
             out.push((0.0, c.area));

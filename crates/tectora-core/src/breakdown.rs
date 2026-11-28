@@ -256,6 +256,10 @@ pub struct TowerTierStep {
     pub kind: crate::tower::TierKind,
     pub material: u8,
     pub pitch_deg: f64,
+    /// A rectangle that is not square: pitch and area of its sides along
+    /// the depth (`tower::TierResult::depth_sides`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth_sides: Option<crate::tower::SidePitch>,
     pub bottom_height: f64,
     pub top_height: f64,
     pub bottom_perimeter: f64,
@@ -823,6 +827,7 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
                 kind: k.kind,
                 material: k.material,
                 pitch_deg: k.pitch_deg,
+                depth_sides: k.depth_sides,
                 bottom_height: k.bottom_height,
                 top_height: k.top_height,
                 bottom_perimeter: k.bottom_perimeter,

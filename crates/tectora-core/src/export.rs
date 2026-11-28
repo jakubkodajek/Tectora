@@ -346,18 +346,25 @@ fn collect(project: &Project, geos: &[RoofGeometry]) -> Collected {
             .iter()
             .filter(|t| t.kind == crate::tower::TierKind::Roof)
         {
-            k += 1;
-            dormer_faces.push(ListFace {
-                name: format!("Z{roof_no}.{k:02}"),
-                // A tier leaning outward (over 90°, under a cornice) is
-                // listed with its slope from the horizontal.
-                pitch: t.pitch_deg.min(180.0 - t.pitch_deg),
-                area: t.area,
-                rafter: None,
-                material: t.material,
-                holes: Vec::new(),
-                windows: Vec::new(),
-            });
+            // A rectangle's sides along its depth have their own pitch:
+            // a face of their own (audit MATH-006).
+            let own = t.area - t.depth_sides.map_or(0.0, |d| d.area);
+            let rows = std::iter::once((t.pitch_deg, own))
+                .chain(t.depth_sides.map(|d| (d.pitch_deg, d.area)));
+            for (pitch, area) in rows {
+                k += 1;
+                dormer_faces.push(ListFace {
+                    name: format!("Z{roof_no}.{k:02}"),
+                    // A tier leaning outward (over 90°, under a cornice) is
+                    // listed with its slope from the horizontal.
+                    pitch: pitch.min(180.0 - pitch),
+                    area,
+                    rafter: None,
+                    material: t.material,
+                    holes: Vec::new(),
+                    windows: Vec::new(),
+                });
+            }
         }
         if let Some(cap) = &r.cap {
             k += 1;
