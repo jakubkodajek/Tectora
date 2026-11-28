@@ -39,6 +39,9 @@ const MAX_SENT_LOG: u64 = 4 * 1024 * 1024;
 const MAX_NAMES: usize = 1000;
 const STALE_LOCK: Duration = Duration::from_secs(15 * 60);
 const MAX_BACKOFF_MS: u64 = 6 * 3600 * 1000;
+/// The longest wait the relay may ask for (24 h) plus a margin: a `next_try_ms`
+/// further ahead than this is a clock that jumped or a hostile sidecar.
+const MAX_PARKED_MS: u64 = 25 * 3600 * 1000;
 const MAX_NAME_FIELD: usize = 80;
 
 /// What the queue accepts; the defaults are the constants above.
@@ -547,14 +550,27 @@ impl Outbox {
             .unwrap_or(&created.file_name)
             .to_string();
         let mut placed = None;
+        // One name, one report for its whole life: never the name of a
+        // report that was sent, nor one in the queue (the id's start is
+        // then added).
+        let used: std::collections::BTreeSet<String> = self
+            .sent_lines()
+            .0
+            .iter()
+            .filter_map(|l| l["file_name"].as_str().map(str::to_string))
+            .collect();
+        let id8 = &id[..8];
         for n in 1..1000 {
-            let name = if n == 1 {
-                format!("{stem}.zip")
-            } else {
-                format!("{stem}-{n}.zip")
+            let name = match n {
+                1 => format!("{stem}.zip"),
+                2 => format!("{stem}-{id8}.zip"),
+                _ => format!("{stem}-{id8}-{n}.zip"),
             };
             let zip = self.zip_path(&name);
-            if fs::symlink_metadata(&zip).is_ok() {
+            if used.contains(&name)
+                || !bugreport::is_report_name(&name)
+                || fs::symlink_metadata(&zip).is_ok()
+            {
                 continue;
             }
             // The sidecar claims the name and is complete before the ZIP
@@ -921,6 +937,9 @@ impl Outbox {
     ) -> DrainResult {
         let mut sent = 0;
         let mut first_error: Option<String> = None;
+        // Set when the relay's limit is used up: the reports not yet tried
+        // wait as long as the one that was, without an attempt counted.
+        let mut park_until: Option<u64> = None;
         for name in self.names() {
             if only.is_some_and(|o| o != name) {
                 continue;
@@ -938,7 +957,7 @@ impl Outbox {
                 State::Waiting => {
                     force
                         || side.next_try_ms <= now_ms
-                        || side.next_try_ms > now_ms.saturating_add(MAX_BACKOFF_MS)
+                        || side.next_try_ms > now_ms.saturating_add(MAX_PARKED_MS)
                 }
             };
             if !due || (!force && cooling(&self.side_path(&name), now_ms)) {
@@ -953,6 +972,13 @@ impl Outbox {
                 continue;
             };
             if side.state == State::Local && !force {
+                continue;
+            }
+            if let Some(until) = park_until {
+                if side.state == State::Waiting && side.next_try_ms < until {
+                    side.next_try_ms = until;
+                    self.save_after_send(&side, until);
+                }
                 continue;
             }
             if self.already_sent(&side.id) {
@@ -982,9 +1008,12 @@ impl Outbox {
                     side.last_error = Some(code.clone());
                     self.save_after_send(&side, now_ms.saturating_add(wait));
                     crate::applog::line("WARN", &format!("report send failed: {code}"));
-                    // No connection: the other reports would fail the same
-                    // way and each cost its timeout.
+                    // No connection, or the relay's limit is used up: the
+                    // other reports would fail the same way.
                     stop = code == "offline";
+                    if code == "rate_limited" {
+                        park_until = Some(now_ms.saturating_add(wait));
+                    }
                     first_error.get_or_insert(code);
                 }
                 Err(SendFailure::Permanent { code }) => {
@@ -1071,10 +1100,12 @@ impl Outbox {
         let _ = fs::create_dir_all(&self.root);
         // Two processes finishing together must not lose each other's line:
         // read, add, trim and write happen under one lock.
-        let Some(_lock) = self.lock_sent() else {
-            crate::applog::line("WARN", "report sent log busy");
-            return;
-        };
+        // A lock that stays (left by a killed process) must not cost the
+        // line: after a short wait it is written without it.
+        let _lock = self.lock_sent();
+        if _lock.is_none() {
+            crate::applog::line("WARN", "report sent log busy, written without its lock");
+        }
         let mut lines: Vec<Value> = self.sent_lines().0;
         if lines.iter().any(|l| l["id"] == side.id) {
             return;
@@ -1105,11 +1136,12 @@ impl Outbox {
         }
     }
 
-    /// The lock around the sent log: waits a few seconds, takes over one
-    /// older than a minute.
+    /// The lock around the sent log: its critical section takes
+    /// milliseconds, so a lock older than 10 s is taken over and a fresh one
+    /// is waited for only half a second.
     fn lock_sent(&self) -> Option<Claim> {
         let path = self.root.join("sent.lock");
-        for _ in 0..1000 {
+        for _ in 0..100 {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -1121,7 +1153,7 @@ impl Outbox {
                         m.modified()
                             .ok()
                             .and_then(|t| SystemTime::now().duration_since(t).ok())
-                            .is_some_and(|age| age > Duration::from_secs(60))
+                            .is_some_and(|age| age > Duration::from_secs(10))
                     });
                     if stale {
                         let _ = fs::remove_file(&path);

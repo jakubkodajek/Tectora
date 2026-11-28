@@ -173,7 +173,9 @@ passed; the app then leaves drawings out of larger reports and says so.
   and on the Drive file as `issue: error:<status>`. Look in Apps Script >
   Executions for `GitHub refused the issue: status ...`, or search `Reports`
   for files whose description starts with `issue: error` or `issue: pending`.
-  The daily `sweep` retries both (at most 5 tries per report, at most 4
+  The daily `sweep` retries both (a refused token or repository never uses up
+  the tries, so after you fix it the next `sweep` opens those issues; other
+  failures are given up after 5 tries per report, at most 4
   minutes per run) and logs `sweep: opened N, failed M, skipped K`.
 - **Limits.** The script accepts 100 reports and 1000 MB a day and 10 a minute
   (Script Properties `MAX_PER_DAY`, `MAX_MB_PER_DAY`). Over a limit it answers

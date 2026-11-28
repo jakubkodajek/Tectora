@@ -182,7 +182,7 @@ function store_(props, body, bytes) {
     console.error('issue failed: ' + (err && err.message ? err.message : err));
     result = { url: null, error: 'exception' };
   }
-  recordIssue_(props, file, id, result, 1, draft_(id, meta));
+  recordIssue_(props, file, id, result, triesAfter_(result, 0), draft_(id, meta));
   return { ok: true, file_id: file.getId(), issue_url: result.url };
 }
 
@@ -221,6 +221,18 @@ function recordIssue_(props, file, id, result, tries, draft) {
   } catch (err) {
     console.error('recording the issue failed: ' + (err && err.message ? err.message : err));
   }
+}
+
+/**
+ * The tries a report has after an attempt. A refusal of the token or the
+ * repository (401, 403, 404, no token, bad repository) is not the report's
+ * fault: it is not counted, so the sweep still opens the issue once the
+ * owner has fixed the setting, however long that took.
+ */
+function triesAfter_(result, tries) {
+  if (result.url) return tries;
+  var configProblem = ['401', '403', '404', 'no_token', 'bad_repo'].indexOf(String(result.error)) !== -1;
+  return configProblem ? tries : tries + 1;
 }
 
 /** The text of a Drive file's description: the state, the id, the tries and the draft. */
@@ -510,6 +522,8 @@ function sweep() {
         continue;
       }
       if (d.tries >= SWEEP_MAX_TRIES || !d.draft || !d.draft.meta) {
+        // Given up: nothing is kept for it in Script Properties.
+        props.deleteProperty('F_' + d.id);
         skipped++;
         continue;
       }
@@ -520,7 +534,7 @@ function sweep() {
         console.error('sweep failed: ' + (err && err.message ? err.message : err));
         result = { url: null, error: 'exception' };
       }
-      recordIssue_(props, f, d.id, result, d.tries + 1, d.draft);
+      recordIssue_(props, f, d.id, result, triesAfter_(result, d.tries), d.draft);
       if (result.url) opened++;
       else failed++;
     }

@@ -718,7 +718,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "send_bug_reports",
-            "description": "Try again to send the bug reports that wait (no connection earlier, or a failed attempt), now. Returns how many were `sent` and how many still `waiting` or `failed`, with the `last_error` code of the first failure. Takes no report name: it concerns all of them.",
+            "description": "Try again to send the bug reports that wait (no connection earlier, or a failed attempt), now. This also uploads the reports kept on this computer only (`local`): ask the user first. Returns how many were `sent` and how many still `waiting` or `failed`, with the `last_error` code of the first failure. Takes no report name: it concerns all of them.",
             "inputSchema": schema(json!({ "summary": summary_prop() }), &["summary"]),
         }),
         json!({
