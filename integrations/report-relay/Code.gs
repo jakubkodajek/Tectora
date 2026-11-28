@@ -33,6 +33,9 @@ var NAME_PATTERN = /^tectora-report-[0-9]{8}-[0-9]{6}-[a-z0-9][a-z0-9-]{0,79}\.z
 var ID_PATTERN = /^[0-9a-f]{32}$/;
 var LOCK_WAIT_MS = 20000;
 var SWEEP_LIMIT = 50;
+var SWEEP_MAX_TRIES = 5;
+// The script may run six minutes; the sweep stops well before.
+var SWEEP_MAX_MS = 4 * 60 * 1000;
 
 // ------------------------------------------------------------ entry points
 
@@ -137,42 +140,112 @@ function store_(props, body, bytes) {
   var folder = DriveApp.getFolderById(props.getProperty('FOLDER_ID'));
   var id = body.id;
   var base = body.file_name.replace(/\.zip$/, '');
-  var driveName = base + '-' + id.slice(0, 8) + '.zip';
+  var shortName = base + '-' + id.slice(0, 8) + '.zip';
+  var fullName = base + '-' + id + '.zip';
+  var meta = cleanMeta_(body.meta);
 
-  // The same report again (the answer was lost): the first result.
-  var existing = folder.getFilesByName(driveName);
-  while (existing.hasNext()) {
-    var f = existing.next();
-    var d = f.getDescription() || '';
-    if (d.indexOf('id: ' + id) !== -1 || d.indexOf('"id":"' + id + '"') !== -1) {
-      return { ok: true, duplicate: true, file_id: f.getId(), issue_url: issueUrlOf_(d) };
+  // The same report again (the answer was lost, or a write failed half way):
+  // its own file, found by the whole id and not by the short name.
+  var file = findReport_(props, folder, [shortName, fullName], id);
+  var driveName = shortName;
+  if (file) {
+    var state = parseDescription_(file.getDescription() || '');
+    var stored = props.getProperty('U_' + id);
+    if (state.issue.indexOf('https://github.com/') === 0) {
+      return { ok: true, duplicate: true, file_id: file.getId(), issue_url: state.issue };
     }
-    // Another report with the same first 8 characters: a longer name.
-    driveName = base + '-' + id + '.zip';
+    if (stored) {
+      recordIssue_(props, file, id, { url: stored }, 0, null);
+      return { ok: true, duplicate: true, file_id: file.getId(), issue_url: stored };
+    }
+    // The file is there but its issue is not: carry on from the file.
+  } else {
+    var limited = limits_(props, bytes.length);
+    if (limited) return limited;
+    // Another report with the same first 8 characters: the whole id in the name.
+    if (folder.getFilesByName(shortName).hasNext()) driveName = fullName;
+    file = folder.createFile(Utilities.newBlob(bytes, 'application/zip', driveName));
+    // Before anything else can fail: the retry finds this file by the id.
+    props.setProperty('F_' + id, file.getId());
+    countUpload_(props, bytes.length);
+    try {
+      file.setDescription(describe_('pending', id, 0, draft_(id, meta)));
+    } catch (err) {
+      console.error('description failed: ' + (err && err.message ? err.message : err));
+    }
   }
 
-  var limited = limits_(props, bytes.length);
-  if (limited) return limited;
-
-  var meta = cleanMeta_(body.meta);
-  var blob = Utilities.newBlob(bytes, 'application/zip', driveName);
-  var file = folder.createFile(blob);
-  file.setDescription('issue: pending\nid: ' + id + '\n' + JSON.stringify(draft_(id, meta)));
-  countUpload_(props, bytes.length);
-
-  var url = null;
+  var result;
   try {
-    url = openIssue_(props, id, meta, file.getUrl());
+    result = openIssue_(props, id, meta, file.getUrl());
   } catch (err) {
     console.error('issue failed: ' + (err && err.message ? err.message : err));
+    result = { url: null, error: 'exception' };
   }
-  if (url) file.setDescription('issue: ' + url + '\nid: ' + id);
-  return { ok: true, file_id: file.getId(), issue_url: url };
+  recordIssue_(props, file, id, result, 1, draft_(id, meta));
+  return { ok: true, file_id: file.getId(), issue_url: result.url };
 }
 
-function issueUrlOf_(description) {
-  var m = /^issue: (https:\/\/github\.com\/\S+)/.exec(description);
-  return m ? m[1] : null;
+/** The Drive file of report `id`: by the file id noted at creation, else by its description. */
+function findReport_(props, folder, names, id) {
+  var noted = props.getProperty('F_' + id);
+  for (var n = 0; n < names.length; n++) {
+    var it = folder.getFilesByName(names[n]);
+    while (it.hasNext()) {
+      var f = it.next();
+      if (noted && f.getId() === noted) return f;
+      if (parseDescription_(f.getDescription() || '').id === id) return f;
+    }
+  }
+  return null;
+}
+
+/**
+ * Writes what became of the issue on the Drive file. The address is kept in
+ * a Script Property first, so a failing write cannot lead to a second issue:
+ * the sweep finds the address there and only repeats the write.
+ */
+function recordIssue_(props, file, id, result, tries, draft) {
+  try {
+    if (result.url) {
+      props.setProperty('U_' + id, result.url);
+      file.setDescription('issue: ' + result.url + '\nid: ' + id);
+      props.deleteProperty('U_' + id);
+      props.deleteProperty('F_' + id);
+    } else {
+      // A refusal that will not go away by itself is `error:<status>`; GitHub
+      // being down (5xx, no answer) is `pending`. The sweep retries both.
+      var down = result.error === 'exception' || (parseInt(result.error, 10) >= 500);
+      file.setDescription(describe_(down ? 'pending' : 'error:' + result.error, id, tries, draft));
+    }
+  } catch (err) {
+    console.error('recording the issue failed: ' + (err && err.message ? err.message : err));
+  }
+}
+
+/** The text of a Drive file's description: the state, the id, the tries and the draft. */
+function describe_(issue, id, tries, draft) {
+  return 'issue: ' + issue + '\nid: ' + id + '\ntries: ' + tries + (draft ? '\n' + JSON.stringify(draft) : '');
+}
+
+function parseDescription_(d) {
+  var out = { issue: '', id: '', tries: 0, draft: null };
+  var lines = String(d).split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.indexOf('issue: ') === 0) out.issue = line.slice(7).trim();
+    else if (line.indexOf('id: ') === 0) out.id = line.slice(4).trim();
+    else if (line.indexOf('tries: ') === 0) out.tries = parseInt(line.slice(7), 10) || 0;
+    else if (line.charAt(0) === '{') {
+      try {
+        out.draft = JSON.parse(lines.slice(i).join('\n'));
+      } catch (err) {
+        out.draft = null;
+      }
+      break;
+    }
+  }
+  return out;
 }
 
 /** What the sweep needs to open the issue later. */
@@ -259,7 +332,10 @@ function cleanMeta_(meta) {
     if (typeof meta[text[i]] === 'string') out[text[i]] = clean_(meta[text[i]], MAX_FIELD, false);
   }
   if (typeof meta.calculation_ok === 'boolean') out.calculation_ok = meta.calculation_ok;
-  if (typeof meta.created_ms === 'number' && isFinite(meta.created_ms)) out.created_ms = meta.created_ms;
+  // A date the issue can show: 2000 to 2100.
+  if (typeof meta.created_ms === 'number' && meta.created_ms >= 946684800000 && meta.created_ms <= 4102444800000) {
+    out.created_ms = Math.floor(meta.created_ms);
+  }
   if (meta.test === true) out.test = true;
   if (meta.included && typeof meta.included === 'object' && !Array.isArray(meta.included)) {
     var inc = [];
@@ -337,12 +413,22 @@ function buildIssue_(id, meta, driveUrl) {
   return { title: title, body: body };
 }
 
-/** Opens the issue; returns its address, or null when GitHub refused. */
+/**
+ * Opens the issue. Answers { url } or { url: null, error } where error is
+ * what GitHub refused with (its status), logged for the owner to read in
+ * the script's executions.
+ */
 function openIssue_(props, id, meta, driveUrl) {
   var token = props.getProperty('GITHUB_TOKEN');
-  if (!token) return null;
+  if (!token) {
+    console.error('issue not opened: GITHUB_TOKEN is not set');
+    return { url: null, error: 'no_token' };
+  }
   var repo = props.getProperty('GITHUB_REPO') || DEFAULT_REPO;
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return null;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    console.error('issue not opened: GITHUB_REPO is not owner/name');
+    return { url: null, error: 'bad_repo' };
+  }
   var assignee = props.getProperty('GITHUB_ASSIGNEE') || DEFAULT_ASSIGNEE;
   var issue = buildIssue_(id, meta, driveUrl);
   var payload = { title: issue.title, body: issue.body, labels: [LABEL], assignees: [assignee] };
@@ -351,10 +437,21 @@ function openIssue_(props, id, meta, driveUrl) {
     // An unknown label or assignee: the issue is worth more than its tags.
     res = postIssue_(repo, token, { title: issue.title, body: issue.body });
   }
-  if (res.getResponseCode() !== 201) return null;
-  var parsed = JSON.parse(res.getContentText());
-  var url = parsed && typeof parsed.html_url === 'string' ? parsed.html_url : '';
-  return url.indexOf('https://github.com/') === 0 && url.length <= 300 ? url : null;
+  var status = res.getResponseCode();
+  if (status !== 201) {
+    console.error('GitHub refused the issue: status ' + status + ' (check GITHUB_TOKEN and GITHUB_REPO)');
+    return { url: null, error: String(status) };
+  }
+  var url = '';
+  try {
+    var parsed = JSON.parse(res.getContentText());
+    url = parsed && typeof parsed.html_url === 'string' ? parsed.html_url : '';
+  } catch (err) {
+    url = '';
+  }
+  if (url.indexOf('https://github.com/') === 0 && url.length <= 300) return { url: url };
+  console.error('GitHub answered without an issue address');
+  return { url: null, error: 'bad_answer' };
 }
 
 function postIssue_(repo, token, payload) {
@@ -375,43 +472,62 @@ function postIssue_(repo, token, payload) {
 // ------------------------------------------------------------ maintenance
 
 /**
- * Daily: opens the issue for every report whose issue could not be created
- * (GitHub was down, the token had expired). Installed by setup().
+ * Daily: opens the issue for every report that has none (GitHub was down,
+ * the token had expired: `issue: pending` or `issue: error:<status>`). A
+ * report that failed SWEEP_MAX_TRIES times is left alone. It stops before
+ * the script's own time limit and logs what it did. Installed by setup().
  */
 function sweep() {
+  var deadline = Date.now() + SWEEP_MAX_MS;
   var props = PropertiesService.getScriptProperties();
   var lock = LockService.getScriptLock();
   try {
     lock.waitLock(LOCK_WAIT_MS);
   } catch (err) {
+    console.error('sweep: the script is busy');
     return;
   }
+  var opened = 0;
+  var failed = 0;
+  var skipped = 0;
+  var stopped = false;
   try {
     var files = DriveApp.getFolderById(props.getProperty('FOLDER_ID')).getFiles();
-    var done = 0;
-    while (files.hasNext() && done < SWEEP_LIMIT) {
+    while (files.hasNext() && opened < SWEEP_LIMIT) {
+      if (Date.now() > deadline) {
+        stopped = true;
+        break;
+      }
       var f = files.next();
-      var d = f.getDescription() || '';
-      if (d.indexOf('issue: pending') !== 0) continue;
-      done++;
-      var draft;
-      try {
-        draft = JSON.parse(d.split('\n').slice(2).join('\n'));
-      } catch (err) {
+      var d = parseDescription_(f.getDescription() || '');
+      if (!d.id || !ID_PATTERN.test(d.id)) continue;
+      if (d.issue !== 'pending' && d.issue.indexOf('error:') !== 0) continue;
+      var stored = props.getProperty('U_' + d.id);
+      if (stored) {
+        // The issue exists; only the note on the file is missing.
+        recordIssue_(props, f, d.id, { url: stored }, d.tries, null);
+        opened++;
         continue;
       }
-      if (!draft || !ID_PATTERN.test(String(draft.id)) || !draft.meta) continue;
-      var url = null;
+      if (d.tries >= SWEEP_MAX_TRIES || !d.draft || !d.draft.meta) {
+        skipped++;
+        continue;
+      }
+      var result;
       try {
-        url = openIssue_(props, draft.id, cleanMeta_(draft.meta), f.getUrl());
+        result = openIssue_(props, d.id, cleanMeta_(d.draft.meta), f.getUrl());
       } catch (err) {
         console.error('sweep failed: ' + (err && err.message ? err.message : err));
+        result = { url: null, error: 'exception' };
       }
-      if (url) f.setDescription('issue: ' + url + '\nid: ' + draft.id);
+      recordIssue_(props, f, d.id, result, d.tries + 1, d.draft);
+      if (result.url) opened++;
+      else failed++;
     }
   } finally {
     lock.releaseLock();
   }
+  console.log('sweep: opened ' + opened + ', failed ' + failed + ', skipped ' + skipped + (stopped ? ', stopped at the time bound' : ''));
 }
 
 /**

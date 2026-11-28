@@ -168,6 +168,13 @@ passed; the app then leaves drawings out of larger reports and says so.
   `GITHUB_TOKEN`. Nothing else changes. If the token expired, reports kept
   arriving in Drive with `issue: pending` in the file description; after the
   new token is set, run `sweep` once in the editor and the issues appear.
+- **GitHub refuses the issue.** A refusal (401 and 403: token wrong or
+  expired, 404: repository name or token scope) is written to the script's log
+  and on the Drive file as `issue: error:<status>`. Look in Apps Script >
+  Executions for `GitHub refused the issue: status ...`, or search `Reports`
+  for files whose description starts with `issue: error` or `issue: pending`.
+  The daily `sweep` retries both (at most 5 tries per report, at most 4
+  minutes per run) and logs `sweep: opened N, failed M, skipped K`.
 - **Limits.** The script accepts 100 reports and 1000 MB a day and 10 a minute
   (Script Properties `MAX_PER_DAY`, `MAX_MB_PER_DAY`). Over a limit it answers
   `rate_limited`; the app waits and tries again. Google's own quotas for
