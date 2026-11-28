@@ -460,3 +460,26 @@ sessions that use it know where things stand.
   Jakub; its known-open list (TEST-2012 has no deterministic E2E,
   `folded_loop` not under the work bound, `merge::value_at` and keys with
   `.` or `[`) is in the round-21 run folder `known-open.md`.
+
+## 2026-11-28 - UI/MCP parity (branch claude/project-thread-5bl66j)
+- Done: inventory of every panel, dialog, derived value and action against
+  the MCP tools (three clean-context explorers); the gaps closed: object
+  facts with each placement (core `edit::facts`: face, measured from eave
+  or break, plan/slope area, chimney above the roof, box, window outline),
+  `input_notices` (core `notices`, the TS `plausible.ts` copy checked by
+  `edit_parity`), wall `clad` / `direction_deg`, dormer
+  `section.above_roof`, calc `manual_faces` / `objects` /
+  `non_convex_openings`, history `changes` / `refreshed` / `reason`, review
+  `pending.changes` / `steps_stand`, library offer area / differs / AI tag /
+  notes / `foreign` (area sort by offer area as the app), `export_list`
+  `summary`, `roof_helper` tool `context` + rafters / unchanged / round-roof
+  eave and overhang / default arc; new tools `add_object` and `roof_at`;
+  `create_project` with no parts, job data on every create, `move_point`
+  merges a dropped corner. Guard: `docs/ui-mcp-parity.json` +
+  `crates/tectora-mcp/src/parity_tests.rs` (every Tauri command and UI
+  module listed, tools exist, answer paths present on a busy job).
+- State: make check exit 0 (1044 Rust tests, 655 vitest).
+- Open: lines / face labels under a higher roof are TS only (planjoin.ts,
+  `open_gap`); PR #57's `objectfacts.ts` / `PlaceSketch.svelte` must be
+  listed in the parity file when it merges (core `edit::facts` gives the
+  same facts); standard-roof dry run and copy offsets have no MCP default.

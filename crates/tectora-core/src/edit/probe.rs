@@ -59,6 +59,22 @@ pub fn host_height_at(geos: &[RoofGeometry], p: Point2) -> Option<f64> {
         .reduce(f64::max)
 }
 
+/// The highest point of the building roof (no dormer faces) whose faces
+/// hold plan point `p`: what a dormer standing there is compared with
+/// ([`crate::check`]'s `dormer_above_roof`). `None` off the roof.
+pub fn building_top_at(geos: &[RoofGeometry], p: Point2) -> Option<f64> {
+    geos.iter()
+        .filter(|g| {
+            g.faces
+                .iter()
+                .any(|f| f.edge != usize::MAX && f.polygon.len() >= 3 && inside(&f.polygon, p))
+        })
+        .flat_map(|g| g.faces.iter().filter(|f| f.edge != usize::MAX))
+        .flat_map(|f| f.polygon.iter().map(|q| q[2]))
+        .filter(|z| z.is_finite())
+        .reduce(f64::max)
+}
+
 /// The face a dormer or chimney stands on at a plan point (as
 /// [`host_height_at`]): its height there and its gradient (dz/dx, dz/dy).
 pub fn host_plane_at(geos: &[RoofGeometry], p: Point2) -> Option<(f64, [f64; 2])> {
@@ -136,6 +152,20 @@ pub fn roof_corner_points_kinded(geos: &[RoofGeometry]) -> Vec<([f64; 3], LineKi
     }
     out.sort_by(|a, b| b.0[2].total_cmp(&a.0[2]));
     out
+}
+
+/// The roof height a new chimney's top is set 1 m above: the roof at the
+/// middle of its corners (the editor's and MCP `add_object`'s default).
+pub fn chimney_default_base(geos: &[RoofGeometry], corners: &[Point2]) -> Option<f64> {
+    if corners.is_empty() {
+        return None;
+    }
+    let n = corners.len() as f64;
+    let c = Point2::new(
+        corners.iter().map(|p| p.x).sum::<f64>() / n,
+        corners.iter().map(|p| p.y).sum::<f64>() / n,
+    );
+    roof_height_at(geos, c)
 }
 
 /// A rectangular chimney from a corner, size and rotation in degrees.

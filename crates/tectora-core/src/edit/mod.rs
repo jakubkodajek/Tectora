@@ -18,6 +18,7 @@ use crate::model::{EdgeDef, HalfHip, PitchBreak, Project};
 pub mod calc;
 pub mod corners;
 pub mod dormers;
+pub mod facts;
 pub mod height;
 pub mod helper;
 pub mod openings;

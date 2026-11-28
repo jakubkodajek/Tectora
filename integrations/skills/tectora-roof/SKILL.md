@@ -62,7 +62,12 @@ highlights what changed and shows your `summary`, with Accept / Revert buttons.
    Where a drawing dimensions a dormer, chimney or window from the eave and
    from a roof edge, place it with `place_item` (`from_eave` along the
    slope, `from_left` or `from_right`) and check it against `placements`
-   in `get_project`.
+   in `get_project`, which also gives what the object editor shows: a
+   chimney's height above the roof (`above_roof`), the area each object
+   takes off the roof and the face it stands on. Add a single chimney,
+   window or opening with `add_object` (the editor's default sizes).
+   Before you finish, read `input_notices` from `calc`: an unusually large
+   value is usually a lost decimal comma.
    Each `summary` is one sentence (at most 500 characters, plain text) in
    the user's language naming the sheet, e.g. "Sklon uliční strany 42° podle řezu A-A".
    A refused call saved nothing: a value of the wrong type or outside the

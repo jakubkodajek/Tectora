@@ -31,6 +31,7 @@ pub mod multiroof;
 pub mod nfc;
 mod nfc_pairs;
 mod nfc_singletons;
+pub mod notices;
 pub mod openings;
 pub mod quantities;
 pub mod raised;

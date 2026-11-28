@@ -38,6 +38,7 @@
   import { describeCalcError, describeError, describeProblem, toAppError, type AppError, type Described } from "./errors";
   import { dismiss, info, notify, notifyError, notifyRefusal, notifyWarning, toasts } from "./notify.svelte";
   import { nonConvexOpenings, openingList, type OpeningSel } from "./openings";
+  import { roundTo } from "./rounding";
   import { buildDormer, defaultParams, nearestWallAngle, parseDormer, roofHeightAt, type DormerParams } from "./dormers";
   import Roof3D from "./Roof3D.svelte";
   import StandardRoofForm from "./StandardRoofForm.svelte";
@@ -2531,12 +2532,17 @@
   async function placeChimneyNow(x: number, y: number) {
     if (!project) return;
     placing = false;
-    // 0.6 m square, top 1 m above the roof there [no source: common size].
-    const top = +((roofHeightAt(result, { x: x + 0.3, y: y + 0.3 }) ?? presets.eave_height) + 1).toFixed(2);
+    // 0.6 m square, top 1 m above the roof at its middle [no source: common
+    // size]. The middle of the turned square, not x + 0.3: turned along a
+    // wall it can lie on the other side of the click (MCP add_object, core
+    // `probe::chimney_default_base`).
     const angle = nearestWallAngle(project.parts, { x, y });
     let chimney: Chimney;
     try {
-      chimney = await api.chimneyFromRect({ x, y, width: 0.6, depth: 0.6, rotation: +((angle * 180) / Math.PI).toFixed(2), height: top });
+      chimney = await api.chimneyFromRect({ x, y, width: 0.6, depth: 0.6, rotation: +((angle * 180) / Math.PI).toFixed(2), height: 0 });
+      const c = chimney.corners;
+      const mid = { x: c.reduce((a, p) => a + p.x, 0) / c.length, y: c.reduce((a, p) => a + p.y, 0) / c.length };
+      chimney.height = roundTo((roofHeightAt(result, mid) ?? presets.eave_height) + 1, 2);
     } catch (e) {
       notifyError(e, "calc");
       return;

@@ -194,6 +194,16 @@ pub struct ProjectSummary {
 }
 
 impl ProjectSummary {
+    /// The area the library lists and sorts by: the stored (offer) result's
+    /// for a job with one, else the current roof's (the app's `listedArea`,
+    /// review UX-008).
+    pub fn listed_area(&self) -> f64 {
+        match self.stored_area {
+            Some(a) if self.has_result && a.is_finite() => a,
+            _ => self.roof_area,
+        }
+    }
+
     /// How much of the roof the card's figures cover; `None` while
     /// `figures_pending` (see [`crate::quantities::RoofCoverage`]). A job
     /// too complex to calculate or outside the limits has no roof, its

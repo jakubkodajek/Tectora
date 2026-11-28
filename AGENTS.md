@@ -132,8 +132,10 @@ to `ui_bridge.rs` too. Use the `tectora-ui-preview` skill for screenshots.
   check `git status` before every commit. Tests that need them read paths from
   env vars (`DACAD_SAMPLES`, …) and are skipped or ignored without them.
 - **MCP parity.** Every editor operation has an MCP tool, and every MCP write
-  needs a one-sentence `summary` for the user. A UI feature without its MCP tool
-  is not done.
+  needs a one-sentence `summary` for the user. Every value the UI shows is
+  readable over MCP too (computed in the core, not in TypeScript). A UI
+  feature without its MCP tool is not done: list it in
+  `docs/ui-mcp-parity.json`, which `parity_tests.rs` checks.
 - **Error and notification UI is minimal and technical**: small status mark,
   neutral surface, monospace code and details. No tinted panels, big icons or
   coloured side bars.

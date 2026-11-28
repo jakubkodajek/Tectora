@@ -711,10 +711,106 @@ fn walltype_cases(c: &mut Cases) {
     }
 }
 
+/// The wall bar's and the Results panel's input notices
+/// (`tectora_core::notices`, `plausible.ts`).
+fn notice_cases(c: &mut Cases) {
+    use tectora_core::notices;
+    for (name, es) in outlines() {
+        let base: Vec<EdgeDef> = from(&es);
+        let n = base.len();
+        for variant in 0..5 {
+            let mut edges = base.clone();
+            match variant {
+                1 => edges[0].overhang = 5.0,
+                2 => edges[n - 1].eave_height = 35.0,
+                3 => {
+                    edges[1 % n].start =
+                        Point2::new(edges[1 % n].start.x + 250.0, edges[1 % n].start.y)
+                }
+                4 => edges[0].overhang = 3.0,
+                _ => {}
+            }
+            let mut project = Project::new(name);
+            project.parts.push(RoofPart {
+                name: "A".into(),
+                height: None,
+                edges,
+            });
+            let pj = to(&project);
+            c.add(
+                "unusual_values",
+                json!({ "project": pj }),
+                to(notices::unusual_values(&project)),
+            );
+            for ridge in [None, Some(4.5), Some(5.1), Some(7.0)] {
+                c.add(
+                    "above_ridge_issues",
+                    json!({ "project": pj, "ridges": [ridge] }),
+                    to(notices::above_ridge_issues(&project, &[ridge])),
+                );
+            }
+        }
+    }
+    let mut hh = Project::new("half-hips");
+    let mut es: Vec<EdgeDef> = from(
+        &outlines()
+            .into_iter()
+            .find(|(n, _)| *n == "gable")
+            .unwrap()
+            .1,
+    );
+    es[1].half_hip = Some(tectora_core::model::HalfHip {
+        height: 5.0,
+        pitch_deg: 50.0,
+    });
+    es[3].half_hip = Some(tectora_core::model::HalfHip {
+        height: 6.0,
+        pitch_deg: 50.0,
+    });
+    es[3].breaks = vec![tectora_core::model::PitchBreak {
+        height: 5.5,
+        pitch_deg: 30.0,
+    }];
+    hh.parts.push(RoofPart {
+        name: "A".into(),
+        height: None,
+        edges: es,
+    });
+    for ridge in [None, Some(5.0), Some(5.5), Some(6.2)] {
+        c.add(
+            "above_ridge_issues",
+            json!({ "project": to(&hh), "ridges": [ridge] }),
+            to(notices::above_ridge_issues(&hh, &[ridge])),
+        );
+    }
+    for eave in [0.0, 2.6, 3.0, 4.95] {
+        for ridge in [None, Some(3.05), Some(5.0), Some(7.333), Some(10.0)] {
+            c.add(
+                "half_hip_default",
+                json!({ "eave": eave, "ridge": ridge }),
+                to(notices::half_hip_default(eave, ridge)),
+            );
+            c.add(
+                "break_default",
+                json!({ "top": eave, "ridge": ridge }),
+                to(notices::break_default(eave, ridge)),
+            );
+        }
+    }
+    for below in [0.0, 10.0, 24.9, 40.0, 95.0, 110.0] {
+        c.add(
+            "break_default_pitch",
+            json!({ "below": below }),
+            to(notices::break_default_pitch(below)),
+        );
+    }
+}
+
 fn cases() -> Vec<Value> {
     let mut c = Cases(Vec::new());
     calc_cases(&mut c);
     walltype_cases(&mut c);
+    notice_cases(&mut c);
     round_cases(&mut c);
     transform_cases(&mut c);
     dormer_cases(&mut c);
@@ -827,6 +923,11 @@ fn every_operation_has_cases() {
         "default_params",
         "nearest_wall_angle",
         "eave_pitch",
+        "unusual_values",
+        "above_ridge_issues",
+        "half_hip_default",
+        "break_default",
+        "break_default_pitch",
     ] {
         assert!(ops.contains(op), "no case for {op}");
     }
