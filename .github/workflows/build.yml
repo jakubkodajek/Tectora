@@ -181,9 +181,20 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # The installer can send bug reports when the two repository secrets
+      # are set (docs/bug-reports.md); without them (a fork) it builds with
+      # sending off. They are compiled in, so only this step gets them, never
+      # the test steps: tests must not reach the relay. Never echoed.
       - name: Build the installer
         working-directory: app
-        run: npm run tauri build -- ${{ matrix.args }}
+        env:
+          TECTORA_REPORT_URL: ${{ secrets.TECTORA_REPORT_URL }}
+          TECTORA_REPORT_KEY: ${{ secrets.TECTORA_REPORT_KEY }}
+        run: |
+          if [ -z "$TECTORA_REPORT_URL" ] || [ -z "$TECTORA_REPORT_KEY" ]; then
+            echo "::warning::TECTORA_REPORT_URL or TECTORA_REPORT_KEY is not set: this installer cannot send bug reports."
+          fi
+          npm run tauri build -- ${{ matrix.args }}
 
       - uses: actions/upload-artifact@v4
         with:

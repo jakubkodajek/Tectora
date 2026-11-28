@@ -126,6 +126,11 @@ bundler's signing settings
    ([GitHub docs: Deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)).
 3. **Secrets** of that environment: `TAURI_SIGNING_PRIVATE_KEY` (the content
    of `~/.tauri/tectora.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+   Also `TECTORA_REPORT_URL` and `TECTORA_REPORT_KEY`, the address and key of
+   the bug report relay (`docs/bug-reports.md`, step 6); they are compiled into
+   the app, and the release fails when either is missing. The test installers
+   of `build.yml` take the same two repository secrets, and build with
+   sending off when they are not set.
 
 A changed key needs a manual reinstall on every computer, since the apps
 there only accept the old one.
