@@ -46,6 +46,8 @@ export interface ReportInput {
   ui: UiState;
   /** What the UI could not picture (the core copies only the plan and the 3D picture). */
   leftOut?: LeftOut[];
+  /** The optional name of the reporter, remembered on this computer. */
+  reporterName?: string;
 }
 
 /** The request of the core's `bugreport::Request`. */
@@ -56,7 +58,7 @@ export interface ReportRequest {
   source: "app";
   reporter: string;
   local_stamp: string;
-  client: { ui: UiState; actions: unknown[]; notices: unknown[]; left_out: LeftOut[] };
+  client: { ui: UiState; actions: unknown[]; notices: unknown[]; left_out: LeftOut[]; user_name?: string };
   editor_project: string | null;
   plan_svg: string | null;
   model_png: number[] | null;
@@ -92,6 +94,7 @@ export function buildRequest(i: ReportInput): ReportRequest {
       actions: include.log ? recentActions() : [],
       notices: include.log ? recentNotices() : [],
       left_out: include.snapshot ? (i.leftOut ?? []) : [],
+      ...(cleanReporterName(i.reporterName ?? "") ? { user_name: cleanReporterName(i.reporterName ?? "") } : {}),
     },
     editor_project: hasJob && include.job ? i.editorProject : null,
     plan_svg: include.snapshot ? i.planSvg : null,
@@ -198,4 +201,117 @@ export function leftOutText(e: LeftOut | string): string {
   }
   const part = PARTS.includes(e.part) ? t(`report.part.${e.part}`) : e.part;
   return REASONS.includes(e.reason) ? `${part}: ${t(`report.left.${e.reason}`)}` : part;
+}
+
+
+// ------------------------------------------------------------ sending
+
+/** What the core returns for a finished report (`ReportResult` in the app). */
+export interface ReportResult {
+  /** `sent`, `waiting` (queued, sent later), `local` (this build cannot send) or `saved` (Save as). */
+  state: "sent" | "waiting" | "local" | "saved";
+  file_name: string;
+  size: number;
+  left_out: LeftOut[];
+  issue_url?: string;
+  path?: string;
+}
+
+export interface ToastPlan {
+  kind: "info" | "error";
+  title: string;
+  message: string;
+  closeDialog: boolean;
+  clearDraft: boolean;
+  /** Save as: the file the toast offers to show in its folder. */
+  showPath?: string;
+}
+
+/** What to tell the user about a finished report. No issue link ever: colleagues have no access to it. */
+export function reportToast(r: ReportResult): ToastPlan {
+  const left = r.left_out.length ? t("report.leftOut", { what: r.left_out.map(leftOutText).join(", ") }) : "";
+  if (r.state === "saved") {
+    return {
+      kind: "info",
+      title: t("report.done"),
+      message: [r.file_name, t("report.passOn"), left].filter(Boolean).join("\n"),
+      closeDialog: true,
+      clearDraft: true,
+      showPath: r.path,
+    };
+  }
+  const title = r.state === "sent" ? t("report.sent") : r.state === "waiting" ? t("report.queued") : t("report.sendOff");
+  return { kind: "info", title, message: left, closeDialog: true, clearDraft: true };
+}
+
+/** What a failed report asks of the dialog: it stays and keeps the text; `hint` is an extra line for codes that need one. */
+export function reportFailure(code: string): { closeDialog: false; clearDraft: false; hint: string | null } {
+  const hint = code === "too_large" ? t("report.tooLargeHint") : code === "outbox_full" ? t("report.err.outbox_full") : null;
+  return { closeDialog: false, clearDraft: false, hint };
+}
+
+/** The dialog's buttons: Send first when this build can send, else Save as alone. */
+export function dialogLayout(sendable: boolean): { infoKey: string; primary: "send" | "saveAs"; secondary: "saveAs" | null } {
+  return sendable
+    ? { infoKey: "report.sendInfo", primary: "send", secondary: "saveAs" }
+    : { infoKey: "report.sendOff", primary: "saveAs", secondary: null };
+}
+
+export const MAX_REPORTER_NAME = 80;
+const NAME_KEY = "tectora.reporterName";
+
+/** Control and bidi characters removed, trimmed, cut at [`MAX_REPORTER_NAME`]. */
+export function cleanReporterName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const kept = name.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202E\u2060-\u206F\uFEFF]/g, "");
+  return Array.from(kept.trim()).slice(0, MAX_REPORTER_NAME).join("").trim();
+}
+
+interface NameStorage {
+  getItem(k: string): string | null;
+  setItem(k: string, v: string): void;
+  removeItem(k: string): void;
+}
+
+/** The name remembered on this computer; empty when none or when the storage fails. */
+export function loadReporterName(storage: NameStorage): string {
+  try {
+    return cleanReporterName(storage.getItem(NAME_KEY) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+export function saveReporterName(storage: NameStorage, name: string): void {
+  try {
+    const n = cleanReporterName(name);
+    if (n) storage.setItem(NAME_KEY, n);
+    else storage.removeItem(NAME_KEY);
+  } catch {
+    // A storage that refuses: the name is simply not remembered.
+  }
+}
+
+/** A queued report as the outbox list gets it. */
+export interface OutboxEntry {
+  file_name: string;
+  state: string;
+  created_ms: number;
+  job_id: string | null;
+  job_name?: string | null;
+  last_error: string | null;
+  size?: number;
+}
+
+const KNOWN_ERRORS = ["offline", "rate_limited", "bad_key", "server", "outbox_full"];
+
+/** The texts of one row of the outbox list. */
+export function outboxRowText(e: OutboxEntry): { job: string; state: string; error: { code: string; text: string | null } | null } {
+  const state = ["waiting", "failed", "local"].includes(e.state) ? t(`report.state.${e.state}`) : e.state;
+  const code = e.last_error;
+  return {
+    job: e.job_name || e.job_id || t("report.outbox.noJob"),
+    state,
+    error: code ? { code, text: KNOWN_ERRORS.includes(code) ? t(`report.err.${code}`) : null } : null,
+  };
 }

@@ -1,19 +1,20 @@
 <script lang="ts">
-  // Report a bug: what happened in a few words, what the report contains,
-  // where it goes. The report is one file (crates/tectora-core/src/bugreport.rs)
-  // saved into the reports folder of the Settings, or to a place chosen with
-  // Save as. Nothing is sent anywhere.
+  // Report a bug: what happened in a few words, what the report contains.
+  // The report is one file (crates/tectora-core/src/bugreport.rs). Send
+  // queues it and sends it to the developers (or keeps it until it can be
+  // sent); Save as writes it to a file the user chooses. A build that cannot
+  // send offers Save as alone.
   import { save } from "@tauri-apps/plugin-dialog";
   import { onMount, untrack } from "svelte";
   import Modal from "./Modal.svelte";
   import { api } from "./api";
-  import { buildRequest, leftOutText, reportStamp, type Include } from "./bugreport";
+  import { buildRequest, cleanReporterName, dialogLayout, loadReporterName, MAX_REPORTER_NAME, reportFailure, reportStamp, reportToast, saveReporterName, type Include } from "./bugreport";
   import { describeError } from "./errors";
   import { fileSize } from "./format";
   import { t } from "./i18n.svelte";
   import { notify, notifyError } from "./notify.svelte";
   import { closeReport, report, type Capture } from "./report.svelte";
-  import { app } from "./settings.svelte";
+  import { refreshOutbox } from "./reportqueue";
   import { ui } from "./theme.svelte";
   import { i18n } from "./i18n.svelte";
 
@@ -21,24 +22,32 @@
 
   // The dialog is mounted anew for each capture.
   const hasJob = untrack(() => !!capture.jobId);
-  // Closing the dialog keeps what was typed (report.draft) until the report is saved.
+  // Closing the dialog keeps what was typed (report.draft) until the report is sent or saved.
   let include = $state<Include>({ job: hasJob, customer: true, files: hasJob, history: hasJob, snapshot: hasJob, log: true });
   let files = $state<{ count: number; size: number } | null>(null);
   let busy = $state(false);
+  /** Why the last try failed, when the reason needs a line of its own. */
+  let hint = $state<string | null>(null);
+  let reporterName = $state(loadStoredName());
 
-  const folder = $derived(app.view?.effective.reports_dir ?? null);
+  const layout = $derived(dialogLayout(report.sendable === true));
 
-  /** The last part of a path, for the toast ("Hlášení", not the whole path). */
-  const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
-  /** Codes of a reports folder that is gone, not a folder or not writable. */
-  const FOLDER_CODES = ["file_not_found", "permission_denied", "invalid_input", "not_a_folder", "not_found"];
+  function loadStoredName(): string {
+    try {
+      return loadReporterName(window.localStorage);
+    } catch {
+      return "";
+    }
+  }
 
-  /** Escape, the X and the backdrop do nothing while the report is written: it would be written anyway. */
+  /** Escape, the X and the backdrop do nothing while the report is made: it would be made anyway. */
   const close = () => {
     if (!busy) closeReport();
   };
 
   onMount(() => {
+    // Whether this build can send is read again: the dialog must not guess.
+    refreshOutbox();
     if (!capture.jobId) return;
     api.listAttachments(capture.jobId).then(
       (list) => {
@@ -53,6 +62,7 @@
     // The pressed button stays enabled while this waits (aria-disabled).
     if (busy) return;
     busy = true;
+    hint = null;
     try {
       let path: string | null = null;
       if (saveAs) {
@@ -77,29 +87,36 @@
           webgl: capture.webgl,
         },
         leftOut: capture.leftOut,
+        reporterName,
       });
-      const saved = await api.createBugReport(request, path);
-      report.draft = "";
-      closeReport();
-      const where = path ? t("report.passOn") : t("report.savedTo", { folder: baseName(folder ?? saved.path.replace(/[\\/][^\\/]*$/, "")) });
-      notify({
-        kind: "info",
-        title: t("report.done"),
-        message: [where, saved.file_name, saved.left_out.length ? t("report.leftOut", { what: saved.left_out.map(leftOutText).join(", ") }) : ""].filter(Boolean).join("\n"),
-        // The user may have looked away: the toast stays until closed.
-        sticky: true,
-        action: { label: t("report.show"), run: () => api.showBugReport(saved.path).catch((e) => notifyError(e, "reportShow")) },
-      });
+      const result = await api.createBugReport(request, path);
+      try {
+        saveReporterName(window.localStorage, reporterName);
+      } catch {
+        // No storage: the name is not remembered.
+      }
+      const plan = reportToast(result);
+      if (plan.clearDraft) report.draft = "";
+      if (plan.closeDialog) closeReport();
+      const showPath = plan.showPath;
+      if (showPath) {
+        // A saved file: the toast stays until closed, and can show it in its folder.
+        notify({
+          kind: plan.kind,
+          title: plan.title,
+          message: plan.message,
+          sticky: true,
+          action: { label: t("report.show"), run: () => api.showBugReport(showPath).catch((e) => notifyError(e, "reportShow")) },
+        });
+      } else {
+        notify({ kind: plan.kind, title: plan.title, message: plan.message });
+      }
+      refreshOutbox();
     } catch (e) {
       // The dialog stays open with the text kept.
-      const d = describeError(e, "report");
-      if (folder && !saveAs && FOLDER_CODES.includes(d.code)) {
-        // The reports folder is gone or read-only: say which one and that
-        // Save as is the way on.
-        notify({ kind: "error", code: d.code, title: d.title, message: t("report.destMissing"), detail: d.detail });
-      } else {
-        notifyError(e, "report");
-      }
+      const f = reportFailure(describeError(e, saveAs ? "reportSave" : "report").code);
+      hint = f.hint;
+      notifyError(e, saveAs ? "reportSave" : "report");
     } finally {
       busy = false;
     }
@@ -132,21 +149,23 @@
     <label class="check"><input type="checkbox" bind:checked={include.log} disabled={busy} />{t("report.inc.log")}</label>
   </fieldset>
 
-  <p class="dest">
-    {#if folder}
-      <span>{t("report.dest")}</span> <code title={folder}>{folder}</code>
-    {:else}
-      {t("report.destNone")} {t("report.destSettings")}
-    {/if}
-  </p>
+  {#if layout.primary === "send"}
+    <label class="name">
+      <span>{t("report.yourName")}</span>
+      <input type="text" maxlength={MAX_REPORTER_NAME} disabled={busy} bind:value={reporterName} onblur={() => (reporterName = cleanReporterName(reporterName))} />
+    </label>
+  {/if}
+
+  <p class="dest">{t(layout.infoKey)}</p>
+  {#if hint}<p class="dest" role="alert">{hint}</p>{/if}
 
   {#snippet footer()}
     <button class="btn" disabled={busy} onclick={close}>{t("common.cancel")}</button>
-    {#if folder}
+    {#if layout.primary === "send"}
       <button class="btn" aria-disabled={busy} onclick={() => send(true)}>{t("report.saveAs")}</button>
-      <button class="btn primary" aria-disabled={busy} aria-busy={busy} onclick={() => send(false)}>{busy ? t("report.sending") : t("report.save")}</button>
+      <button class="btn primary" aria-disabled={busy} aria-busy={busy} onclick={() => send(false)}>{busy ? t("report.sending") : t("report.send")}</button>
     {:else}
-      <button class="btn primary" aria-disabled={busy} aria-busy={busy} onclick={() => send(true)}>{busy ? t("report.sending") : t("report.saveAs")}</button>
+      <button class="btn primary" aria-disabled={busy} aria-busy={busy} onclick={() => send(true)}>{t("report.saveAs")}</button>
     {/if}
   {/snippet}
 </Modal>
@@ -194,8 +213,13 @@
   fieldset > p.hint {
     margin-left: 0;
   }
+  .name {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
   .dest {
-    margin: 0;
+    margin: 0 0 4px;
     color: var(--text-2);
     font-size: 12.5px;
     overflow-wrap: anywhere;

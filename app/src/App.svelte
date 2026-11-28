@@ -7,9 +7,11 @@
   import Home from "./lib/Home.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
   import ReportDialog from "./lib/ReportDialog.svelte";
+  import ReportOutbox from "./lib/ReportOutbox.svelte";
+  import { refreshOutbox } from "./lib/reportqueue";
   import { report } from "./lib/report.svelte";
   import Toasts from "./lib/Toasts.svelte";
-  import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
+  import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, watchReportOutbox, onSettingsChanged } from "./lib/api";
   import { startOpening } from "./lib/startup";
   import { anyWriterOpen } from "./lib/dragsession";
   import { t } from "./lib/i18n.svelte";
@@ -181,6 +183,10 @@
       applySettings(v);
       if (moved) libraryChanged();
     });
+    // The bug reports that wait to be sent: read now and when the app says the
+    // queue changed (sent, queued, discarded). Never a notice.
+    refreshOutbox();
+    const unOutbox = watchReportOutbox(() => refreshOutbox());
     // A .tectora / .tectorajob file opened from the system (double-click).
     const openFile = (id: string) => {
       refresh();
@@ -205,6 +211,7 @@
       un.then((f) => f());
       unLive.then((f) => f());
       unSettings.then((f) => f());
+      unOutbox.then((f) => f());
       opening.stop();
       unClose.then((f) => f());
       clearInterval(tick);
@@ -279,6 +286,9 @@
 
 {#if report.capture}
   <ReportDialog capture={report.capture} />
+{/if}
+{#if report.listOpen}
+  <ReportOutbox />
 {/if}
 
 {#if connect}

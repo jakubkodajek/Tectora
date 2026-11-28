@@ -1,5 +1,5 @@
 import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
-import type { ReportRequest } from "./bugreport";
+import type { OutboxEntry, ReportRequest, ReportResult } from "./bugreport";
 import { logAction } from "./reportlog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
@@ -95,13 +95,12 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   }
 }
 
-/** What a saved bug report is (`SavedReport` in the app). */
-export interface SavedReport {
-  path: string;
-  file_name: string;
-  size: number;
-  /** Parts left out because they were too large or of the wrong type. */
-  left_out: { part: string; reason: string }[];
+/** The queue of bug reports, as the app answers it. */
+export interface BugReportOutbox {
+  /** False in a build without a relay: reports can only be saved as files. */
+  sendable: boolean;
+  counts: { waiting: number; failed: number; local: number };
+  reports: OutboxEntry[];
 }
 
 export const api = {
@@ -260,7 +259,7 @@ export const api = {
     invoke<AppSettingsView>("answer_file_request", { path, allow }),
   /** The user's answer to an AI settings change: `revert` puts the values before it back. */
   answerAiChange: (id: number, revert: boolean) => invoke<AppSettingsView>("answer_ai_change", { id, revert }),
-  openFolder: (which: "projects" | "drawings" | "settings" | "reports") => invoke<void>("open_folder", { which }),
+  openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
   removeAttachment: (id: string, name: string) => invoke<void>("remove_attachment", { id, name }),
@@ -278,12 +277,20 @@ export const api = {
   /** Writes the plan sheet as PDF or SVG (by the path's extension). */
   exportPlanFile: (project: Project, stamp: string, path: string, lineNames: Record<string, string> = {}) =>
     invoke<void>("export_plan_file", { project, stamp, path, lineNames }),
-  /** Writes a bug report to the reports folder, or to `path` (Save as). */
-  createBugReport: (request: ReportRequest, path: string | null) => invoke<SavedReport>("create_bug_report", { request, path }),
+  /** Queues a bug report and sends it, or writes it to `path` (Save as). */
+  createBugReport: (request: ReportRequest, path: string | null) => invoke<ReportResult>("create_bug_report", { request, path }),
   /** The default file name of a report, for the Save as dialog. */
   bugReportName: (jobName: string | null, stamp: string) => invoke<string>("bug_report_name", { jobName, stamp }),
   /** Shows a saved report in Finder / Explorer. */
   showBugReport: (path: string) => invoke<void>("show_bug_report", { path }),
+  /** The reports that wait to be sent, their counts and whether this build can send. */
+  bugReportOutbox: () => invoke<BugReportOutbox>("bug_report_outbox"),
+  /** Tries to send everything that waits, now. */
+  sendBugReports: () => invoke<{ sent: number; waiting: number; failed: number }>("send_bug_reports"),
+  /** Save as of a queued report; it stays queued. */
+  saveQueuedBugReport: (name: string, path: string) => invoke<ReportResult>("save_queued_bug_report", { name, path }),
+  /** Removes a queued report that was not sent. */
+  discardBugReport: (name: string) => invoke<void>("discard_bug_report", { name }),
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),
@@ -309,6 +316,11 @@ export function onOpenProject(cb: (id: string) => void): Promise<UnlistenFn> {
 /** Fires with the ids of project files that changed on disk. */
 export function onProjectsChanged(cb: (ids: string[]) => void): Promise<UnlistenFn> {
   return listen<string[]>("projects-changed", (e) => cb(e.payload));
+}
+
+/** Fires with the counts of the bug report outbox when they change (it only refreshes a count, never writes). */
+export function watchReportOutbox(cb: (c: { waiting: number; failed: number; local: number }) => void): Promise<UnlistenFn> {
+  return listen<{ waiting: number; failed: number; local: number }>("report-outbox", (e) => cb(e.payload));
 }
 
 /** Fires when an AI agent reports what it is doing. */

@@ -2,7 +2,8 @@
 // needs from it (the job, the pictures of its two views, its unsaved copy);
 // pressing the top-bar button takes those before the dialog covers the
 // views, then the dialog (mounted in App.svelte) shows them.
-import { fitPng, rescalePng, type LeftOut } from "./bugreport";
+import { fitPng, rescalePng, type LeftOut, type OutboxEntry } from "./bugreport";
+import { t } from "./i18n.svelte";
 
 /** What a view gives: the thing, why it could not, or null when the view is not shown. */
 export type Taken<K extends string, T> = ({ [P in K]: T } | { reason: string }) | null;
@@ -38,12 +39,47 @@ export interface Capture {
 
 let context: ReportContext | null = null;
 
-export const report = $state<{ capture: Capture | null; busy: boolean; draft: string }>({
+export interface OutboxCounts {
+  waiting: number;
+  failed: number;
+  local: number;
+}
+
+export const report = $state<{
+  capture: Capture | null;
+  busy: boolean;
+  draft: string;
+  /** Reports that wait, failed or are kept here only. */
+  outbox: OutboxCounts;
+  /** The reports behind the counts, for the list. */
+  queue: OutboxEntry[];
+  /** Whether this build can send; null until the app said. */
+  sendable: boolean | null;
+  /** The list of waiting reports is open. */
+  listOpen: boolean;
+}>({
   capture: null,
   busy: false,
-  /** What was typed, kept until the report is saved: closing the dialog keeps it. */
+  /** What was typed, kept until the report is sent or saved: closing the dialog keeps it. */
   draft: "",
+  outbox: { waiting: 0, failed: 0, local: 0 },
+  queue: [],
+  sendable: null,
+  listOpen: false,
 });
+
+const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.min(Math.floor(v), 99999) : 0);
+
+/** Takes the counts of the `report-outbox` event; anything but three numbers counts as zero. */
+export function setOutboxCounts(c: Partial<OutboxCounts> | null | undefined) {
+  report.outbox = { waiting: count(c?.waiting), failed: count(c?.failed), local: count(c?.local) };
+}
+
+/** The small count beside the report button: waiting plus failed reports; reports only kept here do not count. */
+export function outboxIndicator(): { visible: boolean; count: number; label: string } {
+  const n = report.outbox.waiting + report.outbox.failed;
+  return { visible: n > 0, count: n, label: t("report.outbox.count", { count: n }) };
+}
 
 /** Registered by the editor while it is open; `release` removes it only if it is still the registered one. */
 export function setReportContext(c: ReportContext | null) {
