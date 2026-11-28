@@ -235,7 +235,7 @@ export function hostParts(result: CalcResult | null, stats?: HostIndexStats): { 
   };
 }
 
-function inside(poly: [number, number, number][], p: Point2) {
+export function inside(poly: [number, number, number][], p: Point2) {
   let c = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const [xi, yi] = poly[i];

@@ -10,6 +10,7 @@
   import type { OpeningKind } from "./openings";
   import type { PlaceKey } from "./PlaceFields.svelte";
   import { maxOf, minOf } from "./extent";
+  import { placeFaces, placeFrame } from "./objectfacts";
 
   let {
     result,
@@ -27,36 +28,24 @@
     active?: PlaceKey | null;
   } = $props();
 
-  const W = 300;
+  const W = 320;
   /** The drawing's height follows the face's shape, between these. */
-  const H_MIN = 130;
+  const H_MIN = 160;
   const H_MAX = 300;
-  const PAD = { l: 34, r: 34, t: 30, b: 32 };
+  // Room for a value beside a short side distance (review 12).
+  const PAD = { l: 46, r: 46, t: 30, b: 32 };
 
   const mm = (v: number) =>
     new Intl.NumberFormat(numberLocale(), { minimumFractionDigits: 3, maximumFractionDigits: 3, useGrouping: false }).format(v);
 
-  const unit = (a: Point2, b: Point2): Point2 | null => {
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const l = Math.hypot(dx, dy);
-    return l > 1e-3 && Number.isFinite(l) ? { x: dx / l, y: dy / l } : null;
-  };
-
   const drawing = $derived.by(() => {
     const pl = placement;
     if (!pl || !result) return null;
-    const faces = (result.parts[pl.part]?.geometry.faces ?? []).filter((f) => f.edge === pl.edge && f.polygon.length >= 3);
-    if (!faces.length) return null;
-    // `eave_line` runs from the eave up the slope; the edges' lines run along the eave to the right.
-    let up = unit(pl.eave_line[0], pl.eave_line[1]);
-    if (!up) {
-      const right = unit(pl.left_line[0], pl.left_line[1]) ?? unit(pl.right_line[0], pl.right_line[1]) ?? { x: 1, y: 0 };
-      up = { x: -right.y, y: right.x };
-    }
-    const right = { x: up.y, y: -up.x };
-    const u = up;
-    const turn = (p: Point2) => ({ x: p.x * right.x + p.y * right.y, y: -(p.x * u.x + p.y * u.y) });
-    const facePts = faces.map((f) => f.polygon.map(([x, y]) => turn({ x, y })));
+    const wall = placeFaces(result, pl);
+    if (!wall) return null;
+    const { up, right } = placeFrame(pl);
+    const turn = (p: Point2) => ({ x: p.x * right.x + p.y * right.y, y: -(p.x * up.x + p.y * up.y) });
+    const facePts = wall.faces.map((f) => f.polygon.map(([x, y]) => turn({ x, y })));
     const obj = outline.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y)).map(turn);
     const all = [...facePts.flat(), ...obj];
     const x0 = minOf(all, (p) => p.x), x1 = maxOf(all, (p) => p.x);
@@ -69,22 +58,17 @@
     const s = (p: Point2) => ({ x: ox + (p.x - x0) * k, y: oy + (p.y - y0) * k });
     const toScreen = (p: Point2) => s(turn(p));
     const path = (pts: Point2[]) => pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-    // The eave: the edges of a face at its lowest height.
-    const eaves: [Point2, Point2][] = [];
-    for (const f of faces) {
-      const zmin = minOf(f.polygon, (q) => q[2]);
-      f.polygon.forEach((a, i) => {
-        const b = f.polygon[(i + 1) % f.polygon.length];
-        if (Math.abs(a[2] - zmin) < 1e-3 && Math.abs(b[2] - zmin) < 1e-3) eaves.push([toScreen({ x: a[0], y: a[1] }), toScreen({ x: b[0], y: b[1] })]);
-      });
-    }
-    const lowest = eaves.length ? maxOf(eaves, ([a, b]) => Math.max(a.y, b.y)) : oy + (y1 - y0) * k;
-    const eaveMid = eaves.length
-      ? (() => {
-          const [a, b] = eaves.reduce((m, e) => (Math.hypot(e[1].x - e[0].x, e[1].y - e[0].y) > Math.hypot(m[1].x - m[0].x, m[1].y - m[0].y) ? e : m));
-          return (a.x + b.x) / 2;
-        })()
-      : W / 2;
+    // Where "from eave" starts: the lowest edges of the face the object is on
+    // (above a pitch break, the break line).
+    const hf = wall.faces[wall.host];
+    const zmin = minOf(hf.polygon, (q) => q[2]);
+    const base: [Point2, Point2][] = [];
+    hf.polygon.forEach((a, i) => {
+      const b = hf.polygon[(i + 1) % hf.polygon.length];
+      if (Math.abs(a[2] - zmin) < 1e-3 && Math.abs(b[2] - zmin) < 1e-3) base.push([toScreen({ x: a[0], y: a[1] }), toScreen({ x: b[0], y: b[1] })]);
+    });
+    const lowest = base.length ? maxOf(base, ([a, b]) => Math.max(a.y, b.y)) : oy + (y1 - y0) * k;
+    const longest = base.length ? base.reduce((m, e) => (Math.hypot(e[1].x - e[0].x, e[1].y - e[0].y) > Math.hypot(m[1].x - m[0].x, m[1].y - m[0].y) ? e : m)) : null;
     const dim = (key: PlaceKey, line: [Point2, Point2], v: number) => {
       const a = toScreen(line[0]), b = toScreen(line[1]);
       const len = Math.hypot(b.x - a.x, b.y - a.y);
@@ -113,9 +97,10 @@
     };
     return {
       h: H,
-      faces: facePts.map((pts) => path(pts.map(s))),
-      eaves,
-      eaveLabel: { x: eaveMid, y: Math.min(lowest + 18, H - 6) },
+      faces: facePts.map((pts, i) => ({ pts: path(pts.map(s)), host: i === wall.host })),
+      base,
+      baseIsEave: wall.hostIsEave,
+      baseLabel: { x: longest ? (longest[0].x + longest[1].x) / 2 : W / 2, y: Math.min(lowest + 18, H - 6) },
       object: obj.length >= 3 ? path(obj.map(s)) : null,
       dims: [dim("eave", pl.eave_line, pl.from_eave), dim("left", pl.left_line, pl.from_left), dim("right", pl.right_line, pl.from_right)],
     };
@@ -130,9 +115,9 @@
   <figcaption>{t("place.sketch")}</figcaption>
   {#if drawing}
     <svg viewBox="0 0 {W} {drawing.h}" role="img" aria-label={alt}>
-      {#each drawing.faces as f}<polygon class="face" points={f} />{/each}
-      {#each drawing.eaves as [a, b]}<line class="eave" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />{/each}
-      <text class="eave-mark" x={drawing.eaveLabel.x} y={drawing.eaveLabel.y}>{t("place.eaveMark")}</text>
+      {#each drawing.faces as f}<polygon class="face" class:other={!f.host} points={f.pts} />{/each}
+      {#each drawing.base as [a, b]}<line class="eave" class:break={!drawing.baseIsEave} x1={a.x} y1={a.y} x2={b.x} y2={b.y} />{/each}
+      <text class="eave-mark" class:break={!drawing.baseIsEave} x={drawing.baseLabel.x} y={drawing.baseLabel.y} data-testid="place-sketch-base">{t(drawing.baseIsEave ? "place.eaveMark" : "place.breakMark")}</text>
       {#if drawing.object}<polygon class="obj {kind}" points={drawing.object} />{/if}
       {#each drawing.dims as d (d.key)}
         <g class="dim" class:on={active === d.key} class:off={active !== null && active !== d.key} data-dim={d.key}>
@@ -173,6 +158,16 @@
     stroke: var(--text-3);
     stroke-width: 1;
     stroke-linejoin: round;
+  }
+  .face.other {
+    fill: none;
+    stroke-dasharray: 3 3;
+  }
+  .eave.break {
+    stroke: var(--text-2);
+  }
+  .eave-mark.break {
+    fill: var(--text-2);
   }
   .eave {
     stroke: var(--line-eave);

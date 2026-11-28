@@ -262,7 +262,9 @@ test.describe("round-4 audit: edits run one after another", () => {
     await width.click();
     for (let i = 0; i < 4; i++) await width.press("ArrowUp");
     await waitForProject(id, (p) => extent(p.chimneys[0], "x") === 0.8, 10_000);
-    const x = ob.getByRole("textbox", { name: /^X/ });
+    // Position in plan sits in the bar's More row (object editor redesign).
+    await ob.getByTestId("object-more").click();
+    const x = ob.getByLabel(cs("place.cornerX"));
     await x.click();
     for (let i = 0; i < 4; i++) await x.press("ArrowUp");
     await waitForProject(id, (p) => Math.min(...p.chimneys[0].corners.map((c: any) => c.x)) === 5.2, 10_000);
