@@ -77,6 +77,9 @@ pub struct Breakdown {
     pub parts: Vec<PartBreakdown>,
     /// Faces added by hand: plan area over the cosine of the pitch.
     pub manual_faces: Vec<ManualFaceStep>,
+    /// Towers and turrets: each roof tier's area (`tower`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub towers: Vec<TowerStep>,
     /// Area per roof material, with the faces it sums.
     pub materials: Vec<MaterialStep>,
     /// Line lengths by line code, with every line they sum.
@@ -225,6 +228,41 @@ pub struct CladPiece {
     pub area: f64,
 }
 
+/// A tower's roof: its tiers and how they add up. A tier's area is the
+/// exact sum over the outline's edges of `(k_a + k_b) / 2 · l · s`, with
+/// `s` the slant of the edge's band (`tower::Tower::calculate`); the steps
+/// show its heights, perimeters and pitch.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TowerStep {
+    /// Tower number from 1.
+    pub no: usize,
+    pub label: String,
+    pub tiers: Vec<TowerTierStep>,
+    /// The flat top where the profile does not end in a point, m².
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap: Option<f64>,
+    /// Σ of the roof tiers and the flat top, m² (the vertical tiers are
+    /// wall area).
+    pub roof_area: f64,
+    pub wall_area: f64,
+    /// The tower has problems and no roof.
+    pub calculated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TowerTierStep {
+    /// Tier number from 1.
+    pub no: usize,
+    pub kind: crate::tower::TierKind,
+    pub material: u8,
+    pub pitch_deg: f64,
+    pub bottom_height: f64,
+    pub top_height: f64,
+    pub bottom_perimeter: f64,
+    pub top_perimeter: f64,
+    pub area: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpeningStep {
     pub kind: OpeningKind,
@@ -271,8 +309,12 @@ pub struct MaterialStep {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AreaItem {
-    /// Part index from 0; `None` for a hand-added face.
+    /// Part index from 0; `None` for a hand-added face or a tower.
     pub part: Option<usize>,
+    /// Tower index from 0 (`face` is then its tier number from 1, the
+    /// flat top after the tiers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tower: Option<usize>,
     /// Face number in the part (or of the hand-added faces); `None` for the
     /// part's clad gables.
     pub face: Option<usize>,
@@ -299,8 +341,14 @@ pub struct LineGroup {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LineStep {
-    /// Part index from 0; `None` for a line drawn by hand.
+    /// Part index from 0; `None` for a line drawn by hand or a tower's.
     pub part: Option<usize>,
+    /// A tower's line: the tower index from 0 and its tier from 0. A ring
+    /// (eave, pitch break) has `a` = `b` at its start and its length from
+    /// the tower's outline (`tower::TowerLine::length`); a hip runs `a` to
+    /// `b` along a curved profile, so its length is the profile's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tower: Option<[usize; 2]>,
     pub a: [f64; 3],
     pub b: [f64; 3],
     /// `b - a`, m.
@@ -517,6 +565,7 @@ fn line_step(part: Option<usize>, a: [f64; 3], b: [f64; 3], length: f64, typed: 
     };
     LineStep {
         part,
+        tower: None,
         a,
         b,
         delta,
@@ -619,6 +668,7 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
                 .entry(crate::roof::counted_material(f.material))
                 .or_default()
                 .push(AreaItem {
+                    tower: None,
                     part: Some(pi),
                     face: Some(no),
                     area: f.area,
@@ -641,6 +691,7 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
                 .entry(crate::roof::counted_material(m))
                 .or_default()
                 .push(AreaItem {
+                    tower: None,
                     part: Some(pi),
                     face: None,
                     area: a,
@@ -737,12 +788,91 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
                 .entry(crate::model::DEFAULT_MATERIAL)
                 .or_default()
                 .push(AreaItem {
+                    tower: None,
                     part: None,
                     face: Some(i + 1),
                     area,
                 });
         }
         roof_area += area;
+    }
+
+    let mut towers = Vec::new();
+    for (ti, (t, r)) in project
+        .towers
+        .iter()
+        .zip(crate::tower::results(project))
+        .enumerate()
+    {
+        let Some(r) = r else {
+            towers.push(TowerStep {
+                no: ti + 1,
+                label: t.label.clone(),
+                tiers: Vec::new(),
+                cap: None,
+                roof_area: 0.0,
+                wall_area: 0.0,
+                calculated: false,
+            });
+            continue;
+        };
+        let mut tiers = Vec::new();
+        for k in &r.tiers {
+            tiers.push(TowerTierStep {
+                no: k.index + 1,
+                kind: k.kind,
+                material: k.material,
+                pitch_deg: k.pitch_deg,
+                bottom_height: k.bottom_height,
+                top_height: k.top_height,
+                bottom_perimeter: k.bottom_perimeter,
+                top_perimeter: k.top_perimeter,
+                area: k.area,
+            });
+            if k.kind == crate::tower::TierKind::Roof {
+                materials
+                    .entry(crate::roof::counted_material(k.material))
+                    .or_default()
+                    .push(AreaItem {
+                        tower: Some(ti),
+                        part: None,
+                        face: Some(k.index + 1),
+                        area: k.area,
+                    });
+            }
+        }
+        if let Some(c) = &r.cap {
+            materials
+                .entry(crate::roof::counted_material(c.material))
+                .or_default()
+                .push(AreaItem {
+                    tower: Some(ti),
+                    part: None,
+                    face: Some(r.tiers.len() + 1),
+                    area: c.area,
+                });
+        }
+        for l in &r.lines {
+            let a = l.points.first().copied().unwrap_or([0.0; 3]);
+            let b = if l.closed {
+                a
+            } else {
+                l.points.last().copied().unwrap_or(a)
+            };
+            let mut step = line_step(None, a, b, l.length, false);
+            step.tower = Some([ti, l.tier]);
+            group(&mut lines, l.code).items.push(step);
+        }
+        roof_area += r.roof_area();
+        towers.push(TowerStep {
+            no: ti + 1,
+            label: t.label.clone(),
+            tiers,
+            cap: r.cap.as_ref().map(|c| c.area),
+            roof_area: r.roof_area(),
+            wall_area: r.wall_area(),
+            calculated: true,
+        });
     }
 
     for l in project.manual_lines.iter().filter(|l| l.counted()) {
@@ -791,6 +921,7 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
             .iter()
             .map(|p| p.roof_area)
             .chain(manual_faces.iter().map(|f| f.area))
+            .chain(towers.iter().map(|t| t.roof_area))
             .collect::<Vec<_>>(),
         roof_area,
     );
@@ -799,6 +930,7 @@ pub fn from_geometry(project: &Project, geos: &[RoofGeometry]) -> Breakdown {
         decimals: DECIMALS,
         parts,
         manual_faces,
+        towers,
         materials,
         lines,
         roof_area,
@@ -939,6 +1071,32 @@ mod tests {
         assert!(eave.items.iter().any(|l| l.typed && l.length == 2.5));
         let mf = &b.manual_faces[0];
         assert!((mf.plan_area - 3.0).abs() < 1e-9 && (mf.area - 6.0).abs() < 1e-9);
+        assert_matches_totals(&p);
+    }
+
+    #[test]
+    fn a_towers_tiers_lines_and_materials_are_in_the_breakdown() {
+        let mut p = examples::find("gable").unwrap().project();
+        let c = crate::geom::Point2::new(5.0, 4.0);
+        let t =
+            crate::edit::towers::preset(crate::edit::towers::TowerPreset::Baroque, c, 2.0, 15.0);
+        p.towers.push(t);
+        let b = breakdown(&p);
+        assert_eq!(b.towers.len(), 1);
+        let tw = &b.towers[0];
+        assert!(tw.calculated && tw.tiers.len() == 7);
+        let sum: f64 = tw
+            .tiers
+            .iter()
+            .filter(|k| k.kind == crate::tower::TierKind::Roof)
+            .map(|k| k.area)
+            .sum();
+        assert!((sum - tw.roof_area).abs() < 1e-9);
+        assert!(
+            b.lines
+                .iter()
+                .any(|g| g.items.iter().any(|l| l.tower.is_some()))
+        );
         assert_matches_totals(&p);
     }
 
