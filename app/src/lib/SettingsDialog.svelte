@@ -16,7 +16,7 @@
 
   let { onclose, onlibrarychanged }: { onclose: () => void; onlibrarychanged: () => void } = $props();
 
-  type Field = "projects_dir" | "drawings_dir" | "locale" | "theme" | "roof_defaults" | "follow_ai";
+  type Field = "projects_dir" | "drawings_dir" | "reports_dir" | "locale" | "theme" | "roof_defaults" | "follow_ai";
 
   let version = $state("");
   /** Error code per field from the last failed save. */
@@ -53,8 +53,8 @@
     }
   }
 
-  async function pick(field: "projects_dir" | "drawings_dir") {
-    const current = field === "projects_dir" ? eff?.projects_dir : eff?.drawings_dir;
+  async function pick(field: "projects_dir" | "drawings_dir" | "reports_dir") {
+    const current = field === "projects_dir" ? eff?.projects_dir : field === "drawings_dir" ? eff?.drawings_dir : (eff?.reports_dir ?? undefined);
     const dir = await open({ directory: true, multiple: false, defaultPath: current });
     if (typeof dir === "string") await save(field, dir);
   }
@@ -142,6 +142,30 @@
             {/if}
           </div>
           {#if errors.drawings_dir}<small class="err" role="alert">{errText(errors.drawings_dir)}</small>{/if}
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label">
+          <span>{t("settings.reportsDir")}</span>
+          <small>{t("settings.reportsDirHint")}</small>
+        </div>
+        <div class="control">
+          {#if eff?.reports_dir}
+            <code class="path" title={eff.reports_dir}>{eff.reports_dir}</code>
+          {:else}
+            <small class="note">{t("settings.reportsDirUnset")}</small>
+          {/if}
+          <div class="buttons">
+            <button class="btn" onclick={() => pick("reports_dir")} disabled={busy !== null}>{t("settings.change")}</button>
+            {#if eff?.reports_dir}
+              <button class="btn ghost" onclick={() => api.openFolder("reports").catch((e) => notifyError(e, "files"))} title={t("settings.openFolder")}>
+                <Icon name="folder" size={15} />{t("settings.open")}
+              </button>
+              <button class="btn ghost" onclick={() => save("reports_dir", null)} disabled={busy !== null}>{t("settings.reset")}</button>
+            {/if}
+          </div>
+          {#if errors.reports_dir}<small class="err" role="alert">{errText(errors.reports_dir)}</small>{/if}
         </div>
       </div>
     </section>

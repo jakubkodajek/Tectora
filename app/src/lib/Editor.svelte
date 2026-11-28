@@ -15,6 +15,8 @@
   import Icon from "./Icon.svelte";
   import JobPanel from "./JobPanel.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
+  import ReportButton from "./ReportButton.svelte";
+  import { releaseReportContext, setReportContext, type ReportContext } from "./report.svelte";
   import Modal from "./Modal.svelte";
   import { openModals } from "./modalcount";
   import ExportDialog from "./ExportDialog.svelte";
@@ -234,6 +236,7 @@
   let focusChange = $state<Change | null>(null);
   let std = $state<{ part: RoofPart | null; mode: "add" | "replace" } | null>(null);
   let plan: PlanView | undefined = $state();
+  let roof3d: Roof3D | undefined = $state();
   // Round-roof helper on the selected wall and the one facing it.
   let round = $state<{ part: number; a: number; b: number; span: number; eave: number; overhang: number; arc: Arc | null; request: HelperRequest | null } | null>(null);
   // The wall facing the selected one, from the core (`roof_helper_context`):
@@ -1515,6 +1518,23 @@
   }
   setLeaveGuard(leaveGuard, () => saveState !== "saved", busy);
 
+  // What a bug report takes from the open editor (report.svelte.ts). The
+  // job's name is read when the button is pressed, not when the editor opens.
+  const reportContext: ReportContext = {
+    jobId: id,
+    get jobName() {
+      return project?.name ?? id;
+    },
+    get layout() {
+      return prefs.layout;
+    },
+    planSvg: () => plan?.snapshotSvg() ?? null,
+    modelPng: async () => (await roof3d?.snapshotPng()) ?? null,
+    editorProject: () => (project ? snapshot() : null),
+    prepare: () => leaveGuard("quiet"),
+  };
+  setReportContext(reportContext);
+
   /** The editor was left: answers that come later change nothing (HUNT-801). */
   let destroyed = false;
   onDestroy(() => {
@@ -1525,6 +1545,7 @@
     unlisten?.();
     cutDrag();
     releaseLeaveGuard(leaveGuard);
+    releaseReportContext(reportContext);
     if (!deleted && (saveState === "dirty" || saveState === "failed")) save();
   });
 
@@ -3489,6 +3510,7 @@
         <Icon name="sparkle" size={14} />{t("ai.short")}
       {/if}
     </button>
+    <ReportButton />
     <LanguagePicker />
   </header>
 
@@ -3661,7 +3683,7 @@
             <div class="view">
               <span class="view-label">{t("editor.model")}</span>
               {#if prefs.layout === "3d"}{@render calcMark()}{/if}
-              <Roof3D {project} {result} {selection} item={selectedItem}
+              <Roof3D bind:this={roof3d} {project} {result} {selection} item={selectedItem}
                 onpick={(tg) => { if (inputClosed()) return; if (tg.type === "item") selectItem(tg.item); else if (tg.type === "edge") { selectItem(null); selection = { part: tg.part, edge: tg.edge }; } }}
                 oncontext={openMenu} onitemdbl={openProperties}
                 {lineMarks}

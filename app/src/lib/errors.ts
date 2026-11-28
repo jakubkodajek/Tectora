@@ -37,7 +37,8 @@ export type Action =
   | "status"
   | "storeResult"
   | "settings"
-  | "move";
+  | "move"
+  | "report";
 
 export interface Described {
   /** One sentence: what failed. */
@@ -142,7 +143,7 @@ export function describeError(e: unknown, action?: Action): Described {
   const notText = code === "unreadable" && notUtf8(err.detail);
   return {
     code: err.code,
-    title: t(action ? `err.action.${action}` : "err.title"),
+    title: t(action === "report" ? "err.ctx.report" : action ? `err.action.${action}` : "err.title"),
     message: settings ? t(`settings.err.${err.code}`) : jobTooLarge ? t("err.job_too_large") : unknownKeys ? t("err.unknown_keys") : notText ? t("err.unreadable_text") : t(`err.${code}`, { id: err.id ?? "" }),
     detail: err.detail,
   };

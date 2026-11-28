@@ -564,6 +564,28 @@
     host.dataset.frame = [box.min.x, -box.max.z, box.max.x, -box.min.z].map((v) => v.toFixed(2)).join(",");
   }
 
+  /**
+   * The view as a PNG (bug report). Rendered and read in the same task: the
+   * canvas keeps no drawing buffer between frames. Null without WebGL.
+   */
+  export function snapshotPng(): Promise<Uint8Array | null> {
+    return new Promise((resolve) => {
+      try {
+        if (!renderer) return resolve(null);
+        renderer.render(scene, camera);
+        renderer.domElement.toBlob(async (blob) => {
+          try {
+            resolve(blob ? new Uint8Array(await blob.arrayBuffer()) : null);
+          } catch {
+            resolve(null);
+          }
+        }, "image/png");
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
   onMount(() => {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(window.devicePixelRatio);

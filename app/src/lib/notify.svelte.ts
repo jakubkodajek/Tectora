@@ -4,6 +4,7 @@
 
 import { describeError, describeRefusal, type Action, type RefusedAction } from "./errors";
 import { t } from "./i18n.svelte";
+import { logNotice } from "./reportlog";
 
 export interface Toast {
   id: number;
@@ -77,6 +78,7 @@ export function notify(t: Omit<Toast, "id" | "count">): number {
     return same.id;
   }
   const id = next++;
+  logNotice({ kind: t.kind, code: t.code, title: t.title, detail: t.detail ?? t.message });
   toasts.push({ ...t, id, count: 1 });
   while (toasts.length > MAX) dismiss(toasts[0].id);
   schedule(id, t.kind);

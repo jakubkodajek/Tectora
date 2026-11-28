@@ -563,6 +563,8 @@ export interface Presets {
 export interface AppSettings {
   projects_dir: string | null;
   drawings_dir: string | null;
+  /** Where bug reports are saved; null: the user chooses for each report. */
+  reports_dir?: string | null;
   locale: string | null;
   theme: "system" | "light" | "dark";
   roof_defaults: Presets;
@@ -598,7 +600,7 @@ export interface FileRequest {
 }
 
 export interface FolderRequest {
-  changes: { projects_dir?: string | null; drawings_dir?: string | null };
+  changes: { projects_dir?: string | null; drawings_dir?: string | null; reports_dir?: string | null };
   by: string;
   summary: string;
 }
@@ -608,6 +610,7 @@ export interface AppSettingsView {
   effective: {
     projects_dir: string;
     drawings_dir: string;
+    reports_dir?: string | null;
     projects_dir_from_env: boolean;
     default_projects_dir: string;
     settings_file: string;

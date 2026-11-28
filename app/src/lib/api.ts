@@ -1,4 +1,6 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
+import type { ReportRequest } from "./bugreport";
+import { logAction } from "./reportlog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./errors";
 import type { HostSlope } from "./dormers";
@@ -73,6 +75,32 @@ export interface StandardParams {
   pitchDeg: number;
   eaveHeight: number;
   overhang: number;
+}
+
+/**
+ * `invoke` that notes the command in the report log: its name, whether it
+ * worked, the error code and how long it took. Never its arguments.
+ */
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const t0 = performance.now();
+  try {
+    const r = await tauriInvoke<T>(cmd, args);
+    logAction({ kind: "command", name: cmd, ok: true, ms: performance.now() - t0 });
+    return r;
+  } catch (e) {
+    const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : null;
+    logAction({ kind: "command", name: cmd, ok: false, code, ms: performance.now() - t0 });
+    throw e;
+  }
+}
+
+/** What a saved bug report is (`SavedReport` in the app). */
+export interface SavedReport {
+  path: string;
+  file_name: string;
+  size: number;
+  /** Parts left out because they were too large or of the wrong type. */
+  left_out: string[];
 }
 
 export const api = {
@@ -231,7 +259,7 @@ export const api = {
     invoke<AppSettingsView>("answer_file_request", { path, allow }),
   /** The user's answer to an AI settings change: `revert` puts the values before it back. */
   answerAiChange: (id: number, revert: boolean) => invoke<AppSettingsView>("answer_ai_change", { id, revert }),
-  openFolder: (which: "projects" | "drawings" | "settings") => invoke<void>("open_folder", { which }),
+  openFolder: (which: "projects" | "drawings" | "settings" | "reports") => invoke<void>("open_folder", { which }),
   listAttachments: (id: string) => invoke<Attachment[]>("list_attachments", { id }),
   attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
   removeAttachment: (id: string, name: string) => invoke<void>("remove_attachment", { id, name }),
@@ -249,6 +277,12 @@ export const api = {
   /** Writes the plan sheet as PDF or SVG (by the path's extension). */
   exportPlanFile: (project: Project, stamp: string, path: string, lineNames: Record<string, string> = {}) =>
     invoke<void>("export_plan_file", { project, stamp, path, lineNames }),
+  /** Writes a bug report to the reports folder, or to `path` (Save as). */
+  createBugReport: (request: ReportRequest, path: string | null) => invoke<SavedReport>("create_bug_report", { request, path }),
+  /** The default file name of a report, for the Save as dialog. */
+  bugReportName: (jobName: string | null, stamp: string) => invoke<string>("bug_report_name", { jobName, stamp }),
+  /** Shows a saved report in Finder / Explorer. */
+  showBugReport: (path: string) => invoke<void>("show_bug_report", { path }),
   savePng: (path: string, bytes: number[]) => invoke<void>("save_png", { path, bytes }),
   takeSnapshot: (project: Project) => invoke<ResultSnapshot>("take_snapshot", { project }),
   takePendingOpen: () => invoke<string | null>("take_pending_open"),

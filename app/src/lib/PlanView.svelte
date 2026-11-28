@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { serializePlan } from "./bugreport";
   import { onDestroy, untrack } from "svelte";
   import type { CalcResult, LineRef, PlanLabel, PlanMark, Point2, Project, Selection } from "./types";
   import { materialToken, tiledColour } from "./materials";
@@ -144,6 +145,11 @@
     if (!(factor > 0) || !Number.isFinite(factor)) return;
     scale = Math.min(400, Math.max(4, scale * factor));
     userView = true;
+  }
+
+  /** The plan as the user sees it, as a standalone SVG file (bug report); null when it cannot be taken. */
+  export function snapshotSvg(): string | null {
+    return svg ? serializePlan(svg) : null;
   }
 
   export function fit() {

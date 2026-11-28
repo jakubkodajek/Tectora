@@ -6,6 +6,8 @@
   import Editor from "./lib/Editor.svelte";
   import Home from "./lib/Home.svelte";
   import SettingsDialog from "./lib/SettingsDialog.svelte";
+  import ReportDialog from "./lib/ReportDialog.svelte";
+  import { report } from "./lib/report.svelte";
   import Toasts from "./lib/Toasts.svelte";
   import { api, onLiveStatus, onOpenFailed, onOpenProject, onProjectsChanged, onSettingsChanged } from "./lib/api";
   import { startOpening } from "./lib/startup";
@@ -273,6 +275,10 @@
 {/if}
 {#if settingsOpen}
   <SettingsDialog onclose={() => (settingsOpen = false)} onlibrarychanged={libraryChanged} />
+{/if}
+
+{#if report.capture}
+  <ReportDialog capture={report.capture} />
 {/if}
 
 {#if connect}

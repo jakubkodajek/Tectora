@@ -14,10 +14,10 @@
 
   let busy = $state(false);
   const rows = $derived(
-    (["projects_dir", "drawings_dir"] as const)
+    (["projects_dir", "drawings_dir", "reports_dir"] as const)
       .filter((k) => k in request.changes)
       .map((k) => ({
-        label: t(k === "projects_dir" ? "settings.projectsDir" : "settings.drawingsDir"),
+        label: t(k === "projects_dir" ? "settings.projectsDir" : k === "drawings_dir" ? "settings.drawingsDir" : "settings.reportsDir"),
         value: request.changes[k] || t("folderReq.default"),
       })),
   );

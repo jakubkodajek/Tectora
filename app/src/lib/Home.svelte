@@ -4,6 +4,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import LanguagePicker from "./LanguagePicker.svelte";
+  import ReportButton from "./ReportButton.svelte";
   import Logo from "./Logo.svelte";
   import NewJob from "./NewJob.svelte";
   import PlanThumb from "./PlanThumb.svelte";
@@ -324,6 +325,7 @@
         <span class="dot"></span>
         {#if isFresh() && live.status}{actorName(live.status.actor)}: {liveText(live.status)}{:else}{t("ai.connect")}{/if}
       </button>
+      <ReportButton />
       <LanguagePicker />
       <button class="icon-btn" onclick={onsettings} title={t("settings.button")} aria-label={t("settings.button")}><Icon name="gear" size={18} /></button>
       <button class="btn import" onclick={importJob} title={t("home.importJobHint")}><Icon name="upload" size={16} /><span class="label">{t("home.importJob")}</span></button>
