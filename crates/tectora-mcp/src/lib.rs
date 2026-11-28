@@ -31,6 +31,8 @@ mod drawings;
 #[cfg(test)]
 mod input_tests;
 mod more;
+#[cfg(test)]
+mod parity_tests;
 mod worker;
 
 pub const GUIDE: &str = include_str!("guide.md");
@@ -111,6 +113,99 @@ mod round_tests {
     }
 }
 
+/// The job data and notes a creating tool takes (`job` {number, customer,
+/// address}, `notes`), as the app's New job dialog sets them.
+pub(crate) fn apply_new_job_args(p: &mut Project, args: &Value) -> Result<(), String> {
+    if let Some(job) = args.get("job").filter(|j| !j.is_null()) {
+        for (key, slot) in [
+            ("number", &mut p.job.number),
+            ("customer", &mut p.job.customer),
+            ("address", &mut p.job.address),
+        ] {
+            if let Some(s) = text_arg(job, key).map_err(|m| format!("job.{m}"))? {
+                *slot = s;
+            }
+        }
+    }
+    if let Some(n) = text_arg(args, "notes")? {
+        p.notes = n;
+    }
+    Ok(())
+}
+
+/// The `job` and `notes` properties of a creating tool's schema.
+pub(crate) fn new_job_props() -> (Value, Value) {
+    (
+        json!({ "type": "object", "properties": {
+            "number": { "type": "string" }, "customer": { "type": "string" }, "address": { "type": "string" }
+        } }),
+        json!({ "type": "string" }),
+    )
+}
+
+/// The objects on and off the roof by kind, as the Results panel counts
+/// them (from the core's `*_off_roof` warnings): `{total, on_roof,
+/// off_roof: [indices]}` per kind.
+fn object_counts(p: &tectora_core::Project, geos: &[tectora_core::roof::RoofGeometry]) -> Value {
+    use std::collections::BTreeSet;
+    use tectora_core::check::WarningKind as K;
+    let mut off: [BTreeSet<usize>; 4] = Default::default();
+    for w in geos.iter().flat_map(|g| &g.warnings) {
+        let (slot, i) = match w.kind {
+            K::DormerOffRoof => (0, w.dormer),
+            K::ChimneyOffRoof => (1, w.item),
+            K::WindowOffRoof => (2, w.item),
+            K::OpeningOffRoof => (3, w.item),
+            _ => continue,
+        };
+        if let Some(i) = i {
+            off[slot].insert(i);
+        }
+    }
+    let counts = [
+        p.dormers.len(),
+        p.chimneys.len(),
+        p.windows.len(),
+        p.roof_openings.len(),
+    ];
+    let row = |k: usize| {
+        let o: Vec<usize> = off[k].iter().copied().filter(|&i| i < counts[k]).collect();
+        json!({ "total": counts[k], "on_roof": counts[k] - o.len(), "off_roof": o })
+    };
+    json!({ "dormers": row(0), "chimneys": row(1), "windows": row(2), "roof_openings": row(3) })
+}
+
+/// Every object's placement (`edit::position`) merged with its facts
+/// (`edit::facts`: host face, measured from eave or pitch break, plan and
+/// slope area, a chimney's height above the roof, a window's outline, a
+/// chimney's or opening's box), both on one roof without objects. `null`
+/// for an object on no face.
+fn placements_with_facts(p: &tectora_core::Project, bare: &[RoofGeometry]) -> Value {
+    use tectora_core::edit::{facts, position};
+    let pl = position::placements_on(p, bare);
+    let fa = facts::facts_on(p, bare);
+    let merge = |a: &[Option<position::Placement>], b: &[Option<facts::ObjectFacts>]| -> Value {
+        a.iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let mut v = json!(x);
+                if let (Some(o), Some(f)) = (v.as_object_mut(), b.get(i).and_then(|f| f.as_ref()))
+                    && let Value::Object(extra) = json!(f)
+                {
+                    o.extend(extra);
+                }
+                v
+            })
+            .collect()
+    };
+    json!({
+        "dormers": merge(&pl.dormers, &fa.dormers),
+        "chimneys": merge(&pl.chimneys, &fa.chimneys),
+        "roof_openings": merge(&pl.roof_openings, &fa.roof_openings),
+        "windows": merge(&pl.windows, &fa.windows),
+    })
+}
+
 /// Edge table the agent can reason about (lengths are derived).
 fn describe_part(part: &RoofPart) -> Value {
     let n = part.edges.len();
@@ -143,6 +238,15 @@ fn describe_part(part: &RoofPart) -> Value {
             }
             if e.material != tectora_core::model::DEFAULT_MATERIAL {
                 v["material"] = json!(e.material);
+            }
+            // The wall bar's "Clad gable" and a direction change's angle
+            // (UI/MCP parity: both are shown and edited in the editor).
+            if e.clad {
+                v["clad"] = json!(true);
+            }
+            if let Some(d) = e.direction_rad {
+                v["direction_change"] = json!(true);
+                v["direction_deg"] = json!(round(d.to_degrees().rem_euclid(360.0), 3));
             }
             v
         })
@@ -1124,7 +1228,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "list_projects",
-            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, `review_pending` (how many AI steps wait for the user's review, null when nothing waits), and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
+            "description": "Search the user's library of roofs made so far (newest first by default): `projects` with id, name, job, roof area, pitch range, dormers, attached files, stored offer result, last change, `review_pending` (how many AI steps wait for the user's review, null when nothing waits), and `broken`: job files the library cannot read (code `unreadable`: damaged, `newer_format`: saved by a newer Tectora, or a file system error), which you cannot open; tell the user about them. As the library cards: `stored_area_m2` (the offer's area, which the library lists; null without a stored result), `result_differs` (the roof changed since the offer), `changed_by_ai` (the last AI change: ts_ms, actor, summary), `notes`. `foreign`: entries in the library folder that block saving (tell the user). Sorting by area uses the offer's area where one is stored, as the app does. Use it to find a past roof to start a new job from (duplicate_project with `job`).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Words that must all appear in the name, job number, customer, address or notes (case and accents ignored)." },
                 "status": { "type": "string", "enum": ["draft", "offer", "ordered", "done"] },
@@ -1141,7 +1245,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "get_project",
-            "description": "Full design: parts with an edge table (index, from, to, length, eave/gable, pitch, eave height, overhang), job data and quantities. `result_recalculation`: Tectora's recalculation the stored result is (its `entry_ts_ms` for restore_offer_result), or null. `load_warnings`: what reading the job left out (`result_dropped`: a stored result with an impossible date); tell the user.",
+            "description": "Full design: parts with an edge table (index, from, to, length, eave/gable, pitch, eave height, overhang, half-hip, breaks, priority, material, `clad` for a clad gable, `direction_change` + `direction_deg` for a direction-change marker), job data and quantities. `dormers[].section`: the dormer's section as the dormer dialog shows it (roof height and pitch under it, wall height, depth, ridge length, top height). `placements`: for every dormer, chimney, roof opening and window (null when off the roof) what the object editor shows: `part`, `edge` (wall), `face` and `pitch_deg` of the face it stands on, `from_eave` (along the slope; `measured_from`: eave or pitch_break), `from_eave_plan`, `from_left`, `from_right`, the dimension lines, `plan_area` and `slope_area` (what it takes off the roof), for chimneys `above_roof` {upper, lower} (top above the roof on its upper and lower side) and `top_below_roof`, for chimneys and openings `box` {x, y, width, depth, rotation_deg} (as update_opening takes it), for windows `outline` in plan. `result_recalculation`: Tectora's recalculation the stored result is (its `entry_ts_ms` for restore_offer_result), or null. `load_warnings`: what reading the job left out (`result_dropped`: a stored result with an impossible date); tell the user.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1155,12 +1259,14 @@ fn base_tools() -> Value {
                 "pitch_deg": { "type": "number" },
                 "eave_height": { "type": "number" },
                 "overhang": { "type": "number" },
+                "job": new_job_props().0,
+                "notes": new_job_props().1,
                 "summary": summary_prop(),
             }), &["name", "type", "length", "width", "pitch_deg", "summary"]),
         },
         {
             "name": "create_project",
-            "description": "Create a new design from footprint points with per-edge roof definitions (any shape, several parts).",
+            "description": "Create a new design from footprint points with per-edge roof definitions (any shape, several parts). `parts: []` creates an empty job to draw on, as the app's New job \"Draw the footprint\". `job` and `notes` set the job data in the same change.",
             "inputSchema": schema(json!({
                 "name": { "type": "string" },
                 "parts": { "type": "array", "items": part_schema },
@@ -1261,7 +1367,7 @@ fn base_tools() -> Value {
         },
         {
             "name": "calc",
-            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer`, `item`, `face` or `other_face` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `merged_materials` (two walls in line of different materials joined into one plane that could not be split per wall, e.g. cut by another building: the area per material is off; normally such a plane is split square to the wall at the corner and each strip has its wall's material), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `manual_face_crosses` (the hand-drawn face `face` index has an outline that crosses itself, corners out of order, so its area counts the difference of its two lobes; redraw it with the corners in order), `manual_faces_overlap` (hand-drawn faces `face` and `other_face` lie on each other over `value` m2 of plan, counted twice: ask whether one was drawn twice), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `manual_face_over_roof` (the hand-drawn face `face` lies over `value` m2 of the calculated roof and adds its area: right for a roof drawn over the main roof), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with. A `warnings` list beside `parts` holds the warnings that belong to no building (a hand-drawn face whose outline crosses itself, or two lying on each other, in a job without a building).",
+            "description": "Compute the roof: area, ridge height and line lengths by DACAD code (T eave, F ridge, G hip, K valley, OL/OR/OS verge left/right/oblique, P shed top edge, c pitch break), per part and in total; a part's line lengths are net of deductions like the totals. Each part may carry `warnings` (`kind`, `value`, `message`, and `edges`, `dormer`, `item`, `face` or `other_face` where they apply): `outside_outline`, `overlapping_faces`, `area_mismatch` (the roof looks geometrically wrong), `merged_walls` (two walls in line calculated as one, so one wall's pitch is not used), `merged_materials` (two walls in line of different materials joined into one plane that could not be split per wall, e.g. cut by another building: the area per material is off; normally such a plane is split square to the wall at the corner and each strip has its wall's material), `covered` (no roof of its own: another part covers it; move or delete one), `cut_exceeds_face` (a face lost more than it has, e.g. a window larger than its face), `dormer_off_roof` (a dormer on no roof face, left out of the result), `window_off_roof`, `chimney_off_roof`, `opening_off_roof` (that object, `item` index, on no roof face, left out), `doubled_line` (joined roofs: a line lies on another one, `value` m counted twice), `no_roof_area` (roofed walls, 0 m² of roof: a chimney or opening took all of it, or eaves at 100 m), `objects_overlap` (`value` pairs of windows, chimneys, openings or dormers on top of each other, each still deducted), `dormer_above_roof` (a dormer `value` m above the roof it sits on: area and lines too large), `manual_face_crosses` (the hand-drawn face `face` index has an outline that crosses itself, corners out of order, so its area counts the difference of its two lobes; redraw it with the corners in order), `manual_faces_overlap` (hand-drawn faces `face` and `other_face` lie on each other over `value` m2 of plan, counted twice: ask whether one was drawn twice), `uncovered_plan` (joined buildings: `value` m2 of plan within this building's eave outline has no roof over it, the area is too small), `hidden_under_neighbour` (joined buildings: `value` m2 of this roof lies inside another building's walls under its roof, hidden yet counted; usually the overhang on a shared wall, which the user can set to 0), `inside_another` (a building wholly within another one's walls whose roof leaves the other roof's planes still adds area; keep a building that marks part of a face and give it the roof's pitch and eave height), `not_calculated_by_core` (the standard calculation stops on this roof and Tectora's own engine calculated it, result self-checked: its figures may differ from the standard result, so check the roof); and these notices, which say the roof is sound as calculated: `far_from_origin` (the building is `value` m, 2.5 km or more, from the origin, where the area loses precision; move the plan to the origin), `manual_face_over_roof` (the hand-drawn face `face` lies over `value` m2 of the calculated roof and adds its area: right for a roof drawn over the main roof), `plane_over_wall` (a wing's plane runs on over the house's eave: no ridge of its own), and two of a roof that is not the standard result because the standard calculation stops on it: `merged_planes` (two parallel planes within 10 cm calculated as one face) and `wing_joined` (a low wing calculated as a lean-to against the house). Tell the user about every warning and notice. A part the calculation gave no roof for carries `error` (`kind`, `message`). `joined_with` lists the parts (`part` index, `name`) the calculation actually joined this part's roof with. A `warnings` list beside `parts` holds the warnings that belong to no building (a hand-drawn face whose outline crosses itself, or two lying on each other, in a job without a building). `input_notices` (also in get_project) lists what the wall bar marks and the results list: `unusual_overhang` (over 3 m), `unusual_height` (an eave height over 30 m), `unusual_length` (a wall over 200 m), `unusual_building_height` (over 30 m), each usually a lost decimal comma, and `half_hip_above_ridge` / `break_above_ridge` (`edge`, `break`, `value` = the ridge height: it changes nothing; a new half-hip starts halfway between eave and ridge at 50°, a new break 1.5 m above the last one but below the ridge at the pitch below less 20°). `manual_faces` gives each hand-drawn face's area. `objects` counts the dormers, chimneys, windows and openings on and off the roof (`off_roof` indices). `non_convex_openings` lists chimneys and openings (`kind`, `index`) that are not convex, which the calculation cannot cut: make them convex.",
             "inputSchema": schema(json!({ "id": { "type": "string" } }), &["id"]),
         },
         {
@@ -1271,6 +1377,28 @@ fn base_tools() -> Value {
                 "id": { "type": "string" },
                 "part": { "type": "integer", "minimum": 0, "description": "Only this part's walls, faces and lines." }
             }), &["id"]),
+        },
+        {
+            "name": "add_object",
+            "description": "Add one chimney, roof window or roof opening at a plan point, as the editor's toolbar places it, keeping the others (set_openings replaces whole lists). Defaults as in the editor: a chimney 0.6 × 0.6 m with its top 1 m above the roof there, an opening 1 × 1 m, both turned along the nearest eave wall (`rotation_deg` overrides); a window 0.78 × 1.18 m (width along the face, height up the slope) with its lower left corner at the point. Returns `added` {kind, index}; get_project then gives its placement and facts.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "kind": { "type": "string", "enum": ["chimney", "roof_opening", "window"] },
+                "x": { "type": "number" }, "y": { "type": "number" },
+                "width": { "type": "number" },
+                "depth": { "type": "number", "description": "chimney and roof_opening: size across the width." },
+                "height": { "type": "number", "description": "chimney: top height above ground, m (default roof + 1 m); window: length up the slope." },
+                "rotation_deg": { "type": "number", "description": "chimney and roof_opening: direction of the width side (default along the nearest eave wall)." },
+                "summary": summary_prop(),
+            }), &["id", "kind", "x", "y", "summary"]),
+        },
+        {
+            "name": "roof_at",
+            "description": "Heights of the calculated roof at plan points, as the editor uses them when it places an object or shows a chimney's height above the roof: per point `roof_height` (the highest roof face over it, dormers included), `host_height` and `pitch_deg` (the building's roof without dormer faces: what a chimney or dormer stands on), or null off the roof. Saves nothing.",
+            "inputSchema": schema(json!({
+                "id": { "type": "string" },
+                "points": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "Plan points [x, y], m." }
+            }), &["id", "points"]),
         },
         {
             "name": "line_details",
@@ -1806,6 +1934,11 @@ impl Server {
                             "dormers": p.dormers, "files": p.files, "has_result": p.has_result,
                             "modified_ms": p.modified_ms, "last_change": p.last_activity,
                             "review_pending": p.review_pending,
+                            // The library card's offer figures and AI tag.
+                            "stored_area_m2": p.stored_area.filter(|_| p.has_result).map(|a| round(a, 2)),
+                            "result_differs": p.has_result && p.result_differs,
+                            "changed_by_ai": p.changed_by_ai,
+                            "notes": p.notes,
                         })
                     })
                     .collect();
@@ -1815,7 +1948,14 @@ impl Server {
                     .iter()
                     .map(|b| json!({ "id": b.id, "code": b.code, "detail": b.detail }))
                     .collect();
-                Ok(json!({ "projects": list, "broken": broken }))
+                // Entries in the library folder that block saving (the
+                // library's warning list).
+                let foreign = self.store.foreign_entries();
+                let mut out = json!({ "projects": list, "broken": broken });
+                if !foreign.is_empty() {
+                    out["foreign"] = json!(foreign);
+                }
+                Ok(out)
             }
             "get_project" => {
                 // A read: the stored result stays as it is. Only the app's
@@ -1841,16 +1981,39 @@ impl Server {
                     (
                         host,
                         // Each object's distances from the eave and the sides
-                        // of its face, as place_item takes them.
-                        json!(tectora_core::edit::position::placements(&p)),
+                        // of its face, as place_item takes them, with the
+                        // facts the object editor shows beside them.
+                        {
+                            let any = !p.dormers.is_empty()
+                                || !p.chimneys.is_empty()
+                                || !p.roof_openings.is_empty()
+                                || !p.windows.is_empty();
+                            if any {
+                                placements_with_facts(
+                                    &p,
+                                    &tectora_core::edit::position::bare_roof(&p),
+                                )
+                            } else {
+                                json!(tectora_core::edit::position::Placements::default())
+                            }
+                        },
                         json!(tectora_core::snapshot::status_of(&geos, &p)),
                         quantities_of(&geos, &p),
+                        tectora_core::notices::input_notices(&p, &geos),
                     )
                 });
-                let (host, placements, stored_result, quantities, refusal) = match calculated {
-                    Ok((h, pl, st, q)) => (h, pl, st, q, None),
-                    Err(r) => (Vec::new(), Value::Null, Value::Null, Value::Null, Some(r)),
-                };
+                let (host, placements, stored_result, quantities, notices, refusal) =
+                    match calculated {
+                        Ok((h, pl, st, q, n)) => (h, pl, st, q, n, None),
+                        Err(r) => (
+                            Vec::new(),
+                            Value::Null,
+                            Value::Null,
+                            Value::Null,
+                            tectora_core::notices::unusual_values(&p),
+                            Some(r),
+                        ),
+                    };
                 let dormers: Vec<Value> = p
                     .dormers
                     .iter()
@@ -1885,6 +2048,9 @@ impl Server {
                 let warnings = self.load_warnings(&id);
                 if !warnings.is_empty() {
                     v["load_warnings"] = Value::Array(warnings);
+                }
+                if !notices.is_empty() {
+                    v["input_notices"] = json!(notices);
                 }
                 match refusal {
                     None => {}
@@ -1950,6 +2116,43 @@ impl Server {
                 if !problems.is_empty() {
                     out["problems"] = serde_json::to_value(&problems).unwrap_or(Value::Null);
                 }
+                // Each hand-drawn face's area (in the totals already) and
+                // the objects on and off the roof, as the Results panel
+                // lists them.
+                if !p.manual_faces.is_empty() {
+                    out["manual_faces"] = p
+                        .manual_faces
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| json!({ "index": i, "label": f.label, "pitch_deg": f.pitch_deg, "area_m2": round(f.area(), 2) }))
+                        .collect();
+                }
+                out["objects"] = object_counts(&p, &geos);
+                // Chimneys and openings the calculation cannot cut (not
+                // convex), by index: the editor's banner names them.
+                let bad: Vec<Value> =
+                    [("chimney", &p.chimneys), ("roof_opening", &p.roof_openings)]
+                        .into_iter()
+                        .flat_map(|(kind, list)| {
+                            list.iter()
+                                .enumerate()
+                                .filter(|(_, c)| {
+                                    c.corners.len() >= 3
+                                        && !tectora_core::openings::dacad_convex(&c.corners)
+                                })
+                                .map(move |(i, _)| json!({ "kind": kind, "index": i }))
+                        })
+                        .collect();
+                if !bad.is_empty() {
+                    out["non_convex_openings"] = Value::Array(bad);
+                }
+                // What the wall bar marks and the Results panel lists:
+                // unusually large values (a lost decimal comma) and
+                // half-hips / pitch breaks at or above the ridge.
+                let notices = tectora_core::notices::input_notices(&p, &geos);
+                if !notices.is_empty() {
+                    out["input_notices"] = json!(notices);
+                }
                 // Warnings that belong to no building (ERR-1901).
                 let job = tectora_core::check::job_warnings(&p, &geos);
                 if !job.is_empty() {
@@ -1994,6 +2197,46 @@ impl Server {
                 }
                 v["id"] = json!(id);
                 Ok(v)
+            }
+            "roof_at" => {
+                let (id, p) = self.load(args)?;
+                let pts: Vec<Vec<f64>> =
+                    serde_json::from_value(args.get("points").cloned().unwrap_or(Value::Null))
+                        .map_err(|_| "`points` must be a list of [x, y]".to_string())?;
+                if pts.is_empty() || pts.len() > 200 {
+                    return Err("`points` must hold 1 to 200 points".into());
+                }
+                let mut plan = Vec::with_capacity(pts.len());
+                for q in &pts {
+                    let [x, y] = q[..] else {
+                        return Err("each point must be [x, y]".into());
+                    };
+                    if !(x.is_finite() && y.is_finite())
+                        || x.abs() > tectora_core::model::MAX_COORD
+                        || y.abs() > tectora_core::model::MAX_COORD
+                    {
+                        return Err("a point is out of range".into());
+                    }
+                    plan.push(tectora_core::geom::Point2::new(x, y));
+                }
+                let geos = self.roof_of(&p).ok_or(ROOF_TOO_LONG)?;
+                use tectora_core::edit::probe::{host_plane_at, roof_height_at};
+                let at: Vec<Value> = plan
+                    .iter()
+                    .map(|&q| match roof_height_at(&geos, q) {
+                        None => Value::Null,
+                        Some(z) => {
+                            let host = host_plane_at(&geos, q);
+                            json!({
+                                "x": q.x, "y": q.y,
+                                "roof_height": round(z, 3),
+                                "host_height": host.map(|(h, _)| round(h, 3)),
+                                "pitch_deg": host.map(|(_, g)| round(g[0].hypot(g[1]).atan().to_degrees(), 2)),
+                            })
+                        }
+                    })
+                    .collect();
+                Ok(json!({ "id": id, "points": at }))
             }
             "line_details" => {
                 let (id, p) = self.load(args)?;
@@ -2124,6 +2367,8 @@ impl Server {
                 let mut p = empty.clone();
                 p.parts
                     .push(standard_roof(kind, length, width, pitch, eave, overhang));
+                // The New job dialog's job data with the roof, in one change.
+                apply_new_job_args(&mut p, args)?;
                 crate::more::refuse_new_problems(&empty, &p)?;
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
@@ -2133,27 +2378,13 @@ impl Server {
                 let parts = arg(args, "parts")?
                     .as_array()
                     .ok_or("`parts` must be a list")?;
-                if parts.is_empty() {
-                    return Err("at least one part is required".into());
-                }
+                // No parts is an empty job to draw on, as the app's New
+                // job "Draw the footprint" makes.
                 for (i, v) in parts.iter().enumerate() {
                     p.parts
                         .push(parse_part(v, i).map_err(|m| format!("part {i}: {m}"))?);
                 }
-                if let Some(job) = args.get("job").filter(|j| !j.is_null()) {
-                    for (key, slot) in [
-                        ("number", &mut p.job.number),
-                        ("customer", &mut p.job.customer),
-                        ("address", &mut p.job.address),
-                    ] {
-                        if let Some(s) = text_arg(job, key).map_err(|m| format!("job.{m}"))? {
-                            *slot = s;
-                        }
-                    }
-                }
-                if let Some(n) = text_arg(args, "notes")? {
-                    p.notes = n;
-                }
+                apply_new_job_args(&mut p, args)?;
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             }
             "update_edges" => {
@@ -2361,6 +2592,96 @@ impl Server {
                 // A window of size 0 would block later edits (HUNTC-005).
                 crate::more::refuse_new_problems(&before, &p)?;
                 self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)
+            }
+            "add_object" => {
+                // The editor's toolbar Chimney / Window / Opening, placed at
+                // a plan point with the editor's defaults (Editor.svelte
+                // placeChimney / placeWindow / placeHole).
+                let (id, before) = self.load(args)?;
+                let mut p = before.clone();
+                let kind = arg_str(args, "kind")?;
+                let x = arg_f64(args, "x")?.ok_or("missing `x`")?;
+                let y = arg_f64(args, "y")?.ok_or("missing `y`")?;
+                let lim = tectora_core::model::MAX_COORD;
+                if !(x.is_finite() && y.is_finite() && x.abs() <= lim && y.abs() <= lim) {
+                    return Err("`x` or `y` is out of range".into());
+                }
+                let rotation = match arg_f64(args, "rotation_deg")? {
+                    Some(r) => r,
+                    None => {
+                        let a = more::nearest_wall_angle(&p, tectora_core::geom::Point2::new(x, y));
+                        round(a.to_degrees(), 2)
+                    }
+                };
+                let index = match kind {
+                    "chimney" => {
+                        let w = arg_f64(args, "width")?.unwrap_or(0.6);
+                        let d = arg_f64(args, "depth")?.unwrap_or(0.6);
+                        let mut c =
+                            tectora_core::edit::probe::chimney_from_rect(x, y, w, d, rotation, 0.0);
+                        c.height = match arg_f64(args, "height")? {
+                            Some(h) => h,
+                            None => {
+                                // 1 m above the roof at the chimney's middle.
+                                let geos = self.roof_of(&p).ok_or(ROOF_TOO_LONG)?;
+                                let base = tectora_core::edit::probe::chimney_default_base(
+                                    &geos, &c.corners,
+                                )
+                                .unwrap_or(Settings::load().roof_defaults.eave_height);
+                                round(base + 1.0, 2)
+                            }
+                        };
+                        p.chimneys.push(c);
+                        p.chimneys.len() - 1
+                    }
+                    "roof_opening" => {
+                        if args.get("height").is_some_and(|h| !h.is_null()) {
+                            return Err("a roof opening has no height".into());
+                        }
+                        let w = arg_f64(args, "width")?.unwrap_or(1.0);
+                        let d = arg_f64(args, "depth")?.unwrap_or(1.0);
+                        p.roof_openings
+                            .push(tectora_core::edit::probe::chimney_from_rect(
+                                x, y, w, d, rotation, 0.0,
+                            ));
+                        p.roof_openings.len() - 1
+                    }
+                    "window" => {
+                        if args.get("rotation_deg").is_some_and(|h| !h.is_null()) {
+                            return Err("a roof window follows its face; it has no rotation".into());
+                        }
+                        p.windows.push(RoofWindow {
+                            x,
+                            y,
+                            width: arg_f64(args, "width")?.unwrap_or(0.78),
+                            height: arg_f64(args, "height")?.unwrap_or(1.18),
+                        });
+                        tectora_core::edit::check_windows(&p).map_err(|e| e.to_string())?;
+                        p.windows.len() - 1
+                    }
+                    other => {
+                        return Err(format!(
+                            "`kind` must be chimney, roof_opening or window, not `{other}`"
+                        ));
+                    }
+                };
+                let flat = p
+                    .chimneys
+                    .last()
+                    .filter(|_| kind == "chimney")
+                    .or(p.roof_openings.last().filter(|_| kind == "roof_opening"))
+                    .is_some_and(|c| !c.has_area());
+                if flat {
+                    return Err(
+                        "the object has no plan area: give it a width and depth of at least 1 cm"
+                            .into(),
+                    );
+                }
+                crate::more::refuse_new_problems(&before, &p)?;
+                let mut out =
+                    self.commit(Some(&id), Some(&before), &p, arg_str(args, "summary")?)?;
+                out["added"] = json!({ "kind": kind, "index": index });
+                Ok(out)
             }
             "show_project" => {
                 let (id, p) = self.load(args)?;

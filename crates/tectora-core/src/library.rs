@@ -83,7 +83,8 @@ pub fn search(list: Vec<ProjectSummary>, q: &Query) -> Result<Vec<ProjectSummary
     out.sort_by(|a, b| {
         let ord = match q.sort {
             SortKey::Modified => a.modified_ms.cmp(&b.modified_ms),
-            SortKey::Area => a.roof_area.total_cmp(&b.roof_area),
+            // As the app's library: by the offer's area where one is stored.
+            SortKey::Area => a.listed_area().total_cmp(&b.listed_area()),
             SortKey::Name => fold(&a.name).cmp(&fold(&b.name)),
             SortKey::Number => fold(&a.job.number).cmp(&fold(&b.job.number)),
             SortKey::Customer => fold(&a.job.customer).cmp(&fold(&b.job.customer)),

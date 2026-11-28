@@ -604,6 +604,22 @@ pub fn checked_list(project: &Project, opts: &ListOptions) -> Result<String, Str
     Ok(crate::work::calculate(|| dacad_list(project, opts))?)
 }
 
+/// [`checked_list`] with the list's summary (the tables the Export dialog
+/// shows beside the text), from one calculation of the roofs.
+pub fn checked_list_with_summary(
+    project: &Project,
+    opts: &ListOptions,
+) -> Result<(String, ListSummary), String> {
+    project.check_limits()?;
+    Ok(crate::work::calculate(|| {
+        let geos = crate::openings::generate_project(project);
+        (
+            dacad_list_of(project, &geos, opts),
+            list_summary_of(project, &geos, opts),
+        )
+    })?)
+}
+
 /// What the Export dialog shows: the list, the sheet (SVG) and the list's
 /// summary, from one calculation of the roofs.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

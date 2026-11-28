@@ -181,7 +181,11 @@ pub fn placement_in(project: &Project, bare: &[RoofGeometry], it: ItemRef) -> Op
 }
 
 /// [`placement_in`] with the index of the host face in its part's faces.
-fn locate(project: &Project, bare: &[RoofGeometry], it: ItemRef) -> Option<(Placement, usize)> {
+pub(crate) fn locate(
+    project: &Project,
+    bare: &[RoofGeometry],
+    it: ItemRef,
+) -> Option<(Placement, usize)> {
     let pts = outline(project, bare, it)?;
     let (g, k) = host_face(bare, &pts)?;
     let face = bare.get(g)?.faces.get(k)?;
@@ -338,10 +342,15 @@ pub fn placements(project: &Project) -> Placements {
     if !any {
         return Placements::default();
     }
-    let bare = bare_roof(project);
+    placements_on(project, &bare_roof(project))
+}
+
+/// [`placements`] on a given bare roof ([`bare_roof`] of the project), so a
+/// caller that also wants [`super::facts::facts_on`] calculates it once.
+pub fn placements_on(project: &Project, bare: &[RoofGeometry]) -> Placements {
     let all = |kind: ItemKind, n: usize| -> Vec<Option<Placement>> {
         (0..n)
-            .map(|index| placement_in(project, &bare, ItemRef { kind, index }))
+            .map(|index| placement_in(project, bare, ItemRef { kind, index }))
             .collect()
     };
     Placements {

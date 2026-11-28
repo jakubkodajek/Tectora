@@ -115,9 +115,33 @@ The tools cover every operation of the Tectora editor:
   `placements` (per dormer, chimney, window and opening: the roof face it
   sits on, `from_eave` measured along the slope from the eave line to the
   object's lowest point, `from_eave_plan` the same in plan, `from_left` and
-  `from_right` from the face's side edges at that level). `place_item` moves
-  one object to such distances: `from_eave` and one of `from_left` /
-  `from_right`, each optional, in one save.
+  `from_right` from the face's side edges at that level). With them come
+  the facts the object editor shows: `face`, `measured_from` (`eave`, or
+  `pitch_break` for a face above a break), `plan_area` and `slope_area`
+  (what the object takes off the roof), for a chimney `above_roof`
+  {`upper`, `lower`} (its top above the roof on the upper and lower side;
+  `top_below_roof` when the top is under the roof), for chimneys and
+  openings `box` (as `update_opening` takes it), for windows `outline` in
+  plan. A dormer's `section.above_roof` says how far it rises above the
+  roof it stands on. `place_item` moves one object to such distances:
+  `from_eave` and one of `from_left` / `from_right`, each optional, in one
+  save.
+- `add_object` adds one chimney, roof window or opening at a plan point
+  with the editor's defaults (chimney 0.6 × 0.6 m, top 1 m above the roof;
+  opening 1 × 1 m; both along the nearest eave wall; window 0.78 × 1.18 m),
+  keeping the others. `roof_at` gives the roof's height and pitch at plan
+  points.
+- Everything the app shows is readable here (`docs/ui-mcp-parity.json`
+  lists where): `calc` and `get_project` add `input_notices` (unusually
+  large values, a half-hip or pitch break at or above the ridge),
+  `calc` adds `manual_faces` areas, `objects` on and off the roof and
+  `non_convex_openings`; `get_history` entries carry their `changes`,
+  `refreshed` figures and `reason`; `get_review.pending.changes` lists
+  every field changed since the state the user approved;
+  `list_projects` gives the library card's offer area, "differs" mark,
+  AI tag and notes; `export_list` gives the Export dialog's tables as
+  `summary`; `roof_helper` tool `context` gives what the calculation
+  dialog shows before anything is typed.
 - Flat roof and material names: `set_roof_options`.
 - Calculation helpers of the roof definition: `roof_helper` (simple
   triangle, two parallel walls, point in space, merge faces, hip/valley,

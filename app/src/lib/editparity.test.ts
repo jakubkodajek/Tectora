@@ -13,6 +13,7 @@ import * as rr from "./roundroof";
 import * as tf from "./transform";
 import * as dm from "./dormers";
 import * as wt from "./walltype";
+import * as pl from "./plausible";
 import { roundTo } from "./rounding";
 
 const files = import.meta.glob(["../../../tests/fixtures/edit/parity.json"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
@@ -119,6 +120,19 @@ function run(op: string, a: any): any {
     }
     case "eave_pitch":
       return wt.eavePitch(a.edges, a.edge, a.own, a.preset);
+    case "unusual_values":
+      return pl.unusualValues(a.project).map((u) => ({ kind: `unusual_${u.field}`, part: u.part, edge: u.edge, value: u.value }));
+    case "above_ridge_issues": {
+      // The ridge as the core's calculation gives it to the editor.
+      const result = { parts: a.ridges.map((r: number | null) => (r === null ? { geometry: { error: "x", faces: [] }, quantities: { ridge_height: 0 } } : { geometry: { faces: [{}] }, quantities: { ridge_height: r } })) } as any;
+      return pl.aboveRidgeIssues(a.project, result).map((r) => ({ kind: r.brk < 0 ? "half_hip_above_ridge" : "break_above_ridge", part: r.part, edge: r.edge, ...(r.brk < 0 ? {} : { break: r.brk }), value: r.ridge }));
+    }
+    case "half_hip_default":
+      return pl.halfHipDefault({ eave_height: a.eave }, a.ridge);
+    case "break_default":
+      return pl.breakDefault(a.top, a.ridge);
+    case "break_default_pitch":
+      return pl.breakDefaultPitch(a.below);
     case "pitch_for_back_width": {
       const v = dm.pitchForBackWidth(a.p, a.host, a.width);
       return typeof v === "number" ? v : { error: true };

@@ -6,7 +6,7 @@
   import { t } from "./i18n.svelte";
   import { radiogroup } from "./tabs";
   import type { CalcResult, EdgeDef, PitchBreak, Project, Selection } from "./types";
-  import { aboveRidge, breakDefault, halfHipDefault, isUnusual, ridgeOf } from "./plausible";
+  import { HALF_HIP_PITCH, aboveRidge, breakDefault, breakDefaultPitch, halfHipDefault, isUnusual, ridgeOf } from "./plausible";
   import { num } from "./format";
   import { GABLE_PITCH, buildingHeight as heightOf, isGable, isMarker } from "./types";
   import { materialIds, materialName } from "./materials";
@@ -193,7 +193,7 @@
     if (!edge) return;
     const top = breaks.reduce((h, b) => Math.max(h, b.height), edge.eave_height);
     const last = breaks.length ? breaks[breaks.length - 1].pitch_deg : edge.pitch_deg;
-    onchange({ breaks: [...breaks.map((b) => ({ ...b })), { height: breakDefault(top, ridge), pitch_deg: Math.max(5, Math.min(85, last - 20)) }] });
+    onchange({ breaks: [...breaks.map((b) => ({ ...b })), { height: breakDefault(top, ridge), pitch_deg: breakDefaultPitch(last) }] });
   }
 
   function setType(toGable: boolean) {
@@ -342,7 +342,7 @@
           </label>
           <label class="check">
             <input type="checkbox" checked={!!edge.half_hip}
-              onchange={(e) => onchange({ half_hip: (e.target as HTMLInputElement).checked ? { height: halfHipDefault(edge, ridge), pitch_deg: 50 } : null })} />
+              onchange={(e) => onchange({ half_hip: (e.target as HTMLInputElement).checked ? { height: halfHipDefault(edge, ridge), pitch_deg: HALF_HIP_PITCH } : null })} />
             {t("edge.halfHip")}
           </label>
           {#if edge.half_hip}

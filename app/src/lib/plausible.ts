@@ -3,9 +3,12 @@
 // stays; the field gets a small mark and the Results panel a line
 // (review UX-009). Also a half-hip or pitch break at or above the roof's
 // ridge, which the roof calculation leaves without effect (review UX-003).
-// Input checks only: the ridge height comes from the core's result.
+// Input checks only: the ridge height comes from the core's result. The core
+// computes the same (`tectora_core::notices`, which the MCP server reports as
+// `input_notices`); `editparity.test.ts` checks both agree.
 
 import { num } from "./format";
+import { roundTo } from "./rounding";
 import { t } from "./i18n.svelte";
 import { partLabel } from "./partname";
 import type { CalcResult, EdgeDef, Project } from "./types";
@@ -74,8 +77,8 @@ export function aboveRidge(height: number, ridge: number | null): boolean {
  * default (2,5 m above the eave).
  */
 export function halfHipDefault(edge: Pick<EdgeDef, "eave_height">, ridge: number | null): number {
-  if (ridge !== null && ridge > edge.eave_height + 0.1) return +((edge.eave_height + ridge) / 2).toFixed(2);
-  return +(edge.eave_height + 2.5).toFixed(2);
+  if (ridge !== null && ridge > edge.eave_height + 0.1) return roundTo((edge.eave_height + ridge) / 2, 2);
+  return roundTo(edge.eave_height + 2.5, 2);
 }
 
 /**
@@ -84,9 +87,15 @@ export function halfHipDefault(edge: Pick<EdgeDef, "eave_height">, ridge: number
  */
 export function breakDefault(top: number, ridge: number | null): number {
   const h = top + 1.5;
-  if (ridge !== null && ridge > top + 0.1 && h >= ridge - AT_RIDGE) return +((top + ridge) / 2).toFixed(2);
-  return +h.toFixed(2);
+  if (ridge !== null && ridge > top + 0.1 && h >= ridge - AT_RIDGE) return roundTo((top + ridge) / 2, 2);
+  return roundTo(h, 2);
 }
+
+/** Pitch of a new half-hip, degrees (core `notices::HALF_HIP_DEFAULT_PITCH`). */
+export const HALF_HIP_PITCH = 50;
+
+/** Pitch of a new pitch break: the pitch below it less 20°, within 5..85° (core `notices::break_default_pitch`). */
+export const breakDefaultPitch = (below: number) => Math.max(5, Math.min(85, below - 20));
 
 export interface RidgeIssue {
   part: number;

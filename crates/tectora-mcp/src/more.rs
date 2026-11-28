@@ -16,7 +16,7 @@ use tectora_core::edit::corners::corner_group;
 use tectora_core::edit::dormers::{self, DormerKind, DormerParams, SectionTarget};
 use tectora_core::edit::helper::{self, HelperRequest, HipBy, Neighbour, ParallelStep};
 use tectora_core::edit::openings::{OpeningBox, opening_box, reshape_opening};
-use tectora_core::edit::probe::{host_height_at, roof_corner_points, roof_height_at, snap_to_roof};
+use tectora_core::edit::probe::{host_height_at, roof_height_at, snap_to_roof};
 use tectora_core::edit::round::{ArcMode, MAX_ROUND_SEGMENTS};
 use tectora_core::edit::transform::{
     ItemKind, ItemRef, MAX_COPIES, MAX_POLYGON_SIDES, PlanMap, follow_roof, item_centre,
@@ -199,7 +199,23 @@ fn describe_section(p: &DormerParams, host: &[tectora_core::roof::RoofGeometry])
     };
     let s = dormers::section(p, h);
     let r = |v: Option<f64>| v.map(|v| round(v, 3));
+    // How far the dormer's top rises above the roof it stands on (the
+    // dormer dialog's "m above the roof" note and the calc warning
+    // `dormer_above_roof`, here per dormer).
+    let (sin, cos) = p.angle.sin_cos();
+    let inside = Point2::new(
+        p.start.x + cos * p.width / 2.0 - sin * 0.01,
+        p.start.y + sin * p.width / 2.0 + cos * 0.01,
+    );
+    let above = s
+        .top_height
+        .zip(tectora_core::edit::probe::building_top_at(host, inside))
+        .and_then(|(t, b)| {
+            let a = t - b;
+            (a.is_finite() && a > tectora_core::check::DORMER_ABOVE_TOL).then(|| round(a, 3))
+        });
     json!({
+        "above_roof": above,
         "roof_height": round(h.height, 3),
         "roof_pitch_deg": round(s.host_pitch_deg, 2),
         "wall_height": round(s.wall_height, 3),
@@ -371,7 +387,7 @@ pub(crate) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "edit_walls",
-            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); rename {name}.",
+            "description": "Edit the walls of a part step by step, as in the plan editor. Operations, applied in order: move_point {index, x, y}; insert_point {after, x, y} (new corner on wall `after`, which keeps its roof definition); delete_point {index} (a part keeps at least 3 walls); set_length {index, length} (the angles stay: the end corner and the corners after it up to the next parallel wall move along the wall, so a rectangle stays a rectangle; with no parallel wall only the end corner moves); insert_direction_change {index} (a zero-length marker wall at the wall's start that turns the roof, DACAD Richtungswechsel); shift_wall {index, distance} (moves the wall parallel, + outward, its neighbours stretched); rename {name}. A point moved onto a neighbouring corner merges into it, as a corner dragged there in the plan (the walls after it move down by one index).",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "operations": { "type": "array", "items": { "type": "object", "properties": {
@@ -554,11 +570,11 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "roof_helper",
-            "description": "The calculation helpers of the roof definition, for wall `edge` of a part. Returns the values they would set; with `apply: true` it also saves them. Tools: triangle (pitch from two of width, rafter, ridge height; with breaks, the top break's pitch); parallel (two facing walls meeting in a ridge: type values in `steps` as in the dialog, solve for pitch, eave, overhang or position); point (the plane through a 3D point: `point` [x, y, z] or `point_index` into the roof corner list it returns); merge (walls parallel to this one take its plane; eave, overhang or position); hip (pitches of this wall and its neighbour from a hip or valley length and both rafters or eave pieces); build_up (correct for a build-up thickness); round_roof (this wall and the facing one get the polygon of a circular arc: default, radius, ridge or length).",
+            "description": "The calculation helpers of the roof definition, for wall `edge` of a part. Returns the values they would set; with `apply: true` it also saves them. Tools: triangle (pitch from two of width, rafter, ridge height; with breaks, the top break's pitch); parallel (two facing walls meeting in a ridge: type values in `steps` as in the dialog, solve for pitch, eave, overhang or position); point (the plane through a 3D point: `point` [x, y, z] or `point_index` into the roof corner list it returns); merge (walls parallel to this one take its plane; eave, overhang or position); hip (pitches of this wall and its neighbour from a hip or valley length and both rafters or eave pieces); build_up (correct for a build-up thickness); round_roof (this wall and the facing one get the polygon of a circular arc: default, radius, ridge or length). Tool `context` saves nothing and answers what the dialog shows before anything is typed: `opposite` (facing wall), `span`, `current` (where the two roofs meet now: w, h), `breaks`, `mates` (the walls the merge tool offers) and `roof_points` with their `kind`. Every answer also gives `unchanged` (true when every value the helper gives is the wall's already) and, where they apply, `rafters` (parallel: rafter lengths of this wall and the facing one), `default_arc`, `min_radius` and `span` (round_roof); point without `point` also lists `roof_point_kinds`.",
             "inputSchema": schema(json!({
                 "id": id, "part": part,
                 "edge": { "type": "integer" },
-                "tool": { "type": "string", "enum": ["triangle", "parallel", "point", "merge", "hip", "build_up", "round_roof"] },
+                "tool": { "type": "string", "enum": ["context", "triangle", "parallel", "point", "merge", "hip", "build_up", "round_roof"] },
                 "target": target(&["pitch", "eave", "overhang", "position"]),
                 "width": { "type": "number" }, "rafter": { "type": "number" }, "ridge": { "type": "number" },
                 "width_includes_overhang": { "type": "boolean", "description": "triangle (default false) and parallel (default true)." },
@@ -579,18 +595,20 @@ pub(crate) fn tools() -> Vec<Value> {
                 "mode": { "type": "string", "enum": ["default", "radius", "ridge", "length"] },
                 "value": { "type": "number" },
                 "segments": { "type": "integer" },
+                "eave_height": { "type": "number", "description": "round_roof: eave height of the arc (default the wall's)." },
+                "overhang": { "type": "number", "description": "round_roof: overhang of the arc (default the wall's)." },
                 "apply": { "type": "boolean" },
                 "summary": summary_prop(),
             }), &["id", "edge", "tool"]),
         }),
         json!({
             "name": "get_history",
-            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back. A revert has `kind: \"revert\"` and `undid_from` (the ts_ms of the oldest entry it undid); a revert also has `took_out` and `put_back`, the ts_ms of the changes it took out of the design and put back into it (oldest first, at most 20; `took_out_count` and `put_back_count` count them all): read what a revert did from these, never from its summary; an entry with `undone: true` is not in the design (a revert that stands undid it; a revert with `undone` was taken back, so its changes stand again); `created: true` marks the entry that created the job (nothing to revert it to); `pending_review` marks the changes that wait for the user's review.",
+            "description": "The change log of a design: who changed what and when (ts_ms), newest first, at most the 50 changes a log keeps. `stored_result_recalculation: true` marks Tectora's own recalculation of an offer's stored result while the job's stored result still is that one (restore_offer_result puts the offer's figures back); `restores` on an entry is the ts_ms of the recalculation it put back. A revert has `kind: \"revert\"` and `undid_from` (the ts_ms of the oldest entry it undid); a revert also has `took_out` and `put_back`, the ts_ms of the changes it took out of the design and put back into it (oldest first, at most 20; `took_out_count` and `put_back_count` count them all): read what a revert did from these, never from its summary; an entry with `undone: true` is not in the design (a revert that stands undid it; a revert with `undone` was taken back, so its changes stand again); `created: true` marks the entry that created the job (nothing to revert it to); `pending_review` marks the changes that wait for the user's review. Each entry carries what the app's history shows: `changes` (field, part, edge, item, before, after: what it changed), `refreshed` (a recalculation's figures old -> new) and `reason`.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
             "name": "get_review",
-            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, their ts_ms (`steps`, oldest first: a change the user reverted by itself is no longer one of them, the others still wait), who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app.",
+            "description": "Whether the user has reviewed your changes to a design in the app. `pending` is null when every change is accepted or reverted; otherwise it gives the oldest unreviewed change (`since_ts_ms`), how many there are, their ts_ms (`steps`, oldest first: a change the user reverted by itself is no longer one of them, the others still wait), who made them and how they change the figures (`differences`: roof_area, ridge_height, line:<code>, material:<n>, before → now). Only the user accepts changes, in the app. `pending.changes` lists every field changed since the state the user approved (field, part, edge, item, before, after), as the review banner and the plan's wall notes show them; `steps_stand: false` means none of the listed steps stands in the job any more (they were reverted one by one) and only `changes` against the approved state is left to review.",
             "inputSchema": schema(json!({ "id": id }), &["id"]),
         }),
         json!({
@@ -605,8 +623,8 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_from_example",
-            "description": "Create a new design from an example roof.",
-            "inputSchema": schema(json!({ "example_id": { "type": "string" }, "name": { "type": "string" }, "summary": summary_prop() }), &["example_id", "summary"]),
+            "description": "Create a new design from an example roof; `job` and `notes` set the job data in the same change, as the app's New job dialog.",
+            "inputSchema": schema(json!({ "example_id": { "type": "string" }, "name": { "type": "string" }, "job": crate::new_job_props().0, "notes": crate::new_job_props().1, "summary": summary_prop() }), &["example_id", "summary"]),
         }),
         json!({
             "name": "duplicate_project",
@@ -666,7 +684,7 @@ pub(crate) fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "export_list",
-            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): faces with pitch, area and rafter length, wall area and area by material, and line lengths by line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it.",
+            "description": "The roof as the text list TERRAN's Excel price sheet reads (the text the user copies with the copy button in the app's Export dialog): faces with pitch, area and rafter length, wall area and area by material, and line lengths by line type. Read-only. Give it to the user verbatim; do not translate or reformat it, the price sheet parses it. `summary` holds the same figures as data, as the Export dialog's tables show them (faces with pitch, area, deducted area and rafter length, windows, wall area, materials, lines).",
             "inputSchema": schema(json!({
                 "id": id,
                 "stamp": { "type": "string", "description": "Date in the header, e.g. \"08.11.2026 14:30\"; default: now (UTC)." },
@@ -849,6 +867,19 @@ impl Server {
                         if e.created {
                             v["created"] = json!(true);
                         }
+                        // What the history's "show changes" lists (field,
+                        // part, edge, item, before -> after), the
+                        // recalculation's figures old -> new and the
+                        // reason, as the app's history shows them.
+                        if !e.changes.is_empty() {
+                            v["changes"] = json!(e.changes);
+                        }
+                        if let Some(r) = &e.refreshed {
+                            v["refreshed"] = json!(r);
+                        }
+                        if let Some(r) = &e.reason {
+                            v["reason"] = json!(r);
+                        }
                         // What a revert did, by entry time (audit
                         // 2026-11-24 UX-1701): never read from its words.
                         if let (Some(out), Some(back)) = (&e.took_out, &e.put_back) {
@@ -887,7 +918,12 @@ impl Server {
                         "count": s.count,
                         "actors": s.actors,
                         "steps": s.steps,
+                        "steps_stand": s.steps_stand,
                         "differences": differences,
+                        // What the banner and the plan's wall notes show:
+                        // every field changed since the approved state
+                        // (null when the changes created the job).
+                        "changes": s.before.as_ref().map(|b| tectora_core::diff::diff(b, &current)),
                     })),
                 }))
             })(),
@@ -923,6 +959,8 @@ impl Server {
                 if let Some(n) = args.get("name").and_then(Value::as_str) {
                     p.name = n.to_string();
                 }
+                // The New job dialog's job data with the roof, in one change.
+                crate::apply_new_job_args(&mut p, args)?;
                 self.commit(None, None, &p, arg_str(args, "summary")?)
             })(),
             "duplicate_project" => (|| {
@@ -1043,8 +1081,9 @@ impl Server {
                 p.check_limits()?;
                 crate::export_ready(&p)?;
                 // The list alone: the sheet is not drawn (HUNTC-001).
-                let list = tectora_core::export::checked_list(&p, &opts)?;
-                Ok(json!({ "id": id, "list": list }))
+                // With the tables the Export dialog shows beside it.
+                let (list, summary) = tectora_core::export::checked_list_with_summary(&p, &opts)?;
+                Ok(json!({ "id": id, "list": list, "summary": summary }))
             })(),
             "export_plan" => (|| {
                 let (id, p) = self.load(args)?;
@@ -1151,6 +1190,10 @@ impl Server {
                     for j in corner_group(&part.edges, i) {
                         part.edges[j].start = to;
                     }
+                    // A corner dropped onto its neighbour merges into it,
+                    // as at the end of a corner drag in the plan (the
+                    // later operations' indices count without it).
+                    tectora_core::edit::corners::merge_dropped_corner(&mut part.edges, i);
                 }
                 "insert_point" => {
                     let i = edge_index(op, "after", n).map_err(at)?;
@@ -1795,11 +1838,13 @@ impl Server {
                 let target = need_target()?;
                 // The arguments first; the roof only for its corner points,
                 // within the bound of a write (HUNT-1802).
-                let corners = || {
+                let kinded = || {
                     self.roof_of(&before)
-                        .map(|geos| roof_corner_points(&geos))
+                        .map(|geos| tectora_core::edit::probe::roof_corner_points_kinded(&geos))
                         .ok_or(crate::ROOF_TOO_LONG)
                 };
+                let corners =
+                    || kinded().map(|k| k.into_iter().map(|(q, _)| q).collect::<Vec<_>>());
                 let q = match (
                     opt::<Vec<f64>>(args, "point")?,
                     opt::<usize>(args, "point_index")?,
@@ -1809,7 +1854,15 @@ impl Server {
                     (None, Some(i)) => *corners()?
                         .get(i)
                         .ok_or_else(|| format!("point_index {i} out of range"))?,
-                    (None, None) => return Ok(json!({ "roof_points": corners()? })),
+                    (None, None) => {
+                        // With the kind of line each lies on, as the dialog
+                        // lists them (ridge, hip, valley, …).
+                        let k = kinded()?;
+                        return Ok(json!({
+                            "roof_points": k.iter().map(|(q, _)| q).collect::<Vec<_>>(),
+                            "roof_point_kinds": k.iter().map(|(_, kind)| kind).collect::<Vec<_>>(),
+                        }));
+                    }
                 };
                 HelperRequest::Point { target, point: q }
             }
@@ -1830,9 +1883,27 @@ impl Server {
                 thickness: arg_f64(args, "thickness")?.ok_or("missing `thickness`")?,
                 eave: opt::<BuildUpEave>(args, "eave")?.unwrap_or_default(),
             },
+            "context" => {
+                // What the calculation dialog knows about the wall before
+                // anything is typed: the facing wall, the span, the
+                // current meeting of the two roofs, whether it has pitch
+                // breaks, the walls parallel to it (the merge tool's
+                // list) and the roof's corner points with their kinds.
+                let p = before.clone();
+                let c = self
+                    .bounded(&before, move || helper::context(&p, pi, edge, true))
+                    .ok_or(crate::ROOF_TOO_LONG)??;
+                let mut v = json!(c);
+                v["id"] = json!(id);
+                v["part"] = json!(pi);
+                v["edge"] = json!(edge);
+                return Ok(v);
+            }
             "round_roof" => HelperRequest::RoundRoof {
-                eave_height: None,
-                overhang: None,
+                // The dialog's eave height and overhang of the arc; left
+                // out, the walls' own.
+                eave_height: arg_f64(args, "eave_height")?,
+                overhang: arg_f64(args, "overhang")?,
                 segments: opt(args, "segments")?.unwrap_or(0),
                 mode: opt::<ArcMode>(args, "mode")?.unwrap_or_default(),
                 value: arg_f64(args, "value")?.unwrap_or(0.0),
@@ -1871,13 +1942,43 @@ impl Server {
         if let Some(arc) = &helped.arc {
             out["arc"] = json!(arc);
         }
+        if let Some(r) = &helped.rafters {
+            // The parallel tool's rafter lengths A and B, as the dialog
+            // shows them live.
+            out["rafters"] = json!(r);
+        }
+        // Every value the helper gives is the wall's already.
+        let raw_any = !helped.patches.is_empty();
+        out["unchanged"] = json!(raw_any && applied.is_empty());
+        if matches!(req, HelperRequest::RoundRoof { .. }) {
+            // The dialog's suggested arc and its smallest radius.
+            let es = &before.parts[pi].edges;
+            let span = tectora_core::edit::round::opposite_wall(es, edge)
+                .map(|o| tectora_core::edit::round::span_between(es, edge, o));
+            if let Some(span) = span {
+                let e = &before.parts[pi].edges[edge];
+                let input = tectora_core::edit::round::ArcInput {
+                    span,
+                    overhang: arg_f64(args, "overhang")?.unwrap_or(e.overhang),
+                    eave_height: arg_f64(args, "eave_height")?.unwrap_or(e.eave_height),
+                    segments: 0,
+                    mode: tectora_core::edit::round::ArcMode::Default,
+                    value: 0.0,
+                };
+                if let Ok(r) = tectora_core::commands::round_arc(&input) {
+                    out["default_arc"] = r["default_arc"].clone();
+                    out["min_radius"] = r["min_radius"].clone();
+                    out["span"] = json!(span);
+                }
+            }
+        }
         Ok(out)
     }
 }
 
 /// Direction (radians) of the eave wall nearest to `q` over all parts, as
 /// the editor's Align to wall uses it (`app/src/lib/dormers.ts`).
-fn nearest_wall_angle(p: &Project, q: Point2) -> f64 {
+pub(crate) fn nearest_wall_angle(p: &Project, q: Point2) -> f64 {
     let mut best = (f64::INFINITY, 0.0);
     for part in &p.parts {
         let es = &part.edges;
@@ -2497,11 +2598,13 @@ mod tests {
             "add_shape_part",
             json!({ "id": id, "shape": "hip", "length": 6, "width": 5, "at": [0, 20], "summary": "second" }),
         );
+        // (written as an outline: edit_walls' move_point merges a corner
+        // dropped onto its neighbour, as the plan does)
         call(
             &mut s,
-            "edit_walls",
+            "set_outline",
             json!({ "id": id, "part": 0, "summary": "collapse a wall",
-                "operations": [{ "op": "move_point", "index": 1, "x": 0, "y": 0 }] }),
+                "points": [[0, 0], [0, 0], [10, 8], [0, 8]] }),
         );
         // ... and does not block the height of the other building.
         call(
@@ -3400,6 +3503,7 @@ mod tests {
             "get_schema",
             "list_deleted",
             "roof_helper",
+            "roof_at",
             "list_drawings",
             "drawing_info",
             "view_drawing",
