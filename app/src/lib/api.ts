@@ -286,7 +286,7 @@ export const api = {
   /** The reports that wait to be sent, their counts and whether this build can send. */
   bugReportOutbox: () => invoke<BugReportOutbox>("bug_report_outbox"),
   /** Tries to send everything that waits, now. */
-  sendBugReports: () => invoke<{ sent: number; waiting: number; failed: number }>("send_bug_reports"),
+  sendBugReports: () => invoke<{ sent: number; waiting: number; failed: number; last_error?: string }>("send_bug_reports"),
   /** Save as of a queued report; it stays queued. */
   saveQueuedBugReport: (name: string, path: string) => invoke<ReportResult>("save_queued_bug_report", { name, path }),
   /** Removes a queued report that was not sent. */

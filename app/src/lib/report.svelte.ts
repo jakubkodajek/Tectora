@@ -75,10 +75,11 @@ export function setOutboxCounts(c: Partial<OutboxCounts> | null | undefined) {
   report.outbox = { waiting: count(c?.waiting), failed: count(c?.failed), local: count(c?.local) };
 }
 
-/** The small count beside the report button: waiting plus failed reports; reports only kept here do not count. */
-export function outboxIndicator(): { visible: boolean; count: number; label: string } {
-  const n = report.outbox.waiting + report.outbox.failed;
-  return { visible: n > 0, count: n, label: t("report.outbox.count", { count: n }) };
+/** The small count beside the report button: every report in the queue (waiting, failed and kept here only), so each can be listed, saved or discarded. */
+export function outboxIndicator(): { visible: boolean; count: number; failed: number; label: string } {
+  const { waiting, failed, local } = report.outbox;
+  const n = waiting + failed + local;
+  return { visible: n > 0, count: n, failed, label: failed > 0 ? t("report.outbox.countFailed", { count: n, failed }) : t("report.outbox.count", { count: n }) };
 }
 
 /** Registered by the editor while it is open; `release` removes it only if it is still the registered one. */

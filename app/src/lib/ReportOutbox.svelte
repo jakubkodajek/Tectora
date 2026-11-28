@@ -6,7 +6,8 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import { api } from "./api";
-  import { outboxRowText, reportToast, type OutboxEntry } from "./bugreport";
+  import { outboxRowText, reportToast, sendNowToast, type OutboxEntry } from "./bugreport";
+  import { tick } from "svelte";
   import { i18n, t } from "./i18n.svelte";
   import { notify, notifyError } from "./notify.svelte";
   import { report } from "./report.svelte";
@@ -14,11 +15,15 @@
 
   let busy = $state(false);
   const rows = $derived(report.queue.map((e) => ({ e, text: outboxRowText(e) })));
-  const canSend = $derived(report.sendable === true && report.outbox.waiting + report.outbox.failed > 0);
+  const canSend = $derived(report.sendable === true && report.outbox.waiting + report.outbox.failed + report.outbox.local > 0);
 
   // The list closes by itself when nothing is left.
   $effect(() => {
-    if (report.listOpen && report.queue.length === 0 && report.outbox.waiting + report.outbox.failed + report.outbox.local === 0) report.listOpen = false;
+    if (report.listOpen && report.queue.length === 0 && report.outbox.waiting + report.outbox.failed + report.outbox.local === 0) {
+      report.listOpen = false;
+      // The count that opened the list is gone: the focus goes to the report button.
+      tick().then(() => document.querySelector<HTMLElement>(".report-btn")?.focus());
+    }
   });
 
   const close = () => {
@@ -31,7 +36,8 @@
     if (busy) return;
     busy = true;
     try {
-      await api.sendBugReports();
+      const plan = sendNowToast(await api.sendBugReports());
+      notify({ kind: plan.kind, title: plan.title, message: plan.message });
     } catch (e) {
       notifyError(e, "report");
     } finally {
@@ -48,7 +54,18 @@
       if (typeof chosen !== "string") return;
       const saved = await api.saveQueuedBugReport(e.file_name, chosen);
       const plan = reportToast(saved);
-      notify({ kind: plan.kind, title: plan.title, message: plan.message, sticky: true });
+      const showPath = plan.showPath;
+      if (showPath) {
+        notify({
+          kind: plan.kind,
+          title: plan.title,
+          message: plan.message,
+          sticky: true,
+          action: { label: t("report.show"), run: () => api.showBugReport(showPath).catch((e) => notifyError(e, "reportShow")) },
+        });
+      } else {
+        notify({ kind: plan.kind, title: plan.title, message: plan.message, sticky: true });
+      }
     } catch (err) {
       notifyError(err, "reportSave");
     } finally {
@@ -58,13 +75,14 @@
 
   async function discard(e: OutboxEntry) {
     if (busy) return;
-    // Under Tauri's dialog plugin confirm is async: always awaited.
-    if (!(await window.confirm(t("report.outbox.discardAsk")))) return;
+    // Busy before the question, so a second press does not ask again.
     busy = true;
     try {
+      // Under Tauri's dialog plugin confirm is async: always awaited.
+      if (!(await window.confirm(t("report.outbox.discardAsk")))) return;
       await api.discardBugReport(e.file_name);
     } catch (err) {
-      notifyError(err, "report");
+      notifyError(err, "reportDiscard");
     } finally {
       busy = false;
       await refreshOutbox();

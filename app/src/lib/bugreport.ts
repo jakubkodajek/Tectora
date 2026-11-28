@@ -208,8 +208,10 @@ export function leftOutText(e: LeftOut | string): string {
 
 /** What the core returns for a finished report (`ReportResult` in the app). */
 export interface ReportResult {
-  /** `sent`, `waiting` (queued, sent later), `local` (this build cannot send) or `saved` (Save as). */
-  state: "sent" | "waiting" | "local" | "saved";
+  /** `sent`, `waiting` (queued, sent later), `failed` (refused for good), `local` (this build cannot send) or `saved` (Save as). */
+  state: "sent" | "waiting" | "failed" | "local" | "saved";
+  /** The code of the refusal when `state` is `failed`. */
+  last_error?: string;
   file_name: string;
   size: number;
   left_out: LeftOut[];
@@ -238,6 +240,17 @@ export function reportToast(r: ReportResult): ToastPlan {
       closeDialog: true,
       clearDraft: true,
       showPath: r.path,
+    };
+  }
+  if (r.state === "failed") {
+    const code = r.last_error ?? "";
+    const why = code && KNOWN_ERRORS.includes(code) ? `${t(`report.err.${code}`)} (${code})` : code;
+    return {
+      kind: "error",
+      title: t("report.failed"),
+      message: [why, t("report.failedHint", { saveAs: t("report.saveAs") }), left].filter(Boolean).join("\n"),
+      closeDialog: true,
+      clearDraft: true,
     };
   }
   const title = r.state === "sent" ? t("report.sent") : r.state === "waiting" ? t("report.queued") : t("report.sendOff");
@@ -303,7 +316,26 @@ export interface OutboxEntry {
   size?: number;
 }
 
-const KNOWN_ERRORS = ["offline", "rate_limited", "bad_key", "server", "outbox_full"];
+export const KNOWN_ERRORS = ["offline", "rate_limited", "bad_key", "server", "outbox_full", "relay_auth", "bad_answer", "bad_request", "too_large", "io", "unreadable", "busy"];
+
+/** What Send now tells: how many went, and why the others did not. */
+export function sendNowToast(r: { sent: number; waiting: number; failed: number; last_error?: string }): ToastPlan {
+  const parts: string[] = [];
+  if (r.sent > 0) parts.push(t("report.outbox.sentNow", { count: r.sent }));
+  const notSent = r.waiting + r.failed > 0 || r.sent === 0;
+  if (notSent) {
+    const code = r.last_error ?? "";
+    parts.push(t("report.outbox.sendNowFailed", { code: code || "?" }));
+    if (code && KNOWN_ERRORS.includes(code)) parts.push(t(`report.err.${code}`));
+  }
+  return {
+    kind: r.sent === 0 ? "error" : "info",
+    title: parts[0],
+    message: parts.slice(1).join("\n"),
+    closeDialog: false,
+    clearDraft: false,
+  };
+}
 
 /** The texts of one row of the outbox list. */
 export function outboxRowText(e: OutboxEntry): { job: string; state: string; error: { code: string; text: string | null } | null } {
