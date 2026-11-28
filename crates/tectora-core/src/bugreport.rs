@@ -179,6 +179,15 @@ pub fn reports_dir(settings: &Settings, store: &Store) -> PathBuf {
         .unwrap_or_else(|| store.dir.join("reports"))
 }
 
+/// The folder inside the library, created when missing and refused when a
+/// link or a file is in its place.
+pub fn ensure_library_reports(store: &Store) -> Result<PathBuf, FileError> {
+    let dir = store.dir.join("reports");
+    fs::create_dir_all(&store.dir).map_err(|e| FileError::io(&store.dir, e))?;
+    crate::store::own_folder(&dir).map_err(|e| FileError::io(&dir, e))?;
+    Ok(dir)
+}
+
 /// Whether `name` is the name of a report file (not that it is one).
 pub fn is_report_name(name: &str) -> bool {
     name.starts_with(PREFIX)

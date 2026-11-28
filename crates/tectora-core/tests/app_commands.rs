@@ -23,6 +23,7 @@ fn read(rel: &str) -> String {
 const PREVIEW_STUBS: &[&str] = &[
     "open_attachment",
     "open_folder",
+    "show_bug_report",
     "update_install",
     "take_pending_open",
     "startup_warnings",

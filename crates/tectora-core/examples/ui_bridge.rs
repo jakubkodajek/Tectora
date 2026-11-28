@@ -582,6 +582,33 @@ fn handle(store: &Store, cmd: &str, a: &Value) -> Result<Value, Fail> {
             Ok(next.describe())
         }
         "open_folder" => Err("open_folder is not available in the browser preview".into()),
+        "create_bug_report" => {
+            let request = arg::<tectora_core::bugreport::Request>(a, "request")?;
+            let dest = match arg::<Option<String>>(a, "path")? {
+                Some(p) => tectora_core::bugreport::Dest::File(PathBuf::from(p)),
+                None => match Settings::load().reports_dir {
+                    Some(dir) => tectora_core::bugreport::Dest::Folder(dir),
+                    None => {
+                        return Err(coded(
+                            "invalid_input",
+                            "no reports folder is set; choose a file to save to",
+                        ));
+                    }
+                },
+            };
+            let made = tectora_core::bugreport::create(store, &request, &dest)?;
+            Ok(json!({
+                "path": made.path.display().to_string(),
+                "file_name": made.file_name,
+                "size": made.size,
+                "left_out": made.manifest.left_out,
+            }))
+        }
+        "bug_report_name" => Ok(Value::String(tectora_core::bugreport::file_name(
+            arg::<Option<String>>(a, "jobName")?.as_deref(),
+            &arg::<String>(a, "stamp")?,
+        ))),
+        "show_bug_report" => Err("show_bug_report is not available in the browser preview".into()),
         _ => Err(format!(
             "ui_bridge: unknown command {cmd} (add it to crates/tectora-core/examples/ui_bridge.rs)"
         )

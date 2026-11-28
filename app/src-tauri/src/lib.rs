@@ -1,6 +1,16 @@
 //! Tectora desktop app: Tauri commands over `tectora-core` plus a watcher
 //! that tells the UI when project files change on disk (CLI, MCP, AI agents).
 
+/// Prints to stderr and writes the line to the app log, which a bug report
+/// carries (a GUI app has no console to read).
+macro_rules! log_err {
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        eprintln!("{message}");
+        tectora_core::applog::line("ERROR", &message);
+    }};
+}
+
 mod error;
 mod updates;
 
@@ -16,7 +26,7 @@ use tauri_plugin_opener::OpenerExt;
 use tectora_core::examples::{StandardRoof, standard_roof};
 use tectora_core::settings::{self, Settings};
 use tectora_core::store::{self, BrokenFile, LiveStatus, Store, USER_ACTOR, card_outlines};
-use tectora_core::{Project, assistants, bundle, commands, examples, snapshot};
+use tectora_core::{Project, assistants, bugreport, bundle, commands, examples, snapshot};
 
 use error::{AppError, guard};
 
@@ -292,7 +302,7 @@ fn load_warnings(state: State<AppState>, id: String) -> Vec<AppError> {
 fn refresh_stored_result(state: State<AppState>, id: String) -> Option<store::RefreshedEntry> {
     let r = guard(|| Ok(state.store().refresh_entry(&id)?));
     r.unwrap_or_else(|e| {
-        eprintln!(
+        log_err!(
             "tectora: stored result of {id} not recalculated: {} {}",
             e.code,
             e.detail.as_deref().unwrap_or_default()
@@ -926,14 +936,82 @@ fn answer_ai_change(id: u64, revert: bool) -> Result<Value, String> {
     Ok(next.describe())
 }
 
+/// What a saved bug report is, for the UI's notice.
+#[derive(Serialize)]
+struct SavedReport {
+    path: String,
+    file_name: String,
+    size: u64,
+    left_out: Vec<String>,
+}
+
+/// Writes a bug report (`bugreport::create`). `path` is the file the user
+/// chose with Save as; without it the report goes to the reports folder of
+/// the settings. Off the main thread: it calculates the job and copies the
+/// drawings.
+#[tauri::command(async)]
+fn create_bug_report(
+    state: State<AppState>,
+    request: bugreport::Request,
+    path: Option<String>,
+) -> CmdResult<SavedReport> {
+    guard(|| {
+        let store = state.store();
+        let dest = match path {
+            Some(p) => bugreport::Dest::File(PathBuf::from(p)),
+            None => match Settings::load().reports_dir {
+                Some(dir) => bugreport::Dest::Folder(dir),
+                None => {
+                    return Err(AppError::new("invalid_input")
+                        .detail("no reports folder is set; choose a file to save to"));
+                }
+            },
+        };
+        let made = bugreport::create(&store, &request, &dest)?;
+        tectora_core::applog::line("INFO", &format!("bug report {}", made.file_name));
+        Ok(SavedReport {
+            path: made.path.display().to_string(),
+            file_name: made.file_name,
+            size: made.size,
+            left_out: made.manifest.left_out,
+        })
+    })
+}
+
+/// The default file name of a bug report for the Save as dialog.
+#[tauri::command]
+fn bug_report_name(job_name: Option<String>, stamp: String) -> String {
+    bugreport::file_name(job_name.as_deref(), &stamp)
+}
+
+/// Shows a saved bug report in Finder / Explorer. Only an existing `.zip`
+/// file by an absolute path is revealed.
+#[tauri::command]
+fn show_bug_report(app: tauri::AppHandle, path: String) -> CmdResult<()> {
+    guard(|| {
+        let path = PathBuf::from(path);
+        let zip = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+        if !zip || !path.is_absolute() || !path.is_file() {
+            return Err(AppError::new("invalid_input").detail("not a bug report file"));
+        }
+        app.opener()
+            .reveal_item_in_dir(&path)
+            .map_err(|e| AppError::new("open_failed").detail(e.to_string()))
+    })
+}
+
 /// Opens one of the configured folders in Finder / Explorer.
 #[tauri::command]
-fn open_folder(which: String) -> Result<(), String> {
+fn open_folder(state: State<AppState>, which: String) -> Result<(), String> {
     let s = Settings::load();
     let dir = match which.as_str() {
         "projects" => s.projects_dir(),
         "drawings" => s.drawings_dir(),
         "settings" => settings::config_dir(),
+        "reports" => bugreport::reports_dir(&s, &state.store()),
         _ => return Err("invalid_value".into()),
     };
     std::fs::create_dir_all(&dir).map_err(|_| "not_writable".to_string())?;
@@ -962,7 +1040,7 @@ fn set_watcher(app: &tauri::AppHandle, dir: PathBuf) {
     let (watcher, error) = match start_watcher(app, dir) {
         Ok(w) => (Some(w), None),
         Err(e) => {
-            eprintln!("tectora: cannot watch the project folder: {e}");
+            log_err!("tectora: cannot watch the project folder: {e}");
             (None, Some(e.to_string()))
         }
     };
@@ -1056,7 +1134,7 @@ fn open_files_now(app: &tauri::AppHandle, paths: Vec<PathBuf>) {
     // A file that does not open is told to the user like a failed import
     // (ERR-006), not only written to stderr, which a GUI app has none of.
     for (p, e) in opened.failed {
-        eprintln!("open {}: {e}", p.display());
+        log_err!("open {}: {e}", p.display());
         let err = AppError::from(e);
         if let Ok(mut queued) = state.open_errors.lock() {
             queued.push(err.clone());
@@ -1133,6 +1211,8 @@ fn quit_through_close_guard<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 pub fn run() {
+    tectora_core::applog::init("app");
+    tectora_core::applog::install_panic_hook();
     let app = tauri::Builder::default()
         // A second launch (double-click while the app runs) hands its files
         // to this instance instead of opening another window.
@@ -1269,6 +1349,9 @@ pub fn run() {
             answer_file_request,
             answer_ai_change,
             open_folder,
+            create_bug_report,
+            bug_report_name,
+            show_bug_report,
             updates::update_check,
             updates::update_install
         ])
