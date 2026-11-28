@@ -780,6 +780,44 @@ fn item_geometry(request: commands::GeometryRequest) -> CmdResult<Value> {
     guard(|| Ok(commands::item_geometry(&request)?))
 }
 
+/// The tower dialog's OK: tower `index` replaced or `tower` added
+/// (`tectora_core::commands::set_tower`, the MCP tool set_tower). Returns
+/// `{project, index}`.
+#[tauri::command(async)]
+fn set_tower(
+    project: Project,
+    index: Option<usize>,
+    tower: tectora_core::tower::Tower,
+) -> CmdResult<Value> {
+    guard(|| Ok(commands::set_tower(&project, index, tower)?))
+}
+
+/// A new tower from a preset (`tectora_core::commands::tower_preset`).
+#[tauri::command]
+fn tower_preset(
+    kind: tectora_core::edit::towers::TowerPreset,
+    center: tectora_core::geom::Point2,
+    width: f64,
+    base_height: f64,
+) -> CmdResult<tectora_core::tower::Tower> {
+    guard(|| Ok(commands::tower_preset(kind, center, width, base_height)?))
+}
+
+/// The tower dialog's preview: the roof of the tower being edited
+/// (`tectora_core::commands::tower_preview`).
+#[tauri::command]
+fn tower_preview(tower: tectora_core::tower::Tower) -> CmdResult<Value> {
+    guard(|| Ok(commands::tower_preview(&tower)?))
+}
+
+/// The plan's "Round corner" and "Bend wall into an arc"
+/// (`tectora_core::commands::arc_edit`, the MCP tool edit_walls' operations
+/// round_corner and bend_wall).
+#[tauri::command(async)]
+fn arc_edit(project: Project, part: usize, edit: commands::ArcEdit) -> CmdResult<Project> {
+    guard(|| Ok(commands::arc_edit(&project, part, edit)?))
+}
+
 /// The transform dialog's OK and "Duplicate part": part `part` moved,
 /// rotated, mirrored or copied with what lies on it
 /// (`tectora_core::commands::transform_part`, the MCP tool transform_part).
@@ -1248,6 +1286,10 @@ pub fn run() {
             item_geometry,
             transform_part,
             offset_wall,
+            set_tower,
+            tower_preset,
+            tower_preview,
+            arc_edit,
             face_to_part,
             set_part_height,
             place_item,
