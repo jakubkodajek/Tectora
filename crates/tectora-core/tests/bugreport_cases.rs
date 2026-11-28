@@ -807,3 +807,536 @@ proptest! {
         let _ = fs::remove_dir_all(dir);
     }
 }
+
+// ====================================================================
+// Fix round 1 (target/work/bug-report/fix-r1.md). Regression tests for the
+// review findings; the API they assume is under "Test-side API" there.
+// ====================================================================
+
+fn lacks_everywhere(z: &BTreeMap<String, Vec<u8>>, needles: &[&str]) {
+    for (name, bytes) in z {
+        for n in needles {
+            assert!(!contains(bytes, n), "{name} still contains {n:?}");
+        }
+    }
+}
+
+fn left_out_of(z: &BTreeMap<String, Vec<u8>>) -> Vec<(String, String)> {
+    json_of(z, "manifest.json")["left_out"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["part"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("left_out entry without a part: {e}"))
+                    .to_string(),
+                e["reason"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("left_out entry without a reason: {e}"))
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+/// ARCH-001 / TEST-001: the technical record is one choice; unticked, the
+/// steps and notices (with their error details) stay out of report.json.
+#[test]
+fn unticking_the_technical_record_drops_steps_and_notices_too() {
+    let dir = tmp("log-off");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut req = request(None);
+    req.client = json!({
+        "ui": { "locale": "cs", "webgl": true },
+        "actions": [{ "ts_ms": 1, "kind": "command", "name": "step-marker-ZQ", "ok": true, "ms": 1 }],
+        "notices": [{ "ts_ms": 2, "kind": "error", "code": "io", "title": "t", "detail": "notice-detail-ZQ" }],
+    });
+    let on = make(&store, &req, &out);
+    assert!(contains(&on["report.json"], "step-marker-ZQ"));
+    req.include.log = false;
+    let z = make(&store, &req, &out);
+    let r = json_of(&z, "report.json");
+    assert_eq!(
+        r["actions"],
+        json!([]),
+        "steps are part of the technical record"
+    );
+    assert_eq!(
+        r["notices"],
+        json!([]),
+        "notices are part of the technical record"
+    );
+    assert_eq!(r["included"]["log"], false);
+    lacks_everywhere(&z, &["step-marker-ZQ", "notice-detail-ZQ"]);
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// ERR-005 / ARCH-003 / BUG-4: a job that does not open still gives a report,
+/// and the load error always says why.
+#[test]
+fn a_job_of_a_newer_format_gives_a_load_error_with_a_reason() {
+    let dir = tmp("newer");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(
+        store.dir.join("neu.tectora"),
+        r#"{ "schema_version": 9999, "name": "N" }"#,
+    )
+    .unwrap();
+    fs::write(store.dir.join("kaput.tectora"), "{ truncated").unwrap();
+    for id in ["neu", "kaput"] {
+        let z = make(&store, &request(Some(id)), &out);
+        let r = json_of(&z, "report.json");
+        let e = r["job"]["load_error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{id}: {r}"));
+        let (code, detail) = e.split_once(": ").unwrap_or((e, ""));
+        assert!(
+            !code.is_empty() && !detail.trim().is_empty(),
+            "{id}: load_error {e:?} has no detail"
+        );
+        assert_eq!(r["calculation"]["ok"], false, "{id}");
+        assert!(
+            !r["calculation"]["error"]["detail"]
+                .as_str()
+                .unwrap_or("")
+                .is_empty(),
+            "{id}: {r}"
+        );
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// TEST-002: customer blanking where it is hardest.
+#[test]
+fn a_change_log_that_edits_the_customer_keeps_neither_name() {
+    let dir = tmp("cust-history");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let id = job(&store);
+    let mut p = store.load(&id).unwrap();
+    p.job.customer = "Neu-Kunde-QQ-55".into();
+    p.job.address = "Neu-Adresse-QQ-56".into();
+    store
+        .save_as(Some(id.clone()), &p, "user", "customer renamed")
+        .unwrap();
+    let mut req = request(Some(&id));
+    req.include.customer = false;
+    req.include.snapshot = false;
+    let z = make(&store, &req, &out);
+    assert!(z.contains_key("job/history.jsonl"));
+    lacks_everywhere(
+        &z,
+        &[CUSTOMER, ADDRESS, "Neu-Kunde-QQ-55", "Neu-Adresse-QQ-56"],
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_unreadable_job_file_or_editor_copy_does_not_carry_the_customer_when_unticked() {
+    let dir = tmp("cust-broken");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(
+        store.dir.join("kaput.tectora"),
+        format!(r#"{{ "name": "K", "job": {{ "customer": "{CUSTOMER}", "address": "{ADDRESS}" }}, "parts": [ "#),
+    )
+    .unwrap();
+    let mut req = request(Some("kaput"));
+    req.include.customer = false;
+    let z = make(&store, &req, &out);
+    lacks_everywhere(&z, &[CUSTOMER, ADDRESS]);
+    // A broken editor copy of a good job.
+    let id = job(&store);
+    let mut req = request(Some(&id));
+    req.include.customer = false;
+    req.editor_project = Some(format!(
+        r#"{{ "job": {{ "customer": "{CUSTOMER}", "address": "{ADDRESS}" }}, "parts": [ "#
+    ));
+    let z = make(&store, &req, &out);
+    lacks_everywhere(&z, &[CUSTOMER, ADDRESS]);
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// ARCH-002: absolute paths are replaced by placeholders everywhere.
+#[test]
+fn local_paths_are_replaced_by_placeholders_in_the_report_and_the_log() {
+    let dir = tmp("redact");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(store.dir.join("bad.tectora"), b"\xff\xfe not utf8").unwrap();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home_path = format!("{home}/Documents/Kundenordner/plan.pdf");
+    let lib = store.dir.display().to_string();
+    let outp = out.display().to_string();
+    let mut req = request(Some("bad"));
+    req.client = json!({
+        "notices": [
+            { "ts_ms": 1, "kind": "error", "code": "io", "title": "t", "detail": format!("cannot read {lib}/x.tectora and {outp}/y.zip") },
+            { "ts_ms": 2, "kind": "error", "code": "io", "title": "t", "detail": format!("cannot read {home_path}") },
+        ],
+    });
+    log_dir();
+    applog::line("INFO", &format!("opened {lib}/job.tectora"));
+    let z = make(&store, &req, &out);
+    let mut needles = vec![lib.as_str(), outp.as_str()];
+    if home.len() > 3 {
+        needles.push(&home);
+    }
+    lacks_everywhere(&z, &needles);
+    let r = String::from_utf8(z["report.json"].clone()).unwrap();
+    assert!(r.contains("<library>"), "{r}");
+    assert!(r.contains("<reports>"), "{r}");
+    if home.len() > 3 {
+        assert!(r.contains("<home>/Documents/Kundenordner/plan.pdf"), "{r}");
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// BUG-2: the log never names a job; a report without the customer carries
+/// no other job's name.
+#[test]
+fn the_log_never_names_jobs() {
+    let dir = tmp("log-names");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut other = tectora_core::examples::find("hip").unwrap().project();
+    other.name = "Cizi-Zakazka-QQ".into();
+    let other_id = store.save(None, &other).unwrap();
+    make(&store, &request(Some(&other_id)), &out);
+    let id = job(&store);
+    let mut req = request(Some(&id));
+    req.include.customer = false;
+    let z = make(&store, &req, &out);
+    lacks_everywhere(&z, &["cizi-zakazka", "Cizi-Zakazka"]);
+    let dir_of_logs = log_dir();
+    for f in fs::read_dir(&dir_of_logs).unwrap() {
+        let text = fs::read_to_string(f.unwrap().path())
+            .unwrap_or_default()
+            .to_lowercase();
+        for n in ["cizi-zakazka", "novak-dum", "novák dům"] {
+            assert!(!text.contains(n), "the log names a job: {n}");
+        }
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// BUG-1: reports made at the same moment never replace each other.
+#[test]
+fn concurrent_reports_in_the_same_second_all_survive() {
+    let dir = tmp("race");
+    let store = std::sync::Arc::new(Store::new(dir.join("lib")).unwrap());
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    log_dir();
+    let n = 16;
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(n));
+    let handles: Vec<_> = (0..n)
+        .map(|i| {
+            let (store, gate, out) = (store.clone(), gate.clone(), out.clone());
+            std::thread::spawn(move || {
+                let mut req = request(None);
+                req.description = format!("report {i}");
+                gate.wait();
+                bugreport::create(&store, &req, &Dest::Folder(out)).map(|c| c.path)
+            })
+        })
+        .collect();
+    let paths: Vec<PathBuf> = handles
+        .into_iter()
+        .map(|h| h.join().unwrap().unwrap())
+        .collect();
+    let distinct: std::collections::BTreeSet<_> = paths.iter().collect();
+    assert_eq!(distinct.len(), n, "two reports got one name");
+    let zips = files_in(&out)
+        .into_iter()
+        .filter(|f| f.ends_with(".zip"))
+        .count();
+    assert_eq!(zips, n, "a report was replaced: {:?}", files_in(&out));
+    let mut seen: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            json_of(&read_zip(p), "report.json")["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    seen.sort();
+    let mut want: Vec<String> = (0..n).map(|i| format!("report {i}")).collect();
+    want.sort();
+    assert_eq!(seen, want);
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// BUG-3 / ARCH-005: the newest report is listed however many files the
+/// folder holds (the listing sorts all matching names before it cuts).
+#[test]
+fn the_newest_report_is_listed_in_a_folder_of_many_files() {
+    let dir = tmp("many");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    for i in 0..20_000 {
+        fs::write(
+            out.join(format!("tectora-report-20200101-000000-old{i}.zip")),
+            b"",
+        )
+        .unwrap();
+    }
+    log_dir();
+    let mut req = request(None);
+    req.local_stamp = Some("20261128-143012".into());
+    let c = bugreport::create(&store, &req, &Dest::Folder(out.clone())).unwrap();
+    let listed = serde_json::to_value(bugreport::list(&out, 3)).unwrap();
+    assert_eq!(listed[0]["file_name"], c.file_name.as_str(), "{listed}");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// TEST-003: the calculation section carries warnings, job-level warnings
+/// and errors, and says ok only when there is no error.
+#[test]
+fn the_calculation_section_carries_warnings_errors_and_job_warnings() {
+    let dir = tmp("calc");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let codes = |z: &BTreeMap<String, Vec<u8>>| -> Vec<String> {
+        json_of(z, "report.json")["calculation"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // A sound hip roof: ok, nothing to warn about.
+    let sound = tectora_core::examples::find("hip").unwrap().project();
+    let id = store.save(None, &sound).unwrap();
+    let z = make(&store, &request(Some(&id)), &out);
+    let c = json_of(&z, "report.json")["calculation"].clone();
+    assert_eq!(c["ok"], true, "{c}");
+    assert_eq!(c["warnings"], json!([]), "{c}");
+    assert_eq!(c["error"], Value::Null);
+    // Hips that run outside the walls (DACAD-identical, so a warning).
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/check/C1_hips_outside.json");
+    let outside = tectora_core::Project::from_json(&fs::read_to_string(path).unwrap()).unwrap();
+    let id = store.save(None, &outside).unwrap();
+    let z = make(&store, &request(Some(&id)), &out);
+    assert!(
+        codes(&z).contains(&"outside_outline".to_string()),
+        "{:?}",
+        codes(&z)
+    );
+    // A face of its own that crosses itself belongs to no building: job-level.
+    let mut bow = tectora_core::examples::find("hip").unwrap().project();
+    bow.manual_faces.push(tectora_core::model::ManualFace {
+        points: [(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0)]
+            .iter()
+            .map(|(x, y)| tectora_core::geom::Point2::new(*x, *y))
+            .collect(),
+        pitch_deg: 30.0,
+        label: "bow".into(),
+    });
+    let id = store.save(None, &bow).unwrap();
+    let z = make(&store, &request(Some(&id)), &out);
+    assert!(
+        codes(&z).contains(&"manual_face_crosses".to_string()),
+        "{:?}",
+        codes(&z)
+    );
+    // A roof the calculation stops at: not ok, with the error.
+    let mut shallow = tectora_core::Project::new("shallow wing");
+    let tan25 = 25f64.to_radians().tan();
+    let e = |x: f64, y: f64, pitch: f64, eave: f64, over: f64| -> tectora_core::EdgeDef {
+        serde_json::from_value(json!({ "start": { "x": x, "y": y }, "pitch_deg": pitch, "eave_height": eave, "overhang": over })).unwrap()
+    };
+    shallow.parts.push(tectora_core::RoofPart::new(
+        "A",
+        vec![
+            e(5.0, 0.0, 25.0, 12.0 - tan25 * 0.3 - 0.03, 0.2),
+            e(10.0, 0.0, 90.0, 12.0, 0.0),
+            e(10.0, 0.6, 25.0, 12.0, 0.5),
+            e(15.0, 0.6, 90.0, 12.0, 0.0),
+            e(15.0, 5.6, 25.0, 12.0, 0.5),
+            e(0.0, 5.6, 90.0, 12.0, 0.0),
+            e(0.0, 0.6, 25.0, 12.0, 0.5),
+            e(5.0, 0.6, 90.0, 12.0, 0.0),
+        ],
+    ));
+    let id = store.save(None, &shallow).unwrap();
+    let z = make(&store, &request(Some(&id)), &out);
+    let c = json_of(&z, "report.json")["calculation"].clone();
+    assert_eq!(c["ok"], false, "{c}");
+    assert_eq!(c["error"]["code"], "cut", "{c}");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// ERR-002: what the UI could not take is named, with its reason.
+#[test]
+fn a_picture_the_ui_could_not_take_is_left_out_with_a_reason() {
+    let dir = tmp("ui-left-out");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut req = request(None);
+    req.plan_svg = None;
+    req.model_png = None;
+    req.client = json!({
+        "ui": { "locale": "cs", "webgl": true },
+        "left_out": [{ "part": "model", "reason": "timeout" }, { "part": "plan", "reason": "too_many_nodes" },
+                     { "part": "secrets", "reason": "x" }, { "part": "model", "reason": "<script>" }],
+    });
+    let z = make(&store, &req, &out);
+    let l = left_out_of(&z);
+    assert!(l.contains(&("model".into(), "timeout".into())), "{l:?}");
+    assert!(
+        l.contains(&("plan".into(), "too_many_nodes".into())),
+        "{l:?}"
+    );
+    assert!(
+        l.iter().all(|(p, r)| [
+            "plan",
+            "model",
+            "files",
+            "history",
+            "log",
+            "preview",
+            "editor_project",
+            "job"
+        ]
+        .contains(&p.as_str())
+            && !r.contains('<')),
+        "unknown parts and reasons are not copied: {l:?}"
+    );
+    assert_eq!(
+        json_of(&z, "report.json")["ui"]["webgl"],
+        true,
+        "webgl is only about WebGL"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// The reason of an over-size picture is coded too (UX-005).
+#[test]
+fn left_out_entries_are_a_part_and_a_reason_code() {
+    let dir = tmp("codes");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut req = request(None);
+    req.plan_svg = Some("<html></html>".into());
+    let mut big = png();
+    big.resize(8 * 1024 * 1024 + 1, 0);
+    req.model_png = Some(big);
+    let l = left_out_of(&make(&store, &req, &out));
+    assert!(l.contains(&("plan".into(), "invalid".into())), "{l:?}");
+    assert!(l.contains(&("model".into(), "too_large".into())), "{l:?}");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// BUG-7: the stored plan picture is a picture, not a script.
+#[test]
+fn the_plan_svg_is_stored_without_scripts_handlers_or_external_links() {
+    let dir = tmp("svg");
+    let store = Store::new(dir.join("lib")).unwrap();
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let mut req = request(None);
+    req.plan_svg = Some(
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect onload="x()" onclick='y()' width="3"/><image href="http://evil.example/a.png"/><use xlink:href="https://evil.example/b"/><a href="javascript:z()"><rect id="keep"/></a></svg>"#.into(),
+    );
+    let z = make(&store, &req, &out);
+    let svg = String::from_utf8(z["snapshot/plan.svg"].clone())
+        .unwrap()
+        .to_lowercase();
+    for bad in [
+        "<script",
+        "onload",
+        "onclick",
+        "evil.example",
+        "javascript:",
+    ] {
+        assert!(!svg.contains(bad), "{bad} survived: {svg}");
+    }
+    assert!(svg.starts_with("<svg") && svg.contains("id=\"keep\""));
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// BUG-8: reading a report is bounded and the errors name the report.
+#[test]
+fn reading_caps_the_description_and_names_report_json_when_it_is_too_big() {
+    let dir = tmp("read-caps");
+    let out = dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let write = |name: &str, report: String| {
+        let mut w = zip::ZipWriter::new(fs::File::create(out.join(name)).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.start_file("manifest.json", o).unwrap();
+        std::io::Write::write_all(&mut w, br#"{"format":"tectora-bug-report","format_version":1,"app_version":"x","engine_version":"x","created_ms":1,"source":"app","entries":[],"left_out":[]}"#).unwrap();
+        w.start_file("report.json", o).unwrap();
+        std::io::Write::write_all(&mut w, report.as_bytes()).unwrap();
+        w.finish().unwrap();
+    };
+    write(
+        "tectora-report-20260101-000001-long.zip",
+        json!({ "format_version": 1, "description": "d".repeat(100_000), "source": "app" })
+            .to_string(),
+    );
+    let v = bugreport::read(&out, "tectora-report-20260101-000001-long.zip").unwrap();
+    assert!(v["report"]["description"].as_str().unwrap().chars().count() <= 5000);
+    write(
+        "tectora-report-20260101-000002-huge.zip",
+        format!(r#"{{"description":"{}"}}"#, "d".repeat(3 * 1024 * 1024)),
+    );
+    let e =
+        bugreport::read(&out, "tectora-report-20260101-000002-huge.zip").expect_err("too large");
+    assert!(
+        e.detail.contains("report.json") && !e.detail.contains("bundle"),
+        "{}",
+        e.detail
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+// TEST-010: the no-panic property also needs reports that are written.
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 16,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(20261129),
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+    #[test]
+    fn a_well_formed_client_always_gives_a_written_report(
+        names in prop::collection::vec("[a-z_]{1,20}", 0..80),
+        detail in ".{0,3000}",
+        description in ".{0,300}",
+    ) {
+        let dir = tmp("prop-ok");
+        let store = Store::new(dir.join("lib")).unwrap();
+        let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap();
+        log_dir();
+        let mut req = request(None);
+        req.description = description;
+        req.client = json!({
+            "ui": { "locale": "cs", "webgl": true },
+            "actions": names.iter().map(|n| json!({ "ts_ms": 1, "kind": "command", "name": n, "ok": true, "ms": 1 })).collect::<Vec<_>>(),
+            "notices": [{ "ts_ms": 1, "kind": "error", "code": "io", "title": "t", "detail": detail }],
+        });
+        let c = bugreport::create(&store, &req, &Dest::Folder(out.clone())).map_err(|e| TestCaseError::fail(format!("{}: {}", e.code, e.detail)))?;
+        let z = read_zip(&c.path);
+        prop_assert!(z.contains_key("report.json"));
+        let _ = fs::remove_dir_all(dir);
+    }
+}

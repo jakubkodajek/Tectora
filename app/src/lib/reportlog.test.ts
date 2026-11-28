@@ -73,4 +73,10 @@ describe("report log", () => {
     notify({ kind: "info", title: "Saved" });
     expect(recentNotices().map((x) => x.kind)).toEqual(["error", "info"]);
   });
+
+  it("records the code of a bare string rejection (ERR-006)", async () => {
+    invoke.mockRejectedValueOnce("not_writable");
+    await expect(api.projectsDir()).rejects.toBeTruthy();
+    expect(recentActions()[0]).toMatchObject({ name: "projects_dir", ok: false, code: "not_writable" });
+  });
 });

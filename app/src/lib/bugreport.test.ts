@@ -4,7 +4,9 @@
 // (`description`, `job_id`, `include`, `plan_svg`, `model_png`, `client`, ...).
 import { describe, expect, it, vi } from "vitest";
 import { DICTS } from "./i18n.svelte";
-import { buildRequest, fitPng, reportStamp, standalonePlanSvg } from "./bugreport";
+import { buildRequest, fitPng, leftOutText, reportStamp, standalonePlanSvg } from "./bugreport";
+import { i18n, setLocale, t } from "./i18n.svelte";
+import { logAction, logNotice, resetReportLog } from "./reportlog";
 
 const everything = { job: true, customer: true, files: true, history: true, snapshot: true, log: true };
 const base = {
@@ -114,5 +116,64 @@ describe("texts", () => {
       expect(keys.filter((k) => !(k in dict)), loc).toEqual([]);
     }
     expect(DICTS.cs["report.button"]).toBe("Nahlásit chybu");
+  });
+});
+
+// ---- fix round 1 (target/work/bug-report/fix-r1.md, "Test-side API") ----
+
+describe("buildRequest, fix round 1", () => {
+  it("sends no steps and notices when the technical record is unticked (ARCH-001, TEST-001)", () => {
+    resetReportLog();
+    logAction({ kind: "command", name: "place_item", ok: true, ms: 1 });
+    logNotice({ kind: "error", code: "io", title: "t", detail: "secret detail" });
+    const off = buildRequest({ ...base, include: { ...everything, log: false } });
+    expect(off.client.actions).toEqual([]);
+    expect(off.client.notices).toEqual([]);
+    expect(JSON.stringify(off)).not.toContain("secret detail");
+    const on = buildRequest(base);
+    expect(on.client.actions).toHaveLength(1);
+    expect(on.client.notices).toHaveLength(1);
+  });
+
+  it("passes on what could not be pictured, as part and reason (ERR-002)", () => {
+    const r = buildRequest({ ...base, planSvg: null, modelPng: null, leftOut: [{ part: "model", reason: "timeout" }, { part: "plan", reason: "too_many_nodes" }] });
+    expect(r.client.left_out).toEqual([{ part: "model", reason: "timeout" }, { part: "plan", reason: "too_many_nodes" }]);
+    expect(buildRequest(base).client.left_out ?? []).toEqual([]);
+  });
+});
+
+describe("leftOutText (UX-005, ARCH-004, ERR-003)", () => {
+  const parts = ["files", "history", "log", "plan", "model", "preview", "editor_project", "job"];
+  const reasons = ["too_large", "too_many", "unreadable", "unavailable", "invalid", "failed", "timeout", "too_many_nodes", "no_webgl"];
+
+  it("has a translated word for every part and reason in all four languages", () => {
+    for (const [loc, dict] of Object.entries(DICTS)) {
+      expect(parts.map((p) => `report.part.${p}`).filter((k) => !(k in dict)), loc).toEqual([]);
+      expect(reasons.map((r) => `report.left.${r}`).filter((k) => !(k in dict)), loc).toEqual([]);
+    }
+  });
+
+  it("names the part and the reason in the user's language, never the core's English text", () => {
+    setLocale("cs");
+    const text = leftOutText({ part: "files", reason: "too_many" });
+    expect(text).toContain(t("report.part.files"));
+    expect(text).toContain(t("report.left.too_many"));
+    expect(text).not.toMatch(/job\/files|over the size|too large/i);
+    // The label matches the reason: "too many" is not "too large".
+    expect(leftOutText({ part: "files", reason: "too_many" })).not.toBe(leftOutText({ part: "files", reason: "too_large" }));
+    // An entry from an older core (a plain string) or an unknown code still gives a line.
+    expect(leftOutText("job/files (over the size limits)" as never)).toBeTruthy();
+    expect(leftOutText({ part: "files", reason: "something_new" })).toContain(t("report.part.files"));
+    setLocale(i18n.locale);
+  });
+});
+
+describe("texts, fix round 1", () => {
+  it("has the keys of the reworked dialog in all four languages", () => {
+    const keys = ["report.save", "report.savedTo", "report.passOn", "report.destSettings", "report.libraryHint", "report.destMissing"];
+    for (const [loc, dict] of Object.entries(DICTS)) expect(keys.filter((k) => !(k in dict)), loc).toEqual([]);
+    // UX-001: the main button saves a report; "Send" promises more than it does.
+    expect(DICTS.cs["report.save"]).toBe("Uložit hlášení");
+    expect(DICTS.en["report.save"]).toMatch(/^Save report/);
   });
 });

@@ -4027,6 +4027,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&s.store.dir);
     }
 
+    /// ERR-007, ERR-006, BUG-2 (fix round 1): a reports folder that is gone
+    /// is an error, damaged reports are counted, and the MCP log carries the
+    /// reason of a failed tool but no job name.
+    #[test]
+    fn listing_says_when_the_folder_is_gone_and_the_log_has_codes_but_no_job_names() {
+        let _settings = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("tectora-mcp-r1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("logs")).unwrap();
+        unsafe {
+            std::env::set_var("TECTORA_CONFIG_DIR", base.join("cfg"));
+            std::env::set_var("TECTORA_LOG_DIR", base.join("logs"));
+        }
+        tectora_core::applog::init("mcp");
+        let mut s = server();
+        let drive = base.join("drive");
+        std::fs::create_dir_all(&drive).unwrap();
+        Settings::update(|st| st.patched(&json!({ "reports_dir": drive.to_string_lossy() })))
+            .unwrap();
+        let id = {
+            let r = s
+                .call_tool(
+                    "create_project",
+                    &json!({ "name": "Tajny-Zakaznik-Dum", "summary": "s",
+                    "parts": [{ "points": [[0, 0], [10, 0], [10, 8], [0, 8]] }] }),
+                )
+                .unwrap();
+            r["id"].as_str().unwrap().to_string()
+        };
+        let made = s
+            .call_tool(
+                "create_bug_report",
+                &json!({ "description": "d", "id": id, "summary": "Report" }),
+            )
+            .unwrap();
+        // A damaged report beside the good one.
+        std::fs::write(
+            drive.join("tectora-report-20260101-000000-fake.zip"),
+            b"junk",
+        )
+        .unwrap();
+        let list = s.call_tool("list_bug_reports", &json!({})).unwrap();
+        assert_eq!(list["reports"].as_array().unwrap().len(), 1, "{list}");
+        assert_eq!(list["skipped"], 1, "{list}");
+        // The folder goes away (an unplugged drive).
+        std::fs::remove_dir_all(&drive).unwrap();
+        let e = s.call_tool("list_bug_reports", &json!({})).unwrap_err();
+        assert!(!e.is_empty());
+        assert!(
+            s.call_tool("read_bug_report", &json!({ "name": made["file_name"] }))
+                .is_err()
+        );
+        // A failed tool leaves its reason, no arguments, no job names.
+        let line = s
+            .respond_line(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_project","arguments":{"id":"gibt-es-nicht"}}}"#)
+            .unwrap();
+        assert_eq!(line["result"]["isError"], true, "{line}");
+        let log = std::fs::read_to_string(base.join("logs").join("mcp.log")).unwrap();
+        let failed = log
+            .lines()
+            .find(|l| l.contains("tool get_project failed"))
+            .expect(&log);
+        let reason = failed
+            .split("failed")
+            .nth(1)
+            .unwrap_or("")
+            .trim_start_matches(':')
+            .trim();
+        assert!(!reason.is_empty(), "no reason in {failed:?}");
+        let lower = log.to_lowercase();
+        for secret in ["tajny-zakaznik", "gibt-es-nicht"] {
+            assert!(!lower.contains(secret), "the log names {secret}: {log}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&s.store.dir);
+    }
+
     #[test]
     fn a_file_outside_the_job_folders_waits_for_the_user() {
         // ARCH-002: drawing tools, attach_file and import_job took any path.

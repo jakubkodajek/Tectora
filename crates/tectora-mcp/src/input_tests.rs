@@ -1253,3 +1253,75 @@ fn bug_reports_are_listed_and_read_back_but_only_real_ones_by_plain_name() {
     assert!(e.contains("unknown argument"), "{e}");
     let _ = std::fs::remove_dir_all(&s.store.dir);
 }
+
+// ---- bug report fix round 1 (target/work/bug-report/fix-r1.md) ----
+
+/// ERR-005 / ARCH-003 / BUG-4: a job that does not open, is out of range or
+/// is of a newer format is the case a report is for; it is written with
+/// `load_error` (the same gather path as the app's), never refused.
+#[test]
+fn a_report_about_a_job_that_does_not_open_is_written_with_its_load_error() {
+    let mut s = server();
+    let good = gable_job(&mut s);
+    let text = std::fs::read_to_string(s.store.path(&good).unwrap()).unwrap();
+    let mut far: Value = serde_json::from_str(&text).unwrap();
+    far["parts"][0]["edges"][0]["start"]["x"] = json!(1.0e9);
+    let cases = [
+        ("kaput", "{ truncated".to_string()),
+        ("far", far.to_string()),
+        (
+            "neu",
+            r#"{ "schema_version": 9999, "name": "N" }"#.to_string(),
+        ),
+    ];
+    for (id, body) in cases {
+        std::fs::write(s.store.dir.join(format!("{id}.tectora")), body).unwrap();
+        let made = s
+            .call_tool(
+                "create_bug_report",
+                &json!({ "description": "will not open", "id": id, "summary": "Report the job" }),
+            )
+            .unwrap_or_else(|e| panic!("{id}: refused: {e}"));
+        let read = s
+            .call_tool("read_bug_report", &json!({ "name": made["file_name"] }))
+            .unwrap();
+        let e = read["report"]["job"]["load_error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{id}: {read}"));
+        let (code, detail) = e.split_once(": ").unwrap_or((e, ""));
+        assert!(
+            !code.is_empty() && !detail.trim().is_empty(),
+            "{id}: load_error {e:?}"
+        );
+        assert_eq!(read["report"]["calculation"]["ok"], false, "{id}");
+    }
+    // A bad id is still a plain refusal.
+    assert!(
+        s.call_tool(
+            "create_bug_report",
+            &json!({ "description": "x", "id": "../escape", "summary": "s" })
+        )
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&s.store.dir);
+}
+
+/// ARCH-007, BUG-8: the wording of the tools and of their refusals.
+#[test]
+fn the_bug_report_tools_say_zip_and_do_not_claim_a_change_when_they_only_read() {
+    let d = bug_tool("create_bug_report")["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(d.contains(".zip") && !d.contains(".tectora"), "{d}");
+    let mut s = server();
+    for (tool, args) in [
+        ("read_bug_report", json!({ "name": 5 })),
+        ("read_bug_report", json!({ "name": "x.zip", "extra": 1 })),
+        ("list_bug_reports", json!({ "limit": "many" })),
+    ] {
+        let e = s.call_tool(tool, &args).unwrap_err();
+        assert!(!e.contains("nothing was changed"), "{tool}: {e}");
+    }
+    let _ = std::fs::remove_dir_all(&s.store.dir);
+}

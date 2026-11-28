@@ -1841,4 +1841,23 @@ mod tests {
         assert!(!again);
         let _ = fs::remove_dir_all(&d);
     }
+
+    /// BUG-5 (fix round 1): a hand-edited relative or empty `reports_dir`
+    /// counts as unset instead of being used and reported.
+    #[test]
+    fn a_hand_edited_relative_or_empty_reports_dir_counts_as_unset() {
+        let d = tmp("reports-dir-hand");
+        for bad in ["relative/reports", "", "  ", "~/Reports"] {
+            let path = d.join(SETTINGS_FILE);
+            fs::write(&path, serde_json::json!({ "reports_dir": bad }).to_string()).unwrap();
+            let s = Settings::load_from(&path);
+            assert_eq!(reports_value(&s), Value::Null, "{bad:?} kept");
+            assert_eq!(
+                s.describe()["effective"]["reports_dir"],
+                Value::Null,
+                "{bad:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
 }
